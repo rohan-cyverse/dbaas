@@ -80,7 +80,8 @@ class DatabaseOperationServiceTest {
                 .thenReturn(List.of());
         when(kubeBlocksClient.requireComponent("dbaas-orders", "db-orders0001", "postgresql"))
                 .thenReturn(new KubeBlocksClient.ClusterComponentInfo(
-                        "postgresql", 2, 0, false, Map.of("data", "20Gi")));
+                        "postgresql", 2, 0, false, Map.of("data", "20Gi"),
+                        "StrictInPlace"));
         when(kubeBlocksClient.storageBytes("20Gi")).thenReturn(20L * 1024 * 1024 * 1024);
         when(kubeBlocksClient.storageBytes("30Gi")).thenReturn(30L * 1024 * 1024 * 1024);
         when(kubeBlocksClient.storageBytes("10Gi")).thenReturn(10L * 1024 * 1024 * 1024);

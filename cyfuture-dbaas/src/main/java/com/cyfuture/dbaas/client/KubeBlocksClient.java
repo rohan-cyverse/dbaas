@@ -47,6 +47,7 @@ public class KubeBlocksClient {
     private static final String OPS_REQUESTS = "opsrequests";
     private static final String OPS_REQUEST_CRD = "opsrequests.operations.kubeblocks.io";
     private static final Pattern QUANTITY = Pattern.compile("^([1-9][0-9]*)(Mi|Gi|Ti)$");
+    private static final String STRICT_IN_PLACE = "StrictInPlace";
 
     private final DatabaseProperties properties;
     private final CustomObjectsApi customObjectsApi;
@@ -246,7 +247,7 @@ public class KubeBlocksClient {
                 int shards = number(sharding.get("shards"));
                 ClusterComponentInfo info = componentInfo(template, true);
                 result.add(new ClusterComponentInfo(info.name(), info.replicas(),
-                        shards, true, info.storage()));
+                        shards, true, info.storage(), info.podUpdatePolicy()));
             }
         }
         return result;
@@ -270,6 +271,23 @@ public class KubeBlocksClient {
 
     public List<String> componentNames(String namespace, String databaseId) {
         return componentNames(components(namespace, databaseId));
+    }
+
+    public void ensureStrictInPlacePodUpdatePolicy(String namespace, String databaseId,
+                                                   String componentName) {
+        try {
+            Map<String, Object> cluster = cluster(namespace, databaseId);
+            if (!setStrictInPlace(cluster, componentName)) return;
+            customObjectsApi.replaceNamespacedCustomObject(
+                    GROUP, VERSION, namespace, CLUSTERS, databaseId, cluster).execute();
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 404) {
+                throw new ApiException(HttpStatus.NOT_FOUND,
+                        "Database " + databaseId + " was not found");
+            }
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not enable in-place vertical scaling: " + kubernetesMessage(exception));
+        }
     }
 
     public void createVerticalScalingOpsRequest(String namespace, String databaseId,
@@ -383,6 +401,7 @@ public class KubeBlocksClient {
         component.put("name", settings.getComponentName());
         component.put("serviceVersion", request.version());
         component.put("replicas", request.replicas());
+        component.put("podUpdatePolicy", STRICT_IN_PLACE);
         component.put("resources", resources);
         component.put("volumeClaimTemplates", List.of(volume));
         if (request.timezone() != null && !request.timezone().isBlank()) {
@@ -415,6 +434,7 @@ public class KubeBlocksClient {
             shard.put("name", "shard");
             shard.put("serviceVersion", request.version());
             shard.put("replicas", request.replicas());
+            shard.put("podUpdatePolicy", STRICT_IN_PLACE);
             shard.put("resources", resources);
             shard.put("volumeClaimTemplates", List.of(volume));
 
@@ -422,6 +442,7 @@ public class KubeBlocksClient {
             configServer.put("name", "config-server");
             configServer.put("serviceVersion", request.version());
             configServer.put("replicas", 3);
+            configServer.put("podUpdatePolicy", STRICT_IN_PLACE);
             configServer.put("resources", resources);
             configServer.put("volumeClaimTemplates", List.of(volume));
 
@@ -429,6 +450,7 @@ public class KubeBlocksClient {
             mongos.put("name", "mongos");
             mongos.put("serviceVersion", request.version());
             mongos.put("replicas", 2);
+            mongos.put("podUpdatePolicy", STRICT_IN_PLACE);
             mongos.put("resources", resources);
 
             spec.put("shardings", List.of(Map.of(
@@ -527,7 +549,30 @@ public class KubeBlocksClient {
             }
         }
         return new ClusterComponentInfo(String.valueOf(component.get("name")),
-                number(component.get("replicas")), 0, sharding, storage);
+                number(component.get("replicas")), 0, sharding, storage,
+                String.valueOf(component.getOrDefault("podUpdatePolicy", "PreferInPlace")));
+    }
+
+    private boolean setStrictInPlace(Map<String, Object> cluster, String componentName) {
+        Map<String, Object> spec = asMap(cluster.get("spec"));
+        boolean changed = false;
+        for (Object item : (List<?>) spec.getOrDefault("componentSpecs", List.of())) {
+            Map<String, Object> component = asMap(item);
+            if (componentName.equals(component.get("name"))
+                    && !STRICT_IN_PLACE.equals(component.get("podUpdatePolicy"))) {
+                component.put("podUpdatePolicy", STRICT_IN_PLACE);
+                changed = true;
+            }
+        }
+        for (Object item : (List<?>) spec.getOrDefault("shardings", List.of())) {
+            Map<String, Object> template = asMap(asMap(item).get("template"));
+            if (componentName.equals(template.get("name"))
+                    && !STRICT_IN_PLACE.equals(template.get("podUpdatePolicy"))) {
+                template.put("podUpdatePolicy", STRICT_IN_PLACE);
+                changed = true;
+            }
+        }
+        return changed;
     }
 
     private List<String> componentNames(List<ClusterComponentInfo> components) {
@@ -916,7 +961,8 @@ public class KubeBlocksClient {
             int replicas,
             int shards,
             boolean sharding,
-            Map<String, String> storage
+            Map<String, String> storage,
+            String podUpdatePolicy
     ) {
         public String storage(String volumeName) {
             return storage.get(volumeName);

@@ -39,11 +39,7 @@ public class KubeBlocksOperationSubmitter {
             operationRepository.save(operation);
 
             switch (operation.getType()) {
-                case VERTICAL_SCALING -> kubeBlocksClient.createVerticalScalingOpsRequest(
-                        database.getNamespaceName(), database.getDatabaseId(), operation.getOpsRequestName(),
-                        operation.getComponentName(),
-                        Map.of("cpu", operation.getCpuRequest(), "memory", operation.getMemoryRequest()),
-                        Map.of("cpu", operation.getCpuLimit(), "memory", operation.getMemoryLimit()));
+                case VERTICAL_SCALING -> submitVertical(database, operation);
                 case HORIZONTAL_SCALING -> submitHorizontal(database, operation);
                 case STORAGE_EXPANSION -> submitStorage(database, operation);
                 case RESTART -> kubeBlocksClient.createRestartOpsRequest(
@@ -65,6 +61,16 @@ public class KubeBlocksOperationSubmitter {
             operation.setCompletedAt(Instant.now());
             operationRepository.save(operation);
         }
+    }
+
+    private void submitVertical(DatabaseMetadata database, OperationMetadata operation) {
+        kubeBlocksClient.ensureStrictInPlacePodUpdatePolicy(database.getNamespaceName(),
+                database.getDatabaseId(), operation.getComponentName());
+        kubeBlocksClient.createVerticalScalingOpsRequest(database.getNamespaceName(),
+                database.getDatabaseId(), operation.getOpsRequestName(),
+                operation.getComponentName(),
+                Map.of("cpu", operation.getCpuRequest(), "memory", operation.getMemoryRequest()),
+                Map.of("cpu", operation.getCpuLimit(), "memory", operation.getMemoryLimit()));
     }
 
     private void submitHorizontal(DatabaseMetadata database, OperationMetadata operation) {

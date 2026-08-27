@@ -72,6 +72,27 @@ class KubeBlocksClientTest {
     }
 
     @Test
+    void enablesStrictInPlacePolicyBeforeVerticalScaling() throws Exception {
+        when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
+                "dbaas-orders", "clusters", "db-orders0001").execute())
+                .thenReturn(clusterWithPolicy("PreferInPlace"));
+        when(customObjectsApi.replaceNamespacedCustomObject(eq("apps.kubeblocks.io"),
+                eq("v1"), eq("dbaas-orders"), eq("clusters"),
+                eq("db-orders0001"), any()).execute()).thenReturn(Map.of());
+
+        client.ensureStrictInPlacePodUpdatePolicy("dbaas-orders",
+                "db-orders0001", "postgresql");
+
+        ArgumentCaptor<Object> body = ArgumentCaptor.forClass(Object.class);
+        verify(customObjectsApi).replaceNamespacedCustomObject(eq("apps.kubeblocks.io"),
+                eq("v1"), eq("dbaas-orders"), eq("clusters"),
+                eq("db-orders0001"), body.capture());
+        Map<?, ?> spec = (Map<?, ?>) ((Map<?, ?>) body.getValue()).get("spec");
+        Map<?, ?> component = (Map<?, ?>) ((List<?>) spec.get("componentSpecs")).get(0);
+        assertEquals("StrictInPlace", component.get("podUpdatePolicy"));
+    }
+
+    @Test
     void extractsComponentsFromNormalAndShardedClusters() throws Exception {
         when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
                 "dbaas-orders", "clusters", "db-orders0001").execute())
@@ -84,6 +105,7 @@ class KubeBlocksClientTest {
                 components.stream().map(KubeBlocksClient.ClusterComponentInfo::name).toList());
         assertTrue(components.get(2).sharding());
         assertEquals("20Gi", components.get(2).storage("data"));
+        assertEquals("StrictInPlace", components.get(2).podUpdatePolicy());
     }
 
     private Map<String, Object> opsRequestCrd() {
@@ -110,10 +132,24 @@ class KubeBlocksClientTest {
                         "template", component("shard", 3, Map.of("data", "20Gi"))))));
     }
 
+    private Map<String, Object> clusterWithPolicy(String policy) {
+        Map<String, Object> component = new java.util.LinkedHashMap<>();
+        component.put("name", "postgresql");
+        component.put("replicas", 2);
+        component.put("podUpdatePolicy", policy);
+        component.put("volumeClaimTemplates", List.of());
+        Map<String, Object> spec = new java.util.LinkedHashMap<>();
+        spec.put("componentSpecs", List.of(component));
+        Map<String, Object> cluster = new java.util.LinkedHashMap<>();
+        cluster.put("spec", spec);
+        return cluster;
+    }
+
     private Map<String, Object> component(String name, int replicas, Map<String, String> volumes) {
         return Map.of(
                 "name", name,
                 "replicas", replicas,
+                "podUpdatePolicy", "StrictInPlace",
                 "volumeClaimTemplates", volumes.entrySet().stream()
                         .map(entry -> Map.of("name", entry.getKey(), "spec", Map.of(
                                 "resources", Map.of("requests", Map.of("storage", entry.getValue())))))
