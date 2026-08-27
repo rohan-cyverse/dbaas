@@ -21,6 +21,7 @@ import io.kubernetes.client.openapi.models.V1Pod;
 import io.kubernetes.client.openapi.models.V1PersistentVolumeClaim;
 import io.kubernetes.client.openapi.models.V1Secret;
 import io.kubernetes.client.openapi.models.V1Taint;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
@@ -53,6 +54,7 @@ public class KubeBlocksClient {
     private final StorageV1Api storageV1Api;
     private final Set<String> verifiedOpsRequestFields = new HashSet<>();
 
+    @Autowired
     public KubeBlocksClient(ApiClient apiClient, DatabaseProperties properties) {
         this.properties = properties;
         this.customObjectsApi = new CustomObjectsApi(apiClient);
