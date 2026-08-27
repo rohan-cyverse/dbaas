@@ -21,6 +21,7 @@ import com.cyfuture.dbaas.model.OperationType;
 import com.cyfuture.dbaas.model.SizePlan;
 import com.cyfuture.dbaas.model.ProvisioningStage;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
+import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -52,6 +53,7 @@ public class DatabaseService {
     private final CredentialLifecycleService credentialLifecycleService;
     private final ProjectService projectService;
     private final SharedGatewayService sharedGatewayService;
+    private final OperationMetadataRepository operationRepository;
 
     public CreateDatabaseResponse create(String project, String idempotencyKey,
                                          CreateDatabaseRequest request) {
@@ -93,7 +95,13 @@ public class DatabaseService {
         database.setSizePlan(request.size());
         database.setStorageGi(request.storageGi());
         database.setDeletionProtection(request.deletionProtection());
+        database.setDesiredStatus(DatabaseStatus.RUNNING);
         database.setStatus(DatabaseStatus.PROVISIONING);
+        database.setExpectedReplicas(request.mode() == DatabaseMode.SHARDING
+                ? request.shards() * request.replicas() + 5
+                : request.replicas());
+        database.setObservedReadyReplicas(0);
+        database.setObservedServiceReady(false);
         database.setProvisioningStage(ProvisioningStage.QUEUED);
         database.setProgress(0);
         database.setReplicas(request.replicas());
@@ -186,7 +194,11 @@ public class DatabaseService {
 
     public DatabaseResponse get(String project, String databaseId) {
         DatabaseMetadata metadata = requireDatabase(project, databaseId);
-        if (metadata.getStatus() == DatabaseStatus.FAILED) return fromMetadata(metadata);
+        if (metadata.getStatus() == DatabaseStatus.FAILED
+                || metadata.getStatus() == DatabaseStatus.MISSING
+                || metadata.getStatus() == DatabaseStatus.DELETED) {
+            return fromMetadata(metadata);
+        }
         try {
             DatabaseResponse live = kubeBlocksClient.get(metadata.getNamespaceName(), databaseId);
             syncLiveStatus(metadata, live);
@@ -247,19 +259,72 @@ public class DatabaseService {
 
     public DeleteDatabaseResponse delete(String project, String databaseId) {
         DatabaseMetadata database = requireDatabase(project, databaseId);
+        if (database.getStatus() == DatabaseStatus.DELETED) {
+            return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETED,
+                    "Database was already deleted; metadata is preserved");
+        }
+        if (database.getStatus() == DatabaseStatus.DELETING) {
+            return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETING,
+                    database.getMessage() == null ? "Database deletion is already running" : database.getMessage());
+        }
         if (database.isDeletionProtection()) {
             throw new ApiException(HttpStatus.CONFLICT,
                     "Deletion protection is enabled for " + databaseId);
         }
+        operationRepository.findByDatabaseIdAndProjectNameAndStatusIn(databaseId, project,
+                        List.of(OperationStatus.PENDING, OperationStatus.RUNNING))
+                .stream()
+                .filter(operation -> operation.getType() != OperationType.DELETE)
+                .findFirst()
+                .ifPresent(operation -> {
+                    throw new ApiException(HttpStatus.CONFLICT,
+                            "Operation " + operation.getOperationId()
+                                    + " is already running for database " + databaseId);
+                });
 
-        kubeBlocksClient.delete(database.getNamespaceName(), databaseId);
+        OperationMetadata operation = deleteOperation(database);
+        database.setDesiredStatus(DatabaseStatus.DELETED);
         database.setStatus(DatabaseStatus.DELETING);
-        database.setMessage("Database deletion was accepted by Kubernetes");
+        database.setDeleteRequestedAt(Instant.now());
+        database.setMessage("Database deletion requested; removing public route");
         database.setUpdatedAt(Instant.now());
         databaseRepository.save(database);
-        sharedGatewayService.removeRouteAndRelease(database);
+
+        try {
+            sharedGatewayService.removeRoute(database);
+        } catch (Exception exception) {
+            database.setSyncMessage(safeMessage(exception));
+            database.setMessage("Database deletion is waiting for public route removal");
+            database.setUpdatedAt(Instant.now());
+            databaseRepository.save(database);
+            return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETING, database.getMessage());
+        }
+
+        try {
+            kubeBlocksClient.requestDelete(database.getNamespaceName(), databaseId);
+            KubeBlocksClient.ClusterObservation observation = kubeBlocksClient.observeCluster(
+                    database.getNamespaceName(), databaseId);
+            if (!observation.exists()) {
+                sharedGatewayService.releasePort(database);
+                database.setStatus(DatabaseStatus.DELETED);
+                database.setDeletedAt(Instant.now());
+                database.setMessage("Database Cluster is absent; metadata is preserved");
+                database.setUpdatedAt(Instant.now());
+                databaseRepository.save(database);
+                finishDeleteOperation(operation, OperationStatus.SUCCEEDED, database.getMessage());
+                return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETED, database.getMessage());
+            }
+            database.setMessage("KubeBlocks deletion is running");
+            database.setUpdatedAt(Instant.now());
+            databaseRepository.save(database);
+        } catch (Exception exception) {
+            database.setSyncMessage(safeMessage(exception));
+            database.setMessage("Database deletion is waiting for Kubernetes confirmation");
+            database.setUpdatedAt(Instant.now());
+            databaseRepository.save(database);
+        }
         return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETING,
-                "Database deletion was accepted by Kubernetes");
+                database.getMessage());
     }
 
     public DatabaseResponse setDeletionProtection(String project,
@@ -338,15 +403,28 @@ public class DatabaseService {
     }
 
     private void syncLiveStatus(DatabaseMetadata metadata, DatabaseResponse live) {
+        metadata.setKubeblocksPhase(live.status().name());
+        metadata.setExpectedReplicas(live.replicas());
+        metadata.setObservedReadyReplicas(live.readyReplicas());
+        metadata.setObservedServiceReady(live.serviceReady());
+        metadata.setLastObservedAt(Instant.now());
+        metadata.setSyncMessage(live.message());
         if (live.status() == DatabaseStatus.FAILED) {
-            metadata.setStatus(DatabaseStatus.FAILED);
-            metadata.setProvisioningStage(ProvisioningStage.FAILED);
-            metadata.setProgress(100);
+            if (hasActiveLifecycleOperation(metadata)) return;
             metadata.setMessage(live.message());
         }
         metadata.setDeletionProtection(live.deletionProtection());
         metadata.setUpdatedAt(Instant.now());
         databaseRepository.save(metadata);
+    }
+
+    private boolean hasActiveLifecycleOperation(DatabaseMetadata metadata) {
+        return operationRepository
+                .findByDatabaseIdAndProjectNameAndStatusIn(metadata.getDatabaseId(),
+                        metadata.getProjectName(),
+                        List.of(OperationStatus.PENDING, OperationStatus.RUNNING))
+                .stream()
+                .anyMatch(operation -> operation.getType() != OperationType.CREATE);
     }
 
     private ProvisioningStage stage(DatabaseMetadata database) {
@@ -358,6 +436,49 @@ public class DatabaseService {
 
     private String shortId() {
         return UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+    }
+
+    private OperationMetadata deleteOperation(DatabaseMetadata database) {
+        OperationMetadata existing = operationRepository
+                .findByDatabaseIdAndProjectNameAndStatusIn(database.getDatabaseId(),
+                        database.getProjectName(),
+                        List.of(OperationStatus.PENDING, OperationStatus.RUNNING))
+                .stream()
+                .filter(operation -> operation.getType() == OperationType.DELETE)
+                .findFirst()
+                .orElse(null);
+        if (existing != null) return existing;
+        OperationMetadata operation = OperationMetadata.builder()
+                .operationId("op-" + shortId())
+                .databaseId(database.getDatabaseId())
+                .projectName(database.getProjectName())
+                .type(OperationType.DELETE)
+                .status(OperationStatus.RUNNING)
+                .provisioningStage(ProvisioningStage.WAITING_FOR_REPLICAS)
+                .progress(20)
+                .message("Database deletion requested")
+                .createdAt(Instant.now())
+                .startedAt(Instant.now())
+                .build();
+        return operationRepository.save(operation);
+    }
+
+    private void finishDeleteOperation(OperationMetadata operation,
+                                       OperationStatus status,
+                                       String message) {
+        operation.setStatus(status);
+        operation.setProvisioningStage(status == OperationStatus.SUCCEEDED
+                ? ProvisioningStage.READY : ProvisioningStage.FAILED);
+        operation.setProgress(100);
+        operation.setMessage(message);
+        operation.setCompletedAt(Instant.now());
+        operationRepository.save(operation);
+    }
+
+    private String safeMessage(Exception exception) {
+        String message = exception.getMessage();
+        if (message == null || message.isBlank()) return "Synchronization failed and will retry";
+        return message.replaceAll("(?i)(password|passwd|pwd|token|secret)\\s*[:=]\\s*[^\\s,;\"']+", "$1=******");
     }
 
     private void validateIdempotencyKey(String idempotencyKey) {

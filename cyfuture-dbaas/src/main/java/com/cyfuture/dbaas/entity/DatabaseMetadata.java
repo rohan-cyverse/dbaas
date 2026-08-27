@@ -50,7 +50,13 @@ public class DatabaseMetadata {
     @Enumerated(EnumType.STRING) @Column(length = 32) private SizePlan sizePlan;
     private int storageGi;
     private boolean deletionProtection;
+    @Enumerated(EnumType.STRING) @Column(length = 32) private DatabaseStatus desiredStatus;
     @Enumerated(EnumType.STRING) @Column(length = 32) private DatabaseStatus status;
+    @Column(length = 32)
+    private String kubeblocksPhase;
+    private int expectedReplicas;
+    private int observedReadyReplicas;
+    private boolean observedServiceReady;
     @Enumerated(EnumType.STRING) @Column(nullable = false, length = 32)
     private ProvisioningStage provisioningStage;
     @Column(nullable = false)
@@ -66,6 +72,13 @@ public class DatabaseMetadata {
     private String tags;
     @Column(length = 4000)
     private String message;
+    @Column(length = 4000)
+    private String syncMessage;
     private Instant createdAt;
     private Instant updatedAt;
+    private Instant lastObservedAt;
+    private Instant missingSince;
+    private Instant degradedSince;
+    private Instant deleteRequestedAt;
+    private Instant deletedAt;
 }

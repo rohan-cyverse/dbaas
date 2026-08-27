@@ -11,6 +11,7 @@ import com.cyfuture.dbaas.model.DatabaseEngine;
 import com.cyfuture.dbaas.model.DatabaseMode;
 import com.cyfuture.dbaas.model.SizePlan;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
+import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -50,7 +51,7 @@ class DatabaseServiceTest {
                 .thenReturn(Optional.empty());
         service = new DatabaseService(mock(KubeBlocksClient.class), properties, repository,
                 provisioning, metadataCreation, mock(CredentialLifecycleService.class),
-                projects, mock(SharedGatewayService.class));
+                projects, mock(SharedGatewayService.class), mock(OperationMetadataRepository.class));
     }
 
     @Test

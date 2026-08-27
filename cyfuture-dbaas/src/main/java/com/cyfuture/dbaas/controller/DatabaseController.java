@@ -5,8 +5,13 @@ import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
 import com.cyfuture.dbaas.dto.CreateDatabaseResponse;
 import com.cyfuture.dbaas.dto.DatabaseResponse;
 import com.cyfuture.dbaas.dto.DeleteDatabaseResponse;
+import com.cyfuture.dbaas.dto.HorizontalScalingRequest;
 import com.cyfuture.dbaas.dto.OperationResponse;
+import com.cyfuture.dbaas.dto.RestartRequest;
+import com.cyfuture.dbaas.dto.StorageExpansionRequest;
+import com.cyfuture.dbaas.dto.VerticalScalingRequest;
 import com.cyfuture.dbaas.service.ClientIpResolver;
+import com.cyfuture.dbaas.service.DatabaseOperationService;
 import com.cyfuture.dbaas.service.DatabaseService;
 import com.cyfuture.dbaas.service.OperationService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -40,6 +45,7 @@ import java.util.Map;
 )
 public class DatabaseController {
     private final DatabaseService databaseService;
+    private final DatabaseOperationService databaseOperationService;
     private final OperationService operationService;
     private final ClientIpResolver clientIpResolver;
 
@@ -113,6 +119,98 @@ public class DatabaseController {
                 project,
                 databaseId
         );
+    }
+
+    @PostMapping("/{databaseId}/vertical-scaling")
+    @Operation(
+            summary = "Scale database compute resources",
+            description = "Creates a KubeBlocks OpsRequest of type VerticalScaling for one component."
+    )
+    public ResponseEntity<OperationResponse> verticalScaling(
+            @PathVariable String project,
+            @PathVariable String databaseId,
+            @Parameter(description = "Unique retry-safe key", example = "scale-orders-compute-001")
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    required = true,
+                    content = @io.swagger.v3.oas.annotations.media.Content(
+                            mediaType = "application/json",
+                            examples = @io.swagger.v3.oas.annotations.media.ExampleObject(
+                                    value = "{\"componentName\":\"postgresql\",\"requests\":{\"cpu\":\"1\",\"memory\":\"2Gi\"},\"limits\":{\"cpu\":\"2\",\"memory\":\"4Gi\"}}")))
+            @Valid @RequestBody VerticalScalingRequest request
+    ) {
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(databaseOperationService.verticalScaling(project, databaseId,
+                        idempotencyKey, request));
+    }
+
+    @PostMapping("/{databaseId}/horizontal-scaling")
+    @Operation(
+            summary = "Scale database replicas",
+            description = "Creates a KubeBlocks OpsRequest of type HorizontalScaling using the requested final replica count."
+    )
+    public ResponseEntity<OperationResponse> horizontalScaling(
+            @PathVariable String project,
+            @PathVariable String databaseId,
+            @Parameter(description = "Unique retry-safe key", example = "scale-orders-replicas-001")
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    required = true,
+                    content = @io.swagger.v3.oas.annotations.media.Content(
+                            mediaType = "application/json",
+                            examples = @io.swagger.v3.oas.annotations.media.ExampleObject(
+                                    value = "{\"componentName\":\"postgresql\",\"targetReplicas\":3}")))
+            @Valid @RequestBody HorizontalScalingRequest request
+    ) {
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(databaseOperationService.horizontalScaling(project, databaseId,
+                        idempotencyKey, request));
+    }
+
+    @PostMapping("/{databaseId}/storage-expansion")
+    @Operation(
+            summary = "Expand database storage",
+            description = "Creates a KubeBlocks OpsRequest of type VolumeExpansion. Shrinking is rejected."
+    )
+    public ResponseEntity<OperationResponse> storageExpansion(
+            @PathVariable String project,
+            @PathVariable String databaseId,
+            @Parameter(description = "Unique retry-safe key", example = "expand-orders-storage-001")
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    required = true,
+                    content = @io.swagger.v3.oas.annotations.media.Content(
+                            mediaType = "application/json",
+                            examples = @io.swagger.v3.oas.annotations.media.ExampleObject(
+                                    value = "{\"componentName\":\"postgresql\",\"volumeName\":\"data\",\"newStorageSize\":\"30Gi\"}")))
+            @Valid @RequestBody StorageExpansionRequest request
+    ) {
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(databaseOperationService.storageExpansion(project, databaseId,
+                        idempotencyKey, request));
+    }
+
+    @PostMapping("/{databaseId}/restart")
+    @Operation(
+            summary = "Restart database components",
+            description = "Creates a KubeBlocks OpsRequest of type Restart. Omit componentName to restart the whole database."
+    )
+    public ResponseEntity<OperationResponse> restart(
+            @PathVariable String project,
+            @PathVariable String databaseId,
+            @Parameter(description = "Unique retry-safe key", example = "restart-orders-001")
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    required = false,
+                    content = @io.swagger.v3.oas.annotations.media.Content(
+                            mediaType = "application/json",
+                            examples = @io.swagger.v3.oas.annotations.media.ExampleObject(
+                                    value = "{\"componentName\":\"postgresql\"}")))
+            @RequestBody(required = false) RestartRequest request
+    ) {
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(databaseOperationService.restart(project, databaseId,
+                        idempotencyKey, request == null ? new RestartRequest(null) : request));
     }
 
     @GetMapping("/{databaseId}/connection")

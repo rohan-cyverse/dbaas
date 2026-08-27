@@ -24,6 +24,7 @@ public class OperationRecoveryService {
     private final OperationMetadataRepository operationRepository;
     private final DatabaseMetadataRepository databaseRepository;
     private final AsyncProvisioningService provisioningService;
+    private final KubeBlocksOperationSubmitter operationSubmitter;
 
     @EventListener(ApplicationReadyEvent.class)
     public void resumeInterruptedOperations() {
@@ -43,6 +44,11 @@ public class OperationRecoveryService {
                                     database.getDatabaseId(), database.getProjectName(),
                                     database.getNamespaceName(),
                                     request(database));
+                        } else if (operation.getType() != OperationType.CREATE) {
+                            operation.setStatus(OperationStatus.PENDING);
+                            operation.setMessage("Resuming KubeBlocks operation after application restart");
+                            operationRepository.save(operation);
+                            operationSubmitter.submit(operation.getOperationId());
                         }
                     });
         }

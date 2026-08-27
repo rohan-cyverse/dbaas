@@ -40,6 +40,27 @@ public class OperationMetadata {
     private int progress;
     @Column(length = 4000)
     private String message;
+    @Column(length = 128)
+    private String idempotencyKey;
+    @Column(length = 64)
+    private String requestHash;
+    @Column(length = 63)
+    private String opsRequestName;
+    @Column(length = 63)
+    private String componentName;
+    private Integer targetReplicas;
+    @Column(length = 32)
+    private String targetStorageSize;
+    @Column(length = 32)
+    private String volumeName;
+    @Column(length = 32)
+    private String cpuRequest;
+    @Column(length = 32)
+    private String memoryRequest;
+    @Column(length = 32)
+    private String cpuLimit;
+    @Column(length = 32)
+    private String memoryLimit;
     private Instant createdAt;
     private Instant startedAt;
     private Instant completedAt;

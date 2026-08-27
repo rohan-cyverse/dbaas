@@ -142,13 +142,22 @@ public class SharedGatewayService {
     }
 
     public synchronized void removeRouteAndRelease(DatabaseMetadata database) {
+        removeRoute(database);
+        releasePort(database);
+    }
+
+    public synchronized void removeRoute(DatabaseMetadata database) {
         Integer reservedPort = database.getPublicPort();
         if (reservedPort == null) return;
-        database.setStatus(DatabaseStatus.DELETING);
         database.setUpdatedAt(Instant.now());
         databaseRepository.save(database);
         reconcileNow();
         waitForRollout();
+    }
+
+    public synchronized void releasePort(DatabaseMetadata database) {
+        Integer reservedPort = database.getPublicPort();
+        if (reservedPort == null) return;
         database.setPublicPort(null);
         database.setUpdatedAt(Instant.now());
         databaseRepository.save(database);
@@ -168,6 +177,9 @@ public class SharedGatewayService {
         for (DatabaseMetadata database : databaseRepository
                 .findByPublicPortIsNotNullOrderByPublicPortAsc()) {
             if (database.getStatus() == DatabaseStatus.DELETING
+                    || database.getStatus() == DatabaseStatus.DELETED
+                    || database.getStatus() == DatabaseStatus.MISSING
+                    || database.getStatus() == DatabaseStatus.ORPHANED
                     || database.getStatus() == DatabaseStatus.FAILED) continue;
             List<String> allowed = cidrs(database.getAllowedCidrs());
             if (allowed.isEmpty()) continue;
@@ -209,6 +221,9 @@ public class SharedGatewayService {
         for (DatabaseMetadata database : databaseRepository.findAllByOrderByCreatedAtAsc()) {
             if (database.getPublicPort() != null
                     || database.getStatus() == DatabaseStatus.DELETING
+                    || database.getStatus() == DatabaseStatus.DELETED
+                    || database.getStatus() == DatabaseStatus.MISSING
+                    || database.getStatus() == DatabaseStatus.ORPHANED
                     || database.getStatus() == DatabaseStatus.FAILED) continue;
             try {
                 DatabaseResponse live = kubeBlocksClient.get(

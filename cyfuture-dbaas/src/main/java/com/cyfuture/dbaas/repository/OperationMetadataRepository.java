@@ -15,4 +15,8 @@ public interface OperationMetadataRepository extends JpaRepository<OperationMeta
     List<OperationMetadata> findByDatabaseIdAndProjectNameOrderByCreatedAtDesc(
             String databaseId, String projectName);
     List<OperationMetadata> findByStatusIn(List<OperationStatus> statuses);
+    Optional<OperationMetadata> findByDatabaseIdAndProjectNameAndIdempotencyKey(
+            String databaseId, String projectName, String idempotencyKey);
+    List<OperationMetadata> findByDatabaseIdAndProjectNameAndStatusIn(
+            String databaseId, String projectName, List<OperationStatus> statuses);
 }

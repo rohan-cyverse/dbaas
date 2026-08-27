@@ -24,9 +24,16 @@ import io.kubernetes.client.openapi.models.V1Taint;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
+import java.math.BigInteger;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Component
 public class KubeBlocksClient {
@@ -34,17 +41,31 @@ public class KubeBlocksClient {
     private static final String VERSION = "v1";
     private static final String CLUSTERS = "clusters";
     private static final String CLUSTER_DEFINITIONS = "clusterdefinitions";
+    private static final String OPS_GROUP = "operations.kubeblocks.io";
+    private static final String OPS_VERSION = "v1alpha1";
+    private static final String OPS_REQUESTS = "opsrequests";
+    private static final String OPS_REQUEST_CRD = "opsrequests.operations.kubeblocks.io";
+    private static final Pattern QUANTITY = Pattern.compile("^([1-9][0-9]*)(Mi|Gi|Ti)$");
 
     private final DatabaseProperties properties;
     private final CustomObjectsApi customObjectsApi;
     private final CoreV1Api coreV1Api;
     private final StorageV1Api storageV1Api;
+    private final Set<String> verifiedOpsRequestFields = new HashSet<>();
 
     public KubeBlocksClient(ApiClient apiClient, DatabaseProperties properties) {
         this.properties = properties;
         this.customObjectsApi = new CustomObjectsApi(apiClient);
         this.coreV1Api = new CoreV1Api(apiClient);
         this.storageV1Api = new StorageV1Api(apiClient);
+    }
+
+    KubeBlocksClient(DatabaseProperties properties, CustomObjectsApi customObjectsApi,
+                     CoreV1Api coreV1Api, StorageV1Api storageV1Api) {
+        this.properties = properties;
+        this.customObjectsApi = customObjectsApi;
+        this.coreV1Api = coreV1Api;
+        this.storageV1Api = storageV1Api;
     }
 
     public void preflight(String namespace, String project,
@@ -129,6 +150,64 @@ public class KubeBlocksClient {
         }
     }
 
+    public void requestDelete(String namespace, String databaseId) {
+        try {
+            customObjectsApi.deleteNamespacedCustomObject(
+                    GROUP, VERSION, namespace, CLUSTERS, databaseId).execute();
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 404) return;
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "KubeBlocks could not delete the database: " + kubernetesMessage(exception));
+        }
+    }
+
+    public ClusterObservation observeCluster(String namespace, String databaseId) {
+        try {
+            Map<String, Object> cluster = asMap(customObjectsApi.getNamespacedCustomObject(
+                    GROUP, VERSION, namespace, CLUSTERS, databaseId).execute());
+            return observation(namespace, cluster);
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 404) {
+                return ClusterObservation.missing(namespace, databaseId);
+            }
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not observe KubeBlocks Cluster: " + kubernetesMessage(exception));
+        }
+    }
+
+    public List<ManagedClusterSummary> listManagedClusters() {
+        try {
+            Map<String, Object> list = asMap(customObjectsApi.listClusterCustomObject(
+                    GROUP, VERSION, CLUSTERS).execute());
+            List<ManagedClusterSummary> result = new ArrayList<>();
+            for (Object item : (List<?>) list.getOrDefault("items", List.of())) {
+                Map<String, Object> cluster = asMap(item);
+                Map<String, Object> metadata = asMap(cluster.get("metadata"));
+                Map<String, Object> labels = asMap(metadata.get("labels"));
+                if (!"cyfuture-dbaas".equals(labels.get("app.kubernetes.io/managed-by"))) {
+                    continue;
+                }
+                Map<String, Object> annotations = asMap(metadata.get("annotations"));
+                Map<String, Object> status = asMap(cluster.get("status"));
+                result.add(new ManagedClusterSummary(
+                        String.valueOf(metadata.get("namespace")),
+                        String.valueOf(metadata.get("name")),
+                        String.valueOf(labels.getOrDefault("dbaas.cyfuture.com/database-id",
+                                metadata.get("name"))),
+                        String.valueOf(labels.getOrDefault("dbaas.cyfuture.com/project",
+                                annotations.getOrDefault("dbaas.cyfuture.com/project", ""))),
+                        String.valueOf(labels.getOrDefault("dbaas.cyfuture.com/engine",
+                                annotations.getOrDefault("dbaas.cyfuture.com/engine", ""))),
+                        String.valueOf(status.getOrDefault("phase", "Unknown")),
+                        latestConditionMessage(status)));
+            }
+            return result;
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not list managed KubeBlocks Clusters: " + kubernetesMessage(exception));
+        }
+    }
+
     public DatabaseResponse setDeletionProtection(String namespace, String databaseId, boolean enabled) {
         try {
             Map<String, Object> cluster = asMap(customObjectsApi.getNamespacedCustomObject(
@@ -147,6 +226,140 @@ public class KubeBlocksClient {
             throw new ApiException(HttpStatus.BAD_GATEWAY,
                     "Could not update deletion protection: " + kubernetesMessage(exception));
         }
+    }
+
+    public List<ClusterComponentInfo> components(String namespace, String databaseId) {
+        Map<String, Object> cluster = cluster(namespace, databaseId);
+        Map<String, Object> spec = asMap(cluster.get("spec"));
+        List<ClusterComponentInfo> result = new ArrayList<>();
+
+        for (Object item : (List<?>) spec.getOrDefault("componentSpecs", List.of())) {
+            Map<String, Object> component = asMap(item);
+            result.add(componentInfo(component, false));
+        }
+        for (Object item : (List<?>) spec.getOrDefault("shardings", List.of())) {
+            Map<String, Object> sharding = asMap(item);
+            Map<String, Object> template = asMap(sharding.get("template"));
+            if (!template.isEmpty()) {
+                int shards = number(sharding.get("shards"));
+                ClusterComponentInfo info = componentInfo(template, true);
+                result.add(new ClusterComponentInfo(info.name(), info.replicas(),
+                        shards, true, info.storage()));
+            }
+        }
+        return result;
+    }
+
+    public ClusterComponentInfo requireComponent(String namespace, String databaseId,
+                                                 String requestedComponentName) {
+        List<ClusterComponentInfo> components = components(namespace, databaseId);
+        if (requestedComponentName == null || requestedComponentName.isBlank()) {
+            if (components.size() == 1) return components.get(0);
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "componentName is required. Valid components: " + componentNames(components));
+        }
+        return components.stream()
+                .filter(component -> component.name().equals(requestedComponentName))
+                .findFirst()
+                .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST,
+                        "Unknown componentName " + requestedComponentName
+                                + ". Valid components: " + componentNames(components)));
+    }
+
+    public List<String> componentNames(String namespace, String databaseId) {
+        return componentNames(components(namespace, databaseId));
+    }
+
+    public void createVerticalScalingOpsRequest(String namespace, String databaseId,
+                                                String operationId, String componentName,
+                                                Map<String, String> requests,
+                                                Map<String, String> limits) {
+        createOpsRequest(namespace, operationId, "VerticalScaling",
+                "verticalScaling", List.of(Map.of(
+                        "componentName", componentName,
+                        "requests", requests,
+                        "limits", limits)), databaseId);
+    }
+
+    public void createHorizontalScalingOpsRequest(String namespace, String databaseId,
+                                                  String operationId, String componentName,
+                                                  int currentReplicas,
+                                                  int targetReplicas) {
+        Map<String, Object> scaling = new LinkedHashMap<>();
+        scaling.put("componentName", componentName);
+        if (targetReplicas > currentReplicas) {
+            scaling.put("scaleOut", Map.of("replicaChanges", targetReplicas - currentReplicas));
+        } else if (targetReplicas < currentReplicas) {
+            scaling.put("scaleIn", Map.of("replicaChanges", currentReplicas - targetReplicas));
+        } else {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "targetReplicas must be different from the current replica count");
+        }
+        createOpsRequest(namespace, operationId, "HorizontalScaling",
+                "horizontalScaling", List.of(scaling), databaseId);
+    }
+
+    public void createVolumeExpansionOpsRequest(String namespace, String databaseId,
+                                                String operationId, String componentName,
+                                                String volumeName,
+                                                String newStorageSize) {
+        createOpsRequest(namespace, operationId, "VolumeExpansion",
+                "volumeExpansion", List.of(Map.of(
+                        "componentName", componentName,
+                        "volumeClaimTemplates", List.of(Map.of(
+                                "name", volumeName,
+                                "storage", newStorageSize)))), databaseId);
+    }
+
+    public void createRestartOpsRequest(String namespace, String databaseId,
+                                        String operationId,
+                                        List<String> componentNames) {
+        createOpsRequest(namespace, operationId, "Restart",
+                "restart", componentNames.stream()
+                        .map(component -> Map.of("componentName", component))
+                        .toList(), databaseId);
+    }
+
+    public OpsRequestInfo getOpsRequest(String namespace, String opsRequestName) {
+        try {
+            Map<String, Object> object = asMap(customObjectsApi.getNamespacedCustomObject(
+                    OPS_GROUP, OPS_VERSION, namespace, OPS_REQUESTS, opsRequestName).execute());
+            Map<String, Object> status = asMap(object.get("status"));
+            return new OpsRequestInfo(String.valueOf(status.getOrDefault("phase", "Pending")),
+                    String.valueOf(status.getOrDefault("progress", "-/-")),
+                    lastConditionMessage(status),
+                    instant(status.get("startTimestamp")),
+                    instant(status.get("completionTimestamp")));
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 404) {
+                return new OpsRequestInfo("Pending", "-/-",
+                        "Waiting for KubeBlocks OpsRequest submission", null, null);
+            }
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not read KubeBlocks OpsRequest: " + kubernetesMessage(exception));
+        }
+    }
+
+    public long storageBytes(String quantity) {
+        Matcher matcher = QUANTITY.matcher(quantity == null ? "" : quantity);
+        if (!matcher.matches()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "Storage size must be a Kubernetes quantity such as 30Gi");
+        }
+        BigInteger value = new BigInteger(matcher.group(1));
+        BigInteger multiplier = switch (matcher.group(2)) {
+            case "Mi" -> BigInteger.valueOf(1024L * 1024L);
+            case "Gi" -> BigInteger.valueOf(1024L * 1024L * 1024L);
+            case "Ti" -> BigInteger.valueOf(1024L * 1024L * 1024L * 1024L);
+            default -> throw new IllegalArgumentException("Unsupported unit");
+        };
+        return value.multiply(multiplier).longValueExact();
+    }
+
+    public int storageGi(String quantity) {
+        long bytes = storageBytes(quantity);
+        long gib = 1024L * 1024L * 1024L;
+        return Math.toIntExact(bytes / gib);
     }
 
     private Map<String, Object> buildCluster(String namespace, String project, String databaseId,
@@ -235,6 +448,7 @@ public class KubeBlocksClient {
         metadata.put("labels", Map.of(
                 "app.kubernetes.io/managed-by", "cyfuture-dbaas",
                 "dbaas.cyfuture.com/project", project,
+                "dbaas.cyfuture.com/engine", request.engine().name(),
                 "dbaas.cyfuture.com/database-id", databaseId));
         metadata.put("annotations", annotations);
 
@@ -244,6 +458,173 @@ public class KubeBlocksClient {
         cluster.put("metadata", metadata);
         cluster.put("spec", spec);
         return cluster;
+    }
+
+    private Map<String, Object> cluster(String namespace, String databaseId) {
+        try {
+            return asMap(customObjectsApi.getNamespacedCustomObject(
+                    GROUP, VERSION, namespace, CLUSTERS, databaseId).execute());
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 404) {
+                throw new ApiException(HttpStatus.NOT_FOUND, "Database " + databaseId + " was not found");
+            }
+            throw new ApiException(HttpStatus.BAD_GATEWAY, kubernetesMessage(exception));
+        }
+    }
+
+    private ClusterObservation observation(String namespace, Map<String, Object> cluster) {
+        Map<String, Object> metadata = asMap(cluster.get("metadata"));
+        Map<String, Object> annotations = asMap(metadata.get("annotations"));
+        Map<String, Object> status = asMap(cluster.get("status"));
+        String databaseId = String.valueOf(metadata.get("name"));
+        String phase = String.valueOf(status.getOrDefault("phase", ""));
+        int expected = integerAnnotation(annotations, "dbaas.cyfuture.com/expected-pods",
+                expectedReplicas(cluster));
+        int ready = countReadyPods(namespace, databaseId);
+        boolean serviceReady = serviceReady(namespace, databaseId, cluster);
+        return new ClusterObservation(true, namespace, databaseId, phase,
+                ready, expected, serviceReady, latestConditionMessage(status));
+    }
+
+    private int expectedReplicas(Map<String, Object> cluster) {
+        Map<String, Object> spec = asMap(cluster.get("spec"));
+        int expected = 0;
+        for (Object item : (List<?>) spec.getOrDefault("componentSpecs", List.of())) {
+            expected += number(asMap(item).get("replicas"));
+        }
+        for (Object item : (List<?>) spec.getOrDefault("shardings", List.of())) {
+            Map<String, Object> sharding = asMap(item);
+            expected += number(sharding.get("shards"))
+                    * number(asMap(sharding.get("template")).get("replicas"));
+        }
+        return expected;
+    }
+
+    private boolean serviceReady(String namespace, String databaseId, Map<String, Object> cluster) {
+        Map<String, Object> spec = asMap(cluster.get("spec"));
+        List<?> components = (List<?>) spec.getOrDefault("componentSpecs", List.of());
+        List<?> shardings = (List<?>) spec.getOrDefault("shardings", List.of());
+        String componentName = null;
+        if (!shardings.isEmpty()) {
+            componentName = "mongos";
+        } else if (!components.isEmpty()) {
+            componentName = String.valueOf(asMap(components.get(0)).get("name"));
+        }
+        return internalHost(namespace, databaseId, componentName) != null;
+    }
+
+    private ClusterComponentInfo componentInfo(Map<String, Object> component, boolean sharding) {
+        Map<String, String> storage = new LinkedHashMap<>();
+        for (Object item : (List<?>) component.getOrDefault("volumeClaimTemplates", List.of())) {
+            Map<String, Object> template = asMap(item);
+            String name = String.valueOf(template.get("name"));
+            String size = String.valueOf(asMap(asMap(asMap(template.get("spec"))
+                    .get("resources")).get("requests")).get("storage"));
+            if (!name.isBlank() && !size.isBlank() && !"null".equals(size)) {
+                storage.put(name, size);
+            }
+        }
+        return new ClusterComponentInfo(String.valueOf(component.get("name")),
+                number(component.get("replicas")), 0, sharding, storage);
+    }
+
+    private List<String> componentNames(List<ClusterComponentInfo> components) {
+        return components.stream().map(ClusterComponentInfo::name).toList();
+    }
+
+    private void createOpsRequest(String namespace, String operationId, String type,
+                                  String operationField, List<?> operationPayload,
+                                  String databaseId) {
+        ensureOpsRequestSchemaSupports(operationField);
+        Map<String, Object> labels = Map.of(
+                "app.kubernetes.io/managed-by", "cyfuture-dbaas",
+                "dbaas.cyfuture.com/database-id", databaseId,
+                "dbaas.cyfuture.com/operation-id", operationId);
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("name", operationId);
+        metadata.put("namespace", namespace);
+        metadata.put("labels", labels);
+
+        Map<String, Object> spec = new LinkedHashMap<>();
+        spec.put("clusterName", databaseId);
+        spec.put("type", type);
+        spec.put(operationField, operationPayload);
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("apiVersion", OPS_GROUP + "/" + OPS_VERSION);
+        body.put("kind", "OpsRequest");
+        body.put("metadata", metadata);
+        body.put("spec", spec);
+
+        try {
+            customObjectsApi.createNamespacedCustomObject(
+                    OPS_GROUP, OPS_VERSION, namespace, OPS_REQUESTS, body).execute();
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 409) return;
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "KubeBlocks OpsRequest was rejected: " + kubernetesMessage(exception));
+        }
+    }
+
+    private void ensureOpsRequestSchemaSupports(String operationField) {
+        synchronized (verifiedOpsRequestFields) {
+            if (verifiedOpsRequestFields.contains(operationField)) return;
+        }
+        try {
+            Map<String, Object> crd = asMap(customObjectsApi.getClusterCustomObject(
+                    "apiextensions.k8s.io", "v1", "customresourcedefinitions",
+                    OPS_REQUEST_CRD).execute());
+            Map<String, Object> specProperties = opsRequestSpecProperties(crd);
+            if (!specProperties.containsKey("clusterName")
+                    || !specProperties.containsKey("type")
+                    || !specProperties.containsKey(operationField)) {
+                throw new ApiException(HttpStatus.BAD_GATEWAY,
+                        "Installed KubeBlocks OpsRequest CRD does not support " + operationField);
+            }
+            synchronized (verifiedOpsRequestFields) {
+                verifiedOpsRequestFields.add(operationField);
+            }
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "KubeBlocks OpsRequest CRD is not available: " + kubernetesMessage(exception));
+        }
+    }
+
+    private Map<String, Object> opsRequestSpecProperties(Map<String, Object> crd) {
+        List<?> versions = (List<?>) asMap(crd.get("spec")).getOrDefault("versions", List.of());
+        for (Object item : versions) {
+            Map<String, Object> version = asMap(item);
+            if (OPS_VERSION.equals(version.get("name"))) {
+                Map<String, Object> schema = asMap(version.get("schema"));
+                Map<String, Object> openApi = asMap(schema.get("openAPIV3Schema"));
+                Map<String, Object> properties = asMap(openApi.get("properties"));
+                Map<String, Object> spec = asMap(properties.get("spec"));
+                return asMap(spec.get("properties"));
+            }
+        }
+        return Map.of();
+    }
+
+    private String lastConditionMessage(Map<String, Object> status) {
+        return latestConditionMessage(status);
+    }
+
+    private String latestConditionMessage(Map<String, Object> status) {
+        List<?> conditions = (List<?>) status.getOrDefault("conditions", List.of());
+        if (conditions.isEmpty()) return "KubeBlocks is processing the operation";
+        Map<String, Object> condition = asMap(conditions.get(conditions.size() - 1));
+        String message = String.valueOf(condition.getOrDefault("message", ""));
+        if (!message.isBlank()) return message;
+        return String.valueOf(condition.getOrDefault("reason", "KubeBlocks is processing the operation"));
+    }
+
+    private Instant instant(Object value) {
+        if (value == null) return null;
+        try {
+            return Instant.parse(String.valueOf(value));
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private DatabaseResponse toResponse(String namespace, Map<String, Object> cluster) {
@@ -257,8 +638,10 @@ public class KubeBlocksClient {
         String id = String.valueOf(metadata.get("name"));
         String phase = String.valueOf(status.getOrDefault("phase", ""));
         DatabaseStatus databaseStatus = mapStatus(phase);
-        int replicas = integerAnnotation(annotations, "dbaas.cyfuture.com/replicas",
-                number(component.get("replicas")));
+        int replicas = number(component.get("replicas"));
+        if (replicas == 0) {
+            replicas = integerAnnotation(annotations, "dbaas.cyfuture.com/replicas", 1);
+        }
         int expectedPods = integerAnnotation(annotations, "dbaas.cyfuture.com/expected-pods", replicas);
         int expectedVolumes = integerAnnotation(annotations, "dbaas.cyfuture.com/expected-volumes", replicas);
         int readyReplicas = countReadyPods(namespace, id);
@@ -291,7 +674,7 @@ public class KubeBlocksClient {
                 mode,
                 String.valueOf(annotations.get("dbaas.cyfuture.com/version")),
                 SizePlan.valueOf(String.valueOf(annotations.getOrDefault("dbaas.cyfuture.com/size", "C1G1"))),
-                integerAnnotation(annotations, "dbaas.cyfuture.com/storage-gi", 10),
+                storageGiFromComponent(component, annotations),
                 Boolean.parseBoolean(String.valueOf(annotations.getOrDefault(
                         "dbaas.cyfuture.com/deletion-protection", "false"))),
                 databaseStatus,
@@ -338,6 +721,25 @@ public class KubeBlocksClient {
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             return 0;
         }
+    }
+
+    private int storageGiFromComponent(Map<String, Object> component,
+                                       Map<String, Object> annotations) {
+        String storage = null;
+        List<?> volumes = (List<?>) component.getOrDefault("volumeClaimTemplates", List.of());
+        if (!volumes.isEmpty()) {
+            Map<String, Object> volume = asMap(volumes.get(0));
+            storage = String.valueOf(asMap(asMap(asMap(volume.get("spec"))
+                    .get("resources")).get("requests")).get("storage"));
+        }
+        if (storage != null && !storage.isBlank() && !"null".equals(storage)) {
+            try {
+                return storageGi(storage);
+            } catch (Exception ignored) {
+                // Fall back to DBaaS annotation for older or custom quantities.
+            }
+        }
+        return integerAnnotation(annotations, "dbaas.cyfuture.com/storage-gi", 10);
     }
 
     private String internalHost(String namespace, String databaseId, String componentName) {
@@ -506,4 +908,57 @@ public class KubeBlocksClient {
         if (value == null || value.isBlank()) throw new IllegalStateException("StorageClass is not configured");
         return value;
     }
+
+    public record ClusterComponentInfo(
+            String name,
+            int replicas,
+            int shards,
+            boolean sharding,
+            Map<String, String> storage
+    ) {
+        public String storage(String volumeName) {
+            return storage.get(volumeName);
+        }
+    }
+
+    public record OpsRequestInfo(
+            String phase,
+            String progress,
+            String message,
+            Instant startedAt,
+            Instant completedAt
+    ) {}
+
+    public record ClusterObservation(
+            boolean exists,
+            String namespace,
+            String databaseId,
+            String phase,
+            int readyReplicas,
+            int expectedReplicas,
+            boolean serviceReady,
+            String message
+    ) {
+        public static ClusterObservation missing(String namespace, String databaseId) {
+            return new ClusterObservation(false, namespace, databaseId, "Missing",
+                    0, 0, false, "KubeBlocks Cluster was not found");
+        }
+
+        public boolean healthy() {
+            return exists && "Running".equalsIgnoreCase(phase)
+                    && expectedReplicas > 0
+                    && readyReplicas >= expectedReplicas
+                    && serviceReady;
+        }
+    }
+
+    public record ManagedClusterSummary(
+            String namespace,
+            String name,
+            String databaseId,
+            String project,
+            String engine,
+            String phase,
+            String message
+    ) {}
 }
