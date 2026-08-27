@@ -22,7 +22,7 @@ Each project receives one Kubernetes namespace. New projects use `dbaas-{project
 - MySQL standalone and replication
 - MongoDB standalone, replica set and sharding
 - Asynchronous provisioning with idempotency keys
-- Persistent PostgreSQL control-plane metadata managed by JPA/Hibernate
+- Persistent MySQL control-plane metadata managed by JPA/Hibernate
 - Status, progress and operation polling
 - Automatic least-privilege database and user creation
 - Unique per-database password stored in a dedicated Kubernetes Secret
@@ -106,6 +106,16 @@ Set `DBAAS_KUBECONFIG` to the real kubeconfig path, then run:
 
 ```powershell
 .\run-local.ps1
+```
+
+The metadata database is MySQL. Create the local database/user before startup:
+
+```sql
+CREATE DATABASE IF NOT EXISTS dbaas_metadata CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS 'dbaas'@'localhost' IDENTIFIED BY 'change-me';
+ALTER USER 'dbaas'@'localhost' IDENTIFIED BY 'change-me';
+GRANT ALL PRIVILEGES ON dbaas_metadata.* TO 'dbaas'@'localhost';
+FLUSH PRIVILEGES;
 ```
 
 Swagger UI:

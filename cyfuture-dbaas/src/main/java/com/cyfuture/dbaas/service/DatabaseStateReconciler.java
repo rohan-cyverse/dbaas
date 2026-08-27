@@ -14,10 +14,14 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -27,7 +31,7 @@ import java.util.Objects;
 @RequiredArgsConstructor
 @Slf4j
 public class DatabaseStateReconciler {
-    private static final long LOCK_ID = 0x0DBAA50000000001L;
+    private static final String LOCK_NAME = "cyfuture-dbaas-state-reconciler";
     private static final List<DatabaseStatus> RECONCILED_STATUSES = List.of(
             DatabaseStatus.PROVISIONING,
             DatabaseStatus.RUNNING,
@@ -39,7 +43,7 @@ public class DatabaseStateReconciler {
     private final OperationMetadataRepository operationRepository;
     private final KubeBlocksClient kubeBlocksClient;
     private final SharedGatewayService sharedGatewayService;
-    private final JdbcTemplate jdbcTemplate;
+    private final DataSource dataSource;
 
     @Value("${dbaas.state.degraded-grace-ms:30000}")
     private long degradedGraceMs;
@@ -53,14 +57,19 @@ public class DatabaseStateReconciler {
 
     @Scheduled(fixedDelayString = "${dbaas.state-reconcile-ms:10000}")
     public void reconcile() {
-        if (!tryLock()) return;
-        try {
-            for (DatabaseMetadata database : databaseRepository
-                    .findByStatusInOrderByCreatedAtAsc(RECONCILED_STATUSES)) {
-                reconcile(database);
+        try (Connection lockConnection = dataSource.getConnection()) {
+            if (!tryLock(lockConnection)) return;
+            try {
+                for (DatabaseMetadata database : databaseRepository
+                        .findByStatusInOrderByCreatedAtAsc(RECONCILED_STATUSES)) {
+                    reconcile(database);
+                }
+            } finally {
+                unlock(lockConnection);
             }
-        } finally {
-            unlock();
+        } catch (Exception exception) {
+            log.warn("Database state reconciliation could not acquire lock: {}",
+                    exception.getMessage());
         }
     }
 
@@ -252,21 +261,23 @@ public class DatabaseStateReconciler {
         return !Duration.between(start, now).minusMillis(millis).isNegative();
     }
 
-    private boolean tryLock() {
-        try {
-            return Boolean.TRUE.equals(jdbcTemplate.queryForObject(
-                    "SELECT pg_try_advisory_lock(?)", Boolean.class, LOCK_ID));
-        } catch (Exception exception) {
-            log.warn("Database state reconciliation could not acquire advisory lock: {}",
-                    exception.getMessage());
-            return false;
+    private boolean tryLock(Connection connection) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT GET_LOCK(?, 0)")) {
+            statement.setString(1, LOCK_NAME);
+            try (ResultSet result = statement.executeQuery()) {
+                return result.next() && result.getInt(1) == 1;
+            }
         }
     }
 
-    private void unlock() {
+    private void unlock(Connection connection) {
         try {
-            jdbcTemplate.queryForObject("SELECT pg_advisory_unlock(?)",
-                    Boolean.class, LOCK_ID);
+            try (PreparedStatement statement = connection.prepareStatement(
+                    "SELECT RELEASE_LOCK(?)")) {
+                statement.setString(1, LOCK_NAME);
+                statement.executeQuery();
+            }
         } catch (Exception exception) {
             log.debug("Database state reconciliation advisory unlock failed: {}",
                     exception.getMessage());

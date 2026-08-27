@@ -947,7 +947,7 @@
             "orphans"
           ]
         },
-        "description": "Lists DBaaS-managed KubeBlocks clusters that are absent from PostgreSQL metadata. The API never adopts or deletes these clusters automatically."
+        "description": "Lists DBaaS-managed KubeBlocks clusters that are absent from MySQL metadata. The API never adopts or deletes these clusters automatically."
       }
     },
     {

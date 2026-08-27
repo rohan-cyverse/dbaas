@@ -15,9 +15,12 @@ import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.time.Instant;
 import java.util.List;
 
@@ -34,6 +37,7 @@ class DatabaseStateReconcilerTest {
     private OperationMetadataRepository operationRepository;
     private KubeBlocksClient kubeBlocksClient;
     private SharedGatewayService gateway;
+    private DataSource dataSource;
     private DatabaseStateReconciler reconciler;
 
     @BeforeEach
@@ -42,10 +46,37 @@ class DatabaseStateReconcilerTest {
         operationRepository = mock(OperationMetadataRepository.class);
         kubeBlocksClient = mock(KubeBlocksClient.class);
         gateway = mock(SharedGatewayService.class);
+        dataSource = mock(DataSource.class);
         reconciler = new DatabaseStateReconciler(databaseRepository, operationRepository,
-                kubeBlocksClient, gateway, mock(JdbcTemplate.class));
+                kubeBlocksClient, gateway, dataSource);
         ReflectionTestUtils.setField(reconciler, "degradedGraceMs", 1L);
         ReflectionTestUtils.setField(reconciler, "missingGraceMs", 1L);
+    }
+
+    @Test
+    void scheduledReconcileUsesMySqlNamedLockOnOneConnection() throws Exception {
+        Connection connection = mock(Connection.class);
+        PreparedStatement lockStatement = mock(PreparedStatement.class);
+        PreparedStatement unlockStatement = mock(PreparedStatement.class);
+        ResultSet lockResult = mock(ResultSet.class);
+        ResultSet unlockResult = mock(ResultSet.class);
+        when(dataSource.getConnection()).thenReturn(connection);
+        when(connection.prepareStatement("SELECT GET_LOCK(?, 0)"))
+                .thenReturn(lockStatement);
+        when(connection.prepareStatement("SELECT RELEASE_LOCK(?)"))
+                .thenReturn(unlockStatement);
+        when(lockStatement.executeQuery()).thenReturn(lockResult);
+        when(unlockStatement.executeQuery()).thenReturn(unlockResult);
+        when(lockResult.next()).thenReturn(true);
+        when(lockResult.getInt(1)).thenReturn(1);
+        when(databaseRepository.findByStatusInOrderByCreatedAtAsc(any()))
+                .thenReturn(List.of());
+
+        reconciler.reconcile();
+
+        verify(lockStatement).setString(1, "cyfuture-dbaas-state-reconciler");
+        verify(unlockStatement).setString(1, "cyfuture-dbaas-state-reconciler");
+        verify(connection).close();
     }
 
     @Test
