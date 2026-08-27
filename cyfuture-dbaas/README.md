@@ -22,7 +22,7 @@ Each project receives one Kubernetes namespace. New projects use `dbaas-{project
 - MySQL standalone and replication
 - MongoDB standalone, replica set and sharding
 - Asynchronous provisioning with idempotency keys
-- Persistent PostgreSQL control-plane metadata with Flyway migrations
+- Persistent PostgreSQL control-plane metadata managed by JPA/Hibernate
 - Status, progress and operation polling
 - Automatic least-privilege database and user creation
 - Unique per-database password stored in a dedicated Kubernetes Secret
@@ -130,10 +130,6 @@ dbaas.gateway.port-end=31009
 ```
 
 HAProxy must accept OpenStack Proxy Protocol v2 on public database listeners. CIDR enforcement belongs on the LoadBalancer `loadBalancerSourceRanges`, not HAProxy source ACLs, because NodePort forwarding may translate the source visible to HAProxy.
-
-## Upgrade note
-
-Flyway migration `V9__remove_organization_scope.sql` removes organization tables and columns without deleting projects or databases. Since project names become globally unique, the migration stops with a clear error if two existing organizations contain projects with the same name. Rename those duplicates before upgrading.
 
 ## Postman
 
