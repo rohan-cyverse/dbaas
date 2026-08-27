@@ -146,15 +146,13 @@
         "method": "GET",
         "header": [],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/options",
+          "raw": "{{baseUrl}}/api/v1/databases/options",
           "host": [
             "{{baseUrl}}"
           ],
           "path": [
             "api",
             "v1",
-            "projects",
-            "{{project}}",
             "databases",
             "options"
           ]

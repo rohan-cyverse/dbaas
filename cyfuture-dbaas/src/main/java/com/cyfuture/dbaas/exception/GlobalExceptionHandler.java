@@ -31,7 +31,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(HttpMessageNotReadableException.class)
     ResponseEntity<Map<String, Object>> handleUnreadableBody(HttpMessageNotReadableException exception) {
         return ResponseEntity.badRequest().body(error(400, "INVALID_REQUEST_BODY", false,
-                "Invalid JSON or unsupported enum value. Check the project's /databases/options endpoint"));
+                "Invalid JSON or unsupported enum value. Check /api/v1/databases/options"));
     }
 
     @ExceptionHandler(Exception.class)

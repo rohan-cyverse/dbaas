@@ -52,10 +52,9 @@ public class DatabaseController {
     @GetMapping("/options")
     @Operation(
             summary = "Get supported database options",
-            description = "Returns engines, modes, versions and resource-size plans accepted by the create API."
+            description = "Compatibility alias for /api/v1/databases/options. Options are global and do not depend on project state."
     )
     public Map<?, ?> options(@PathVariable String project) {
-        databaseService.validateProject(project);
         return databaseService.options();
     }
 
