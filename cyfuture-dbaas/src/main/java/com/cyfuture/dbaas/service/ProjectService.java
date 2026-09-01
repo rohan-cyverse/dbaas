@@ -32,6 +32,7 @@ public class ProjectService {
     private final DatabaseMetadataRepository databaseRepository;
     private final DatabaseProperties properties;
 
+
     public ProjectResponse create(CreateProjectRequest request) {
         if (projectRepository.findByProjectName(request.name()).isPresent()) {
             throw new ApiException(HttpStatus.CONFLICT,
@@ -59,7 +60,10 @@ public class ProjectService {
 
     public List<ProjectResponse> list() {
         return projectRepository.findAllByOrderByCreatedAtDesc()
-                .stream().map(this::toResponse).toList();
+                .stream()
+                .filter(project -> project.getStatus() == ResourceStatus.ACTIVE)
+                .map(this::toResponse)
+                .toList();
     }
 
     public ProjectResponse get(String project) {
@@ -76,20 +80,48 @@ public class ProjectService {
 
     @Transactional
     public void delete(String project) {
-        ProjectMetadata metadata = requireActiveProject(project);
+
+        ProjectMetadata metadata = projectRepository
+                .findByProjectName(project)
+                .orElseThrow(() -> new ApiException(
+                        HttpStatus.NOT_FOUND,
+                        "Project " + project + " was not found"
+                ));
+
+        if (metadata.getStatus() == ResourceStatus.DELETED
+                || metadata.getStatus() == ResourceStatus.DELETING) {
+            return;
+        }
+
         List<DatabaseMetadata> databases =
                 databaseRepository.findByProjectNameOrderByCreatedAtDesc(project);
+
         List<DatabaseMetadata> activeDatabases = databases.stream()
-                .filter(database -> database.getStatus() != DatabaseStatus.DELETED)
+                .filter(database ->
+                        database.getStatus() != DatabaseStatus.DELETED)
                 .toList();
+
         if (!activeDatabases.isEmpty()) {
+
             DatabaseMetadata blocker = activeDatabases.get(0);
-            throw new ApiException(HttpStatus.CONFLICT,
+
+            throw new ApiException(
+                    HttpStatus.CONFLICT,
                     "Project cannot be deleted while database "
-                            + blocker.getDatabaseId() + " is " + blocker.getStatus());
+                            + blocker.getDatabaseId()
+                            + " is "
+                            + blocker.getStatus()
+            );
         }
-        databaseRepository.deleteAll(databases);
-        projectRepository.delete(metadata);
+
+        /*
+         * UX deletion completes here.
+         * Kubernetes cleanup happens asynchronously.
+         */
+        metadata.setStatus(ResourceStatus.DELETING);
+        metadata.setUpdatedAt(Instant.now());
+
+        projectRepository.save(metadata);
     }
 
     public ProjectMetadata requireActiveProject(String project) {

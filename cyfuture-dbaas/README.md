@@ -176,6 +176,11 @@ Set `DBAAS_KUBECONFIG` to the real kubeconfig path, then run:
 .\run-local.ps1
 ```
 
+Spring Boot also imports `.env` and `/etc/cyfuture-dbaas.env` automatically.
+`.env.example` is only a template; do not use it as the runtime env file.
+On the VM, run the service with systemd; direct `./mvnw spring-boot:run`
+will read `/etc/cyfuture-dbaas.env` when needed.
+
 The metadata database is MySQL. Create the local database/user before startup:
 
 ```sql

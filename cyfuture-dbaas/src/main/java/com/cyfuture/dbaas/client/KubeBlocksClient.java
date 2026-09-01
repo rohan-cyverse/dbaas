@@ -152,16 +152,59 @@ public class KubeBlocksClient {
                     "KubeBlocks could not delete the database: " + kubernetesMessage(exception));
         }
     }
-
     public void requestDelete(String namespace, String databaseId) {
         try {
             ensureDeletable(namespace, databaseId);
             customObjectsApi.deleteNamespacedCustomObject(
                     GROUP, VERSION, namespace, CLUSTERS, databaseId).execute();
-        } catch (io.kubernetes.client.openapi.ApiException exception) {
+        }
+
+    catch (io.kubernetes.client.openapi.ApiException exception) {
             if (exception.getCode() == 404) return;
             throw new ApiException(HttpStatus.BAD_GATEWAY,
                     "KubeBlocks could not delete the database: " + kubernetesMessage(exception));
+        }
+    }
+
+    public void requestNamespaceDelete(String namespace) {
+        try {
+
+            coreV1Api.deleteNamespace(namespace).execute();
+
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+
+            if (exception.getCode() == 404) {
+                return;
+            }
+
+            throw new ApiException(
+                    HttpStatus.BAD_GATEWAY,
+                    "Could not request deletion of namespace "
+                            + namespace + ": "
+                            + kubernetesMessage(exception)
+            );
+        }
+    }
+
+    public boolean namespaceExists(String namespace) {
+        try {
+
+            coreV1Api.readNamespace(namespace).execute();
+
+            return true;
+
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+
+            if (exception.getCode() == 404) {
+                return false;
+            }
+
+            throw new ApiException(
+                    HttpStatus.BAD_GATEWAY,
+                    "Could not verify namespace "
+                            + namespace + ": "
+                            + kubernetesMessage(exception)
+            );
         }
     }
 

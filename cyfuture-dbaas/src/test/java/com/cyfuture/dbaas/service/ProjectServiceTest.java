@@ -27,13 +27,19 @@ class ProjectServiceTest {
     private ProjectMetadataRepository projectRepository;
     private DatabaseMetadataRepository databaseRepository;
     private ProjectService service;
+    private DatabaseProperties properties;
 
     @BeforeEach
     void setUp() {
         projectRepository = mock(ProjectMetadataRepository.class);
         databaseRepository = mock(DatabaseMetadataRepository.class);
-        service = new ProjectService(projectRepository, databaseRepository,
-                new DatabaseProperties());
+        properties = mock(DatabaseProperties.class);
+        service = new ProjectService(
+                projectRepository,
+                databaseRepository,
+                properties
+        );
+        when(properties.getNamespacePrefix()).thenReturn("dbaas-");
         when(projectRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
     }
 
@@ -61,7 +67,7 @@ class ProjectServiceTest {
     }
 
     @Test
-    void projectDeletionRemovesDeletedDatabaseMetadata() {
+    void projectDeletionMarksProjectDeletingAfterDatabasesAreDeleted() {
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectName("orders");
         project.setStatus(ResourceStatus.ACTIVE);
@@ -72,8 +78,8 @@ class ProjectServiceTest {
 
         service.delete("orders");
 
-        verify(databaseRepository).deleteAll(List.of(deleted));
-        verify(projectRepository).delete(project);
+        assertEquals(ResourceStatus.DELETING, project.getStatus());
+        verify(projectRepository).save(project);
     }
 
     private DatabaseMetadata database(DatabaseStatus status) {
