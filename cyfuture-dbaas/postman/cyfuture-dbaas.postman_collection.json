@@ -45,6 +45,14 @@
     {
       "key": "newStorageSize",
       "value": "30Gi"
+    },
+    {
+      "key": "databaseStatusUrl",
+      "value": ""
+    },
+    {
+      "key": "xRequestId",
+      "value": ""
     }
   ],
   "item": [
@@ -56,6 +64,10 @@
           {
             "key": "Content-Type",
             "value": "application/json"
+          },
+          {
+            "key": "X-Request-Id",
+            "value": "{{xRequestId}}"
           }
         ],
         "body": {
@@ -79,7 +91,12 @@
       "name": "List Projects",
       "request": {
         "method": "GET",
-        "header": [],
+        "header": [
+          {
+            "key": "X-Request-Id",
+            "value": "{{xRequestId}}"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/api/v1/projects",
           "host": [
@@ -97,7 +114,12 @@
       "name": "Get Project",
       "request": {
         "method": "GET",
-        "header": [],
+        "header": [
+          {
+            "key": "X-Request-Id",
+            "value": "{{xRequestId}}"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/api/v1/projects/{{project}}",
           "host": [
@@ -120,6 +142,10 @@
           {
             "key": "Content-Type",
             "value": "application/json"
+          },
+          {
+            "key": "X-Request-Id",
+            "value": "{{xRequestId}}"
           }
         ],
         "body": {
@@ -144,7 +170,12 @@
       "name": "Database Options",
       "request": {
         "method": "GET",
-        "header": [],
+        "header": [
+          {
+            "key": "X-Request-Id",
+            "value": "{{xRequestId}}"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/api/v1/databases/options",
           "host": [
@@ -172,10 +203,12 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Smooth-flow links returned', function () {",
+                  "pm.test('Create response has operation and database status links', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.databaseStatusUrl).to.be.a('string');",
                   "  pm.expect(body.operationUrl).to.be.a('string');",
                   "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
@@ -183,8 +216,9 @@
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('operationUrl', body.operationUrl || body.statusUrl);",
                   "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
+                  "  pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -201,6 +235,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
               }
             ],
             "body": {
@@ -232,18 +270,22 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Smooth-flow links returned', function () {",
+                  "pm.test('Create response has operation and database status links', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.databaseStatusUrl).to.be.a('string');",
                   "  pm.expect(body.operationUrl).to.be.a('string');",
+                  "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('operationUrl', body.operationUrl || body.statusUrl);",
                   "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
+                  "  pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -260,6 +302,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
               }
             ],
             "body": {
@@ -291,18 +337,22 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Smooth-flow links returned', function () {",
+                  "pm.test('Create response has operation and database status links', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.databaseStatusUrl).to.be.a('string');",
                   "  pm.expect(body.operationUrl).to.be.a('string');",
+                  "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('operationUrl', body.operationUrl || body.statusUrl);",
                   "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
+                  "  pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -319,6 +369,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
               }
             ],
             "body": {
@@ -350,18 +404,22 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Smooth-flow links returned', function () {",
+                  "pm.test('Create response has operation and database status links', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.databaseStatusUrl).to.be.a('string');",
                   "  pm.expect(body.operationUrl).to.be.a('string');",
+                  "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('operationUrl', body.operationUrl || body.statusUrl);",
                   "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
+                  "  pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -378,6 +436,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
               }
             ],
             "body": {
@@ -409,18 +471,22 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Smooth-flow links returned', function () {",
+                  "pm.test('Create response has operation and database status links', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.databaseStatusUrl).to.be.a('string');",
                   "  pm.expect(body.operationUrl).to.be.a('string');",
+                  "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('operationUrl', body.operationUrl || body.statusUrl);",
                   "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
+                  "  pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -437,6 +503,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
               }
             ],
             "body": {
@@ -468,18 +538,22 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Smooth-flow links returned', function () {",
+                  "pm.test('Create response has operation and database status links', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.databaseStatusUrl).to.be.a('string');",
                   "  pm.expect(body.operationUrl).to.be.a('string');",
+                  "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('operationUrl', body.operationUrl || body.statusUrl);",
                   "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
+                  "  pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -496,6 +570,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
               }
             ],
             "body": {
@@ -527,18 +605,22 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Smooth-flow links returned', function () {",
+                  "pm.test('Create response has operation and database status links', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.databaseStatusUrl).to.be.a('string');",
                   "  pm.expect(body.operationUrl).to.be.a('string');",
+                  "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('operationUrl', body.operationUrl || body.statusUrl);",
                   "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
+                  "  pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -555,6 +637,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
               }
             ],
             "body": {
@@ -583,7 +669,12 @@
       "name": "List Project Databases",
       "request": {
         "method": "GET",
-        "header": [],
+        "header": [
+          {
+            "key": "X-Request-Id",
+            "value": "{{xRequestId}}"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases?page=0&size=20&sort=createdAt&direction=desc",
           "host": [
@@ -621,7 +712,12 @@
       "name": "Get Database",
       "request": {
         "method": "GET",
-        "header": [],
+        "header": [
+          {
+            "key": "X-Request-Id",
+            "value": "{{xRequestId}}"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}",
           "host": [
@@ -659,7 +755,12 @@
       "name": "Get Operation",
       "request": {
         "method": "GET",
-        "header": [],
+        "header": [
+          {
+            "key": "X-Request-Id",
+            "value": "{{xRequestId}}"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/operations/{{operationId}}",
           "host": [
@@ -709,9 +810,19 @@
               "script": {
                 "exec": [
                   "pm.test('Operation accepted', function () { pm.response.to.have.status(202); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Async operation contract is present', function () {",
+                  "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.databaseId).to.be.a('string');",
+                  "  pm.expect(body.status).to.be.a('string');",
+                  "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+                  "});",
                   "if (pm.response.code === 202) {",
-                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl || body.operationUrl);",
+                  "  if (body.databaseStatusUrl) pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -728,6 +839,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
               }
             ],
             "body": {
@@ -759,9 +874,19 @@
               "script": {
                 "exec": [
                   "pm.test('Operation accepted', function () { pm.response.to.have.status(202); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Async operation contract is present', function () {",
+                  "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.databaseId).to.be.a('string');",
+                  "  pm.expect(body.status).to.be.a('string');",
+                  "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+                  "});",
                   "if (pm.response.code === 202) {",
-                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl || body.operationUrl);",
+                  "  if (body.databaseStatusUrl) pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -778,6 +903,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
               }
             ],
             "body": {
@@ -809,9 +938,19 @@
               "script": {
                 "exec": [
                   "pm.test('Operation accepted', function () { pm.response.to.have.status(202); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Async operation contract is present', function () {",
+                  "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.databaseId).to.be.a('string');",
+                  "  pm.expect(body.status).to.be.a('string');",
+                  "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+                  "});",
                   "if (pm.response.code === 202) {",
-                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl || body.operationUrl);",
+                  "  if (body.databaseStatusUrl) pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -828,6 +967,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
               }
             ],
             "body": {
@@ -859,9 +1002,19 @@
               "script": {
                 "exec": [
                   "pm.test('Operation accepted', function () { pm.response.to.have.status(202); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Async operation contract is present', function () {",
+                  "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.databaseId).to.be.a('string');",
+                  "  pm.expect(body.status).to.be.a('string');",
+                  "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+                  "});",
                   "if (pm.response.code === 202) {",
-                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl || body.operationUrl);",
+                  "  if (body.databaseStatusUrl) pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -878,6 +1031,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
               }
             ],
             "body": {
@@ -909,9 +1066,19 @@
               "script": {
                 "exec": [
                   "pm.test('Operation accepted', function () { pm.response.to.have.status(202); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Async operation contract is present', function () {",
+                  "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.databaseId).to.be.a('string');",
+                  "  pm.expect(body.status).to.be.a('string');",
+                  "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+                  "});",
                   "if (pm.response.code === 202) {",
-                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl || body.operationUrl);",
+                  "  if (body.databaseStatusUrl) pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -928,6 +1095,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
               }
             ],
             "body": {
@@ -957,7 +1128,12 @@
       "name": "Reconciliation - Orphans",
       "request": {
         "method": "GET",
-        "header": [],
+        "header": [
+          {
+            "key": "X-Request-Id",
+            "value": "{{xRequestId}}"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/api/v1/reconciliation/orphans",
           "host": [
@@ -977,7 +1153,12 @@
       "name": "List Database Operations",
       "request": {
         "method": "GET",
-        "header": [],
+        "header": [
+          {
+            "key": "X-Request-Id",
+            "value": "{{xRequestId}}"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/operations?page=0&size=20&sort=createdAt&direction=desc",
           "host": [
@@ -1017,7 +1198,12 @@
       "name": "Get Connection",
       "request": {
         "method": "GET",
-        "header": [],
+        "header": [
+          {
+            "key": "X-Request-Id",
+            "value": "{{xRequestId}}"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/connection",
           "host": [
@@ -1058,9 +1244,20 @@
           "listen": "test",
           "script": {
             "exec": [
+              "pm.test('Operation accepted', function () { pm.response.to.have.status(202); });",
+              "const body = pm.response.json();",
+              "pm.test('Async operation contract is present', function () {",
+              "  pm.expect(body.operationId).to.be.a('string');",
+              "  pm.expect(body.databaseId).to.be.a('string');",
+              "  pm.expect(body.status).to.be.a('string');",
+              "  pm.expect(body.statusUrl).to.be.a('string');",
+              "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+              "});",
               "if (pm.response.code === 202) {",
-              "  const body = pm.response.json();",
+              "  pm.collectionVariables.set('databaseId', body.databaseId);",
               "  pm.collectionVariables.set('operationId', body.operationId);",
+              "  pm.collectionVariables.set('operationUrl', body.statusUrl || body.operationUrl);",
+              "  if (body.databaseStatusUrl) pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
               "}"
             ],
             "type": "text/javascript"
@@ -1069,7 +1266,12 @@
       ],
       "request": {
         "method": "POST",
-        "header": [],
+        "header": [
+          {
+            "key": "X-Request-Id",
+            "value": "{{xRequestId}}"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/credentials/rotate",
           "host": [
@@ -1092,7 +1294,12 @@
       "name": "Disable Deletion Protection",
       "request": {
         "method": "PUT",
-        "header": [],
+        "header": [
+          {
+            "key": "X-Request-Id",
+            "value": "{{xRequestId}}"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/deletion-protection?enabled=false",
           "host": [
@@ -1120,7 +1327,12 @@
       "name": "Enable Deletion Protection",
       "request": {
         "method": "PUT",
-        "header": [],
+        "header": [
+          {
+            "key": "X-Request-Id",
+            "value": "{{xRequestId}}"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/deletion-protection?enabled=true",
           "host": [
@@ -1148,7 +1360,12 @@
       "name": "Delete Database",
       "request": {
         "method": "DELETE",
-        "header": [],
+        "header": [
+          {
+            "key": "X-Request-Id",
+            "value": "{{xRequestId}}"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}",
           "host": [
@@ -1163,13 +1380,43 @@
             "{{databaseId}}"
           ]
         }
-      }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Operation accepted', function () { pm.response.to.have.status(202); });",
+              "const body = pm.response.json();",
+              "pm.test('Async operation contract is present', function () {",
+              "  pm.expect(body.operationId).to.be.a('string');",
+              "  pm.expect(body.databaseId).to.be.a('string');",
+              "  pm.expect(body.status).to.be.a('string');",
+              "  pm.expect(body.statusUrl).to.be.a('string');",
+              "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+              "});",
+              "if (pm.response.code === 202) {",
+              "  pm.collectionVariables.set('databaseId', body.databaseId);",
+              "  pm.collectionVariables.set('operationId', body.operationId);",
+              "  pm.collectionVariables.set('operationUrl', body.statusUrl || body.operationUrl);",
+              "  if (body.databaseStatusUrl) pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
     },
     {
       "name": "Delete Project (only when empty)",
       "request": {
         "method": "DELETE",
-        "header": [],
+        "header": [
+          {
+            "key": "X-Request-Id",
+            "value": "{{xRequestId}}"
+          }
+        ],
         "url": {
           "raw": "{{baseUrl}}/api/v1/projects/{{project}}",
           "host": [
@@ -1182,6 +1429,583 @@
             "{{project}}"
           ]
         }
+      }
+    },
+    {
+      "name": "Frontend Contract and Recovery Tests",
+      "description": "Smoke tests for frontend-safe responses, operation recovery after refresh, validation errors and pagination. Run these against an existing project/database after provisioning at least one database.",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Health endpoint responds', function () { pm.expect(pm.response.code).to.be.oneOf([200, 503]); });",
+                  "pm.test('Request id header is returned', function () { pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string'); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Databases - Paginated Contract",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases?page=0&size=20&sort=createdAt&direction=desc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "0"
+                },
+                {
+                  "key": "size",
+                  "value": "20"
+                },
+                {
+                  "key": "sort",
+                  "value": "createdAt"
+                },
+                {
+                  "key": "direction",
+                  "value": "desc"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Page returned', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Page contract is present', function () {",
+                  "  pm.expect(body.items).to.be.an('array');",
+                  "  pm.expect(body.page).to.be.a('number');",
+                  "  pm.expect(body.size).to.be.a('number');",
+                  "  pm.expect(body.totalItems).to.be.a('number');",
+                  "  pm.expect(body.totalPages).to.be.a('number');",
+                  "});",
+                  "pm.test('Database rows are frontend safe', function () {",
+                  "  body.items.forEach(item => {",
+                  "    pm.expect(item.privateEndpoint).to.be.undefined;",
+                  "    pm.expect(item.password).to.be.undefined;",
+                  "    if (item.publicEndpoint) pm.expect(item.publicEndpoint.ready).to.be.a('boolean');",
+                  "  });",
+                  "});",
+                  "if (body.items.length && !pm.collectionVariables.get('databaseId')) pm.collectionVariables.set('databaseId', body.items[0].databaseId);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Database - Frontend Safe Status",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases",
+                "{{databaseId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Database status returned', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Status has health fields and no credentials/private endpoint', function () {",
+                  "  pm.expect(body.status).to.be.a('string');",
+                  "  pm.expect(body.stage).to.be.a('string');",
+                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "  pm.expect(body.privateEndpoint).to.be.undefined;",
+                  "  pm.expect(body.password).to.be.undefined;",
+                  "});",
+                  "pm.test('Public readiness is explicit boolean', function () { if (body.publicEndpoint) pm.expect(body.publicEndpoint.ready).to.be.a('boolean'); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Operations - Recovery After Refresh",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/operations?page=0&size=20&sort=createdAt&direction=desc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases",
+                "{{databaseId}}",
+                "operations"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "0"
+                },
+                {
+                  "key": "size",
+                  "value": "20"
+                },
+                {
+                  "key": "sort",
+                  "value": "createdAt"
+                },
+                {
+                  "key": "direction",
+                  "value": "desc"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Operations page returned', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Operations page contract is present', function () { pm.expect(body.items).to.be.an('array'); });",
+                  "if (body.items.length) {",
+                  "  const op = body.items.find(item => !item.terminal) || body.items[0];",
+                  "  pm.collectionVariables.set('operationId', op.operationId);",
+                  "  pm.collectionVariables.set('operationUrl', op.statusUrl);",
+                  "}",
+                  "pm.test('Operation rows contain polling fields', function () {",
+                  "  body.items.forEach(item => {",
+                  "    pm.expect(item.operationId).to.be.a('string');",
+                  "    pm.expect(item.status).to.be.a('string');",
+                  "    pm.expect(item.terminal).to.be.a('boolean');",
+                  "    pm.expect(item.statusUrl).to.be.a('string');",
+                  "    pm.expect(item.suggestedPollingIntervalSeconds).to.be.a('number');",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Poll Saved Operation URL",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}{{operationUrl}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "{{operationUrl}}"
+              ]
+            },
+            "description": "Uses the operationUrl saved by create/lifecycle/list operations. Poll manually until terminal=true."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Operation status returned', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Polling contract is stable', function () {",
+                  "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.databaseId).to.be.a('string');",
+                  "  pm.expect(body.status).to.be.a('string');",
+                  "  pm.expect(body.terminal).to.be.a('boolean');",
+                  "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+                  "  if (body.status === 'FAILED') pm.expect(body.failureReason).to.be.a('string');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Connection - Credentials Only Endpoint",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/connection",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases",
+                "{{databaseId}}",
+                "connection"
+              ]
+            },
+            "description": "Run only after database status is RUNNING and stage is READY."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Connection either ready or clearly not ready', function () { pm.expect(pm.response.code).to.be.oneOf([200, 409]); });",
+                  "const body = pm.response.json();",
+                  "if (pm.response.code === 200) {",
+                  "  pm.expect(body.password).to.be.a('string');",
+                  "  pm.expect(body.publicConnectionUri).to.be.a('string');",
+                  "  pm.expect(body.privateConnectionUri).to.be.undefined;",
+                  "  pm.expect(body.privateEndpoint).to.be.undefined;",
+                  "} else {",
+                  "  pm.expect(body.code).to.be.a('string');",
+                  "  pm.expect(body.requestId).to.be.a('string');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Validation - Missing Idempotency Key",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"bad-db\",\"engine\":\"POSTGRESQL\",\"mode\":\"STANDALONE\",\"version\":\"17.5.0\",\"size\":\"C1G1\",\"storageGi\":10,\"replicas\":1,\"shards\":0,\"deletionProtection\":true}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Error status returned', function () { pm.expect(pm.response.code).to.be.oneOf([400, 404, 409, 422]); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Standard error contract is present', function () {",
+                  "  pm.expect(body.code).to.be.a('string');",
+                  "  pm.expect(body.message).to.be.a('string');",
+                  "  pm.expect(body.fieldErrors).to.be.an('array');",
+                  "  pm.expect(body.requestId).to.be.a('string');",
+                  "  pm.expect(pm.response.headers.get('X-Request-Id')).to.eql(body.requestId);",
+                  "});",
+                  "pm.test('No stack trace or obvious secrets are exposed', function () {",
+                  "  const text = pm.response.text();",
+                  "  pm.expect(text).to.not.include('java.lang');",
+                  "  pm.expect(text).to.not.match(/password\\s*[:=]\\s*[^\\s,;\"']+/i);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Validation - Invalid Database Name",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "invalid-name-{{$timestamp}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"Bad_Name\",\"engine\":\"POSTGRESQL\",\"mode\":\"STANDALONE\",\"version\":\"17.5.0\",\"size\":\"C1G1\",\"storageGi\":10,\"replicas\":1,\"shards\":0,\"deletionProtection\":true}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Error status returned', function () { pm.expect(pm.response.code).to.be.oneOf([400, 404, 409, 422]); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Standard error contract is present', function () {",
+                  "  pm.expect(body.code).to.be.a('string');",
+                  "  pm.expect(body.message).to.be.a('string');",
+                  "  pm.expect(body.fieldErrors).to.be.an('array');",
+                  "  pm.expect(body.requestId).to.be.a('string');",
+                  "  pm.expect(pm.response.headers.get('X-Request-Id')).to.eql(body.requestId);",
+                  "});",
+                  "pm.test('No stack trace or obvious secrets are exposed', function () {",
+                  "  const text = pm.response.text();",
+                  "  pm.expect(text).to.not.include('java.lang');",
+                  "  pm.expect(text).to.not.match(/password\\s*[:=]\\s*[^\\s,;\"']+/i);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Validation - Engine Constraint",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "engine-constraint-{{$timestamp}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"pg-shards-bad\",\"engine\":\"POSTGRESQL\",\"mode\":\"STANDALONE\",\"version\":\"17.5.0\",\"size\":\"C1G1\",\"storageGi\":10,\"replicas\":1,\"shards\":2,\"deletionProtection\":true}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Error status returned', function () { pm.expect(pm.response.code).to.be.oneOf([400, 404, 409, 422]); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Standard error contract is present', function () {",
+                  "  pm.expect(body.code).to.be.a('string');",
+                  "  pm.expect(body.message).to.be.a('string');",
+                  "  pm.expect(body.fieldErrors).to.be.an('array');",
+                  "  pm.expect(body.requestId).to.be.a('string');",
+                  "  pm.expect(pm.response.headers.get('X-Request-Id')).to.eql(body.requestId);",
+                  "});",
+                  "pm.test('No stack trace or obvious secrets are exposed', function () {",
+                  "  const text = pm.response.text();",
+                  "  pm.expect(text).to.not.include('java.lang');",
+                  "  pm.expect(text).to.not.match(/password\\s*[:=]\\s*[^\\s,;\"']+/i);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Validation - Bad Sort Parameter",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "{{xRequestId}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases?page=0&size=20&sort=privateEndpoint&direction=desc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "0"
+                },
+                {
+                  "key": "size",
+                  "value": "20"
+                },
+                {
+                  "key": "sort",
+                  "value": "privateEndpoint"
+                },
+                {
+                  "key": "direction",
+                  "value": "desc"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Error status returned', function () { pm.expect(pm.response.code).to.be.oneOf([400, 404, 409, 422]); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Standard error contract is present', function () {",
+                  "  pm.expect(body.code).to.be.a('string');",
+                  "  pm.expect(body.message).to.be.a('string');",
+                  "  pm.expect(body.fieldErrors).to.be.an('array');",
+                  "  pm.expect(body.requestId).to.be.a('string');",
+                  "  pm.expect(pm.response.headers.get('X-Request-Id')).to.eql(body.requestId);",
+                  "});",
+                  "pm.test('No stack trace or obvious secrets are exposed', function () {",
+                  "  const text = pm.response.text();",
+                  "  pm.expect(text).to.not.include('java.lang');",
+                  "  pm.expect(text).to.not.match(/password\\s*[:=]\\s*[^\\s,;\"']+/i);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.collectionVariables.set('xRequestId', 'req-' + Date.now() + '-' + Math.floor(Math.random() * 100000));"
+        ]
       }
     }
   ]
