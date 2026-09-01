@@ -101,6 +101,7 @@ public class DatabaseOperationService {
                 hash, OperationType.STORAGE_EXPANSION);
         if (operation.getRequestHash() != null) return operationMapper.toResponse(operation);
 
+        validateStorageLimit(request.newStorageSize());
         DatabaseMetadata database = operationDatabase(project, databaseId);
         KubeBlocksClient.ClusterComponentInfo component = kubeBlocksClient.requireComponent(
                 database.getNamespaceName(), databaseId, request.componentName());
@@ -229,10 +230,26 @@ public class DatabaseOperationService {
     }
 
     private void validateResources(VerticalScalingRequest request) {
-        if (cpuMillis(request.requests().cpu()) > cpuMillis(request.limits().cpu())) {
+        int requestedCpu = cpuMillis(request.requests().cpu());
+        int limitedCpu = cpuMillis(request.limits().cpu());
+        int requestedMemory = memoryMi(request.requests().memory());
+        int limitedMemory = memoryMi(request.limits().memory());
+        if (requestedCpu <= 0 || limitedCpu <= 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "CPU quantities must be greater than zero");
+        }
+        if (requestedMemory <= 0 || limitedMemory <= 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Memory quantities must be greater than zero");
+        }
+        if (requestedCpu > 64_000 || limitedCpu > 64_000) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "CPU quantities cannot exceed 64 cores");
+        }
+        if (requestedMemory > 262_144 || limitedMemory > 262_144) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Memory quantities cannot exceed 256Gi");
+        }
+        if (requestedCpu > limitedCpu) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "requests.cpu cannot exceed limits.cpu");
         }
-        if (memoryMi(request.requests().memory()) > memoryMi(request.limits().memory())) {
+        if (requestedMemory > limitedMemory) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "requests.memory cannot exceed limits.memory");
         }
     }
@@ -247,6 +264,23 @@ public class DatabaseOperationService {
         return value.endsWith("Gi")
                 ? Integer.parseInt(value.substring(0, value.length() - 2)) * 1024
                 : Integer.parseInt(value.substring(0, value.length() - 2));
+    }
+
+    private void validateStorageLimit(String quantity) {
+        if (storageGi(quantity) > 2048) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "newStorageSize cannot exceed 2048Gi");
+        }
+    }
+
+    private int storageGi(String quantity) {
+        if (quantity.endsWith("Ti")) {
+            return Integer.parseInt(quantity.substring(0, quantity.length() - 2)) * 1024;
+        }
+        if (quantity.endsWith("Gi")) {
+            return Integer.parseInt(quantity.substring(0, quantity.length() - 2));
+        }
+        return Math.max(1, Integer.parseInt(quantity.substring(0, quantity.length() - 2)) / 1024);
     }
 
     private void validateIdempotencyKey(String idempotencyKey) {

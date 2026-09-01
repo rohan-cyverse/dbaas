@@ -1,13 +1,17 @@
 package com.cyfuture.dbaas.service;
 
 import com.cyfuture.dbaas.dto.OperationResponse;
+import com.cyfuture.dbaas.dto.PageResponse;
 import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.mapper.OperationMapper;
+import com.cyfuture.dbaas.model.OperationStatus;
+import com.cyfuture.dbaas.model.OperationType;
 import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
+import java.util.Comparator;
 import java.util.List;
 
 @Service
@@ -33,10 +37,58 @@ public class OperationService {
                                 + databaseId + " in project " + project)));
     }
 
-    public List<OperationResponse> listForDatabase(String project,
-                                                   String databaseId) {
-        return operationRepository
+    public PageResponse<OperationResponse> listForDatabase(String project,
+                                                           String databaseId,
+                                                           int page,
+                                                           int size,
+                                                           OperationStatus status,
+                                                           OperationType type,
+                                                           String sort,
+                                                           String direction) {
+        int safePage = Math.max(0, page);
+        int safeSize = Math.min(Math.max(1, size), 100);
+        validateDirection(direction);
+        Comparator<com.cyfuture.dbaas.entity.OperationMetadata> comparator = operationComparator(sort);
+        if ("asc".equalsIgnoreCase(direction)) {
+            comparator = comparator.reversed();
+        }
+        List<OperationResponse> filtered = operationRepository
                 .findByDatabaseIdAndProjectNameOrderByCreatedAtDesc(databaseId, project)
-                .stream().map(operationMapper::toResponse).toList();
+                .stream()
+                .filter(operation -> status == null || operation.getStatus() == status)
+                .filter(operation -> type == null || operation.getType() == type)
+                .sorted(comparator)
+                .map(operationMapper::toResponse)
+                .toList();
+        int from = Math.min(safePage * safeSize, filtered.size());
+        int to = Math.min(from + safeSize, filtered.size());
+        int totalPages = filtered.isEmpty() ? 0
+                : (int) Math.ceil((double) filtered.size() / safeSize);
+        return new PageResponse<>(filtered.subList(from, to), safePage, safeSize,
+                filtered.size(), totalPages);
+    }
+
+    private Comparator<com.cyfuture.dbaas.entity.OperationMetadata> operationComparator(String sort) {
+        Comparator<com.cyfuture.dbaas.entity.OperationMetadata> comparator =
+                switch (sort == null ? "createdAt" : sort) {
+                    case "status" -> Comparator.comparing(operation -> String.valueOf(operation.getStatus()));
+                    case "type" -> Comparator.comparing(operation -> String.valueOf(operation.getType()));
+                    case "completedAt" -> Comparator.comparing(
+                            com.cyfuture.dbaas.entity.OperationMetadata::getCompletedAt,
+                            Comparator.nullsLast(Comparator.naturalOrder()));
+                    case "createdAt" -> Comparator.comparing(
+                            com.cyfuture.dbaas.entity.OperationMetadata::getCreatedAt,
+                            Comparator.nullsLast(Comparator.naturalOrder()));
+                    default -> throw new ApiException(HttpStatus.BAD_REQUEST,
+                            "Unsupported sort value. Use createdAt, completedAt, status or type");
+                };
+        return comparator.reversed();
+    }
+
+    private void validateDirection(String direction) {
+        if (!"asc".equalsIgnoreCase(direction) && !"desc".equalsIgnoreCase(direction)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "Unsupported direction value. Use asc or desc");
+        }
     }
 }

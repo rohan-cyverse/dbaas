@@ -4,12 +4,16 @@ import com.cyfuture.dbaas.dto.ConnectionResponse;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
 import com.cyfuture.dbaas.dto.CreateDatabaseResponse;
 import com.cyfuture.dbaas.dto.DatabaseResponse;
-import com.cyfuture.dbaas.dto.DeleteDatabaseResponse;
 import com.cyfuture.dbaas.dto.HorizontalScalingRequest;
 import com.cyfuture.dbaas.dto.OperationResponse;
+import com.cyfuture.dbaas.dto.PageResponse;
 import com.cyfuture.dbaas.dto.RestartRequest;
 import com.cyfuture.dbaas.dto.StorageExpansionRequest;
 import com.cyfuture.dbaas.dto.VerticalScalingRequest;
+import com.cyfuture.dbaas.model.DatabaseEngine;
+import com.cyfuture.dbaas.model.DatabaseStatus;
+import com.cyfuture.dbaas.model.OperationStatus;
+import com.cyfuture.dbaas.model.OperationType;
 import com.cyfuture.dbaas.service.ClientIpResolver;
 import com.cyfuture.dbaas.service.DatabaseOperationService;
 import com.cyfuture.dbaas.service.DatabaseService;
@@ -33,7 +37,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -84,14 +87,22 @@ public class DatabaseController {
                 .status(HttpStatus.ACCEPTED)
                 .header("Location", response.statusUrl())
                 .header("Operation-Location", response.operationUrl())
-                .header("Retry-After", "5")
+                .header("Retry-After", String.valueOf(response.suggestedPollingIntervalSeconds()))
                 .body(response);
     }
 
     @GetMapping
     @Operation(summary = "List project databases")
-    public List<DatabaseResponse> list(@PathVariable String project) {
-        return databaseService.list(project);
+    public PageResponse<DatabaseResponse> list(
+            @PathVariable String project,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) DatabaseStatus status,
+            @RequestParam(required = false) DatabaseEngine engine,
+            @RequestParam(defaultValue = "createdAt") String sort,
+            @RequestParam(defaultValue = "desc") String direction
+    ) {
+        return databaseService.list(project, page, size, status, engine, sort, direction);
     }
 
     @GetMapping("/{databaseId}")
@@ -108,15 +119,27 @@ public class DatabaseController {
 
     @GetMapping("/{databaseId}/operations")
     @Operation(summary = "List operations for a database")
-    public List<OperationResponse> operations(
+    public PageResponse<OperationResponse> operations(
             @PathVariable String project,
-            @PathVariable String databaseId
+            @PathVariable String databaseId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) OperationStatus status,
+            @RequestParam(required = false) OperationType type,
+            @RequestParam(defaultValue = "createdAt") String sort,
+            @RequestParam(defaultValue = "desc") String direction
     ) {
-        databaseService.get(project, databaseId);
+        databaseService.validateDatabaseAccess(project, databaseId);
 
         return operationService.listForDatabase(
                 project,
-                databaseId
+                databaseId,
+                page,
+                size,
+                status,
+                type,
+                sort,
+                direction
         );
     }
 
@@ -138,9 +161,9 @@ public class DatabaseController {
                                     value = "{\"componentName\":\"postgresql\",\"requests\":{\"cpu\":\"1\",\"memory\":\"2Gi\"},\"limits\":{\"cpu\":\"2\",\"memory\":\"4Gi\"}}")))
             @Valid @RequestBody VerticalScalingRequest request
     ) {
-        return ResponseEntity.status(HttpStatus.ACCEPTED)
-                .body(databaseOperationService.verticalScaling(project, databaseId,
-                        idempotencyKey, request));
+        OperationResponse response = databaseOperationService.verticalScaling(project, databaseId,
+                idempotencyKey, request);
+        return accepted(response);
     }
 
     @PostMapping("/{databaseId}/horizontal-scaling")
@@ -161,9 +184,9 @@ public class DatabaseController {
                                     value = "{\"componentName\":\"postgresql\",\"targetReplicas\":3}")))
             @Valid @RequestBody HorizontalScalingRequest request
     ) {
-        return ResponseEntity.status(HttpStatus.ACCEPTED)
-                .body(databaseOperationService.horizontalScaling(project, databaseId,
-                        idempotencyKey, request));
+        OperationResponse response = databaseOperationService.horizontalScaling(project, databaseId,
+                idempotencyKey, request);
+        return accepted(response);
     }
 
     @PostMapping("/{databaseId}/storage-expansion")
@@ -184,9 +207,9 @@ public class DatabaseController {
                                     value = "{\"componentName\":\"postgresql\",\"volumeName\":\"data\",\"newStorageSize\":\"30Gi\"}")))
             @Valid @RequestBody StorageExpansionRequest request
     ) {
-        return ResponseEntity.status(HttpStatus.ACCEPTED)
-                .body(databaseOperationService.storageExpansion(project, databaseId,
-                        idempotencyKey, request));
+        OperationResponse response = databaseOperationService.storageExpansion(project, databaseId,
+                idempotencyKey, request);
+        return accepted(response);
     }
 
     @PostMapping("/{databaseId}/restart")
@@ -205,11 +228,11 @@ public class DatabaseController {
                             mediaType = "application/json",
                             examples = @io.swagger.v3.oas.annotations.media.ExampleObject(
                                     value = "{\"componentName\":\"postgresql\"}")))
-            @RequestBody(required = false) RestartRequest request
+            @Valid @RequestBody(required = false) RestartRequest request
     ) {
-        return ResponseEntity.status(HttpStatus.ACCEPTED)
-                .body(databaseOperationService.restart(project, databaseId,
-                        idempotencyKey, request == null ? new RestartRequest(null) : request));
+        OperationResponse response = databaseOperationService.restart(project, databaseId,
+                idempotencyKey, request == null ? new RestartRequest(null) : request);
+        return accepted(response);
     }
 
     @GetMapping("/{databaseId}/connection")
@@ -243,14 +266,7 @@ public class DatabaseController {
             @PathVariable String project,
             @PathVariable String databaseId
     ) {
-        return ResponseEntity
-                .status(HttpStatus.ACCEPTED)
-                .body(
-                        databaseService.rotateCredentials(
-                                project,
-                                databaseId
-                        )
-                );
+        return accepted(databaseService.rotateCredentials(project, databaseId));
     }
 
     @PutMapping("/{databaseId}/deletion-protection")
@@ -272,17 +288,18 @@ public class DatabaseController {
             summary = "Delete a database",
             description = "Deletion is rejected while deletion protection is enabled."
     )
-    public ResponseEntity<DeleteDatabaseResponse> delete(
+    public ResponseEntity<OperationResponse> delete(
             @PathVariable String project,
             @PathVariable String databaseId
     ) {
-        return ResponseEntity
-                .status(HttpStatus.ACCEPTED)
-                .body(
-                        databaseService.delete(
-                                project,
-                                databaseId
-                        )
-                );
+        return accepted(databaseService.delete(project, databaseId));
+    }
+
+    private ResponseEntity<OperationResponse> accepted(OperationResponse response) {
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .header("Location", response.statusUrl())
+                .header("Operation-Location", response.statusUrl())
+                .header("Retry-After", String.valueOf(response.suggestedPollingIntervalSeconds()))
+                .body(response);
     }
 }

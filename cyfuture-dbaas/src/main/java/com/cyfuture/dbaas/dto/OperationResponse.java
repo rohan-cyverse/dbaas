@@ -14,9 +14,13 @@ public record OperationResponse(
         String project,
         OperationType type,
         OperationStatus status,
+        boolean terminal,
         ProvisioningStage stage,
         int progress,
         String message,
+        String failureReason,
+        String statusUrl,
+        int suggestedPollingIntervalSeconds,
         Instant createdAt,
         Instant startedAt,
         Instant completedAt

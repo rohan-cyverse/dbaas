@@ -25,7 +25,7 @@ public class OperationController {
     public OperationResponse get(@PathVariable String project,
                                  @PathVariable String databaseId,
                                  @PathVariable String operationId) {
-        databaseService.get(project, databaseId);
+        databaseService.validateDatabaseAccess(project, databaseId);
         return operationService.getForDatabase(project, databaseId, operationId);
     }
 }

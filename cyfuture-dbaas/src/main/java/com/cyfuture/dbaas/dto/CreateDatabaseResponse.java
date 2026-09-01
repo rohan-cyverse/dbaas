@@ -11,10 +11,13 @@ public record CreateDatabaseResponse(
         String namespace,
         String name,
         DatabaseEngine engine,
-        DatabaseStatus status,
+        DatabaseStatus databaseStatus,
+        com.cyfuture.dbaas.model.OperationStatus status,
         ProvisioningStage stage,
         int progress,
         String statusUrl,
+        String databaseStatusUrl,
         String operationUrl,
+        int suggestedPollingIntervalSeconds,
         String message
 ) {}

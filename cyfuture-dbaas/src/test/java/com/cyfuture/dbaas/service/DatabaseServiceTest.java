@@ -7,6 +7,7 @@ import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.OperationMetadata;
 import com.cyfuture.dbaas.entity.ProjectMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
+import com.cyfuture.dbaas.mapper.OperationMapper;
 import com.cyfuture.dbaas.model.DatabaseEngine;
 import com.cyfuture.dbaas.model.DatabaseMode;
 import com.cyfuture.dbaas.model.SizePlan;
@@ -51,7 +52,8 @@ class DatabaseServiceTest {
                 .thenReturn(Optional.empty());
         service = new DatabaseService(mock(KubeBlocksClient.class), properties, repository,
                 provisioning, metadataCreation, mock(CredentialLifecycleService.class),
-                projects, mock(SharedGatewayService.class), mock(OperationMetadataRepository.class));
+                projects, mock(SharedGatewayService.class), mock(OperationMetadataRepository.class),
+                new OperationMapper());
     }
 
     @Test

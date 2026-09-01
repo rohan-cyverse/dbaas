@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "2b9fb3b4-4dd5-4b58-8df7-f8793713c0b2",
     "name": "Cyfuture DBaaS - Projects and All Database Engines",
-    "description": "Complete project-scoped DBaaS API collection for PostgreSQL, MySQL and MongoDB provisioning in every currently supported deployment mode.",
+    "description": "Complete project-scoped DBaaS API collection for PostgreSQL, MySQL and MongoDB provisioning in every currently supported deployment mode.\n\nAsync operations return 202 Accepted with operationId, databaseId, status, statusUrl and suggestedPollingIntervalSeconds. Poll statusUrl until terminal=true and status is SUCCEEDED or FAILED. Operation polling is read-only and must not be used to trigger provisioning, shared-gateway rollout or allowlist changes.\n\nBreaking frontend response changes: database list/status responses omit privateEndpoint; connection responses omit privateEndpoint and privateConnectionUri. Credentials are only returned by the connection endpoint. Errors return code, message, fieldErrors and requestId. Retry DATABASE_NOT_READY, 502 and 503 with backoff; reuse an Idempotency-Key only for the same request body.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -177,6 +177,7 @@
                   "  pm.expect(body.operationId).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
                   "  pm.expect(body.operationUrl).to.be.a('string');",
+                  "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
                   "});",
                   "if (pm.response.code === 202) {",
@@ -584,7 +585,7 @@
         "method": "GET",
         "header": [],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases?page=0&size=20&sort=createdAt&direction=desc",
           "host": [
             "{{baseUrl}}"
           ],
@@ -594,6 +595,24 @@
             "projects",
             "{{project}}",
             "databases"
+          ],
+          "query": [
+            {
+              "key": "page",
+              "value": "0"
+            },
+            {
+              "key": "size",
+              "value": "20"
+            },
+            {
+              "key": "sort",
+              "value": "createdAt"
+            },
+            {
+              "key": "direction",
+              "value": "desc"
+            }
           ]
         }
       }
@@ -628,6 +647,7 @@
               "pm.test('Progress contract is present', function () {",
               "  pm.expect(body.stage).to.be.a('string');",
               "  pm.expect(body.progress).to.be.within(0, 100);",
+              "  pm.expect(body.privateEndpoint).to.be.undefined;",
               "});"
             ],
             "type": "text/javascript"
@@ -667,6 +687,9 @@
               "pm.test('Operation progress is present', function () {",
               "  pm.expect(body.stage).to.be.a('string');",
               "  pm.expect(body.progress).to.be.within(0, 100);",
+              "  pm.expect(body.statusUrl).to.be.a('string');",
+              "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+              "  pm.expect(body.terminal).to.be.a('boolean');",
               "});"
             ],
             "type": "text/javascript"
@@ -956,7 +979,7 @@
         "method": "GET",
         "header": [],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/operations",
+          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/operations?page=0&size=20&sort=createdAt&direction=desc",
           "host": [
             "{{baseUrl}}"
           ],
@@ -968,6 +991,24 @@
             "databases",
             "{{databaseId}}",
             "operations"
+          ],
+          "query": [
+            {
+              "key": "page",
+              "value": "0"
+            },
+            {
+              "key": "size",
+              "value": "20"
+            },
+            {
+              "key": "sort",
+              "value": "createdAt"
+            },
+            {
+              "key": "direction",
+              "value": "desc"
+            }
           ]
         }
       }
@@ -992,7 +1033,23 @@
             "connection"
           ]
         }
-      }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "if (pm.response.code === 200) {",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.publicConnectionUri).to.be.a('string');",
+              "  pm.expect(body.privateConnectionUri).to.be.undefined;",
+              "  pm.expect(body.privateEndpoint).to.be.undefined;",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
     },
     {
       "name": "Rotate Credentials",

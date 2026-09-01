@@ -32,7 +32,12 @@ public record CreateDatabaseRequest(
         @Schema(hidden = true) @Size(max = 10) List<String> allowedCidrs,
         @Schema(example = "true") boolean deletionProtection,
         @Schema(example = "{\"environment\":\"test\",\"team\":\"orders\"}")
-        @Size(max = 20) Map<String, String> tags
+        @Size(max = 20)
+        Map<@Size(min = 1, max = 40)
+        @Pattern(regexp = "^[A-Za-z0-9_.-]+$",
+                message = "tag keys may contain letters, numbers, '.', '_' or '-'")
+        String,
+        @Size(max = 120) String> tags
 ) {
     public CreateDatabaseRequest {
         if (allowedCidrs == null) allowedCidrs = List.of();

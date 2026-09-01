@@ -39,6 +39,22 @@ class OperationServiceTest {
         var response = service.getForDatabase("orders", "db-orders0001", "op-create0001");
         assertEquals("orders", response.project());
         assertEquals("db-orders0001", response.databaseId());
+        assertEquals(true, response.terminal());
+        assertEquals("/api/v1/projects/orders/databases/db-orders0001/operations/op-create0001",
+                response.statusUrl());
+    }
+
+    @Test
+    void paginatesAndFiltersOperationsWithoutChangingState() {
+        when(repository.findByDatabaseIdAndProjectNameOrderByCreatedAtDesc(
+                "db-orders0001", "orders"))
+                .thenReturn(java.util.List.of(operation()));
+
+        var page = service.listForDatabase("orders", "db-orders0001", 0, 10,
+                OperationStatus.SUCCEEDED, OperationType.CREATE, "createdAt", "desc");
+
+        assertEquals(1, page.totalItems());
+        assertEquals(1, page.items().size());
     }
 
     @Test

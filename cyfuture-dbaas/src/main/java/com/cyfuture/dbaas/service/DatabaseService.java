@@ -6,13 +6,14 @@ import com.cyfuture.dbaas.dto.ConnectionResponse;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
 import com.cyfuture.dbaas.dto.CreateDatabaseResponse;
 import com.cyfuture.dbaas.dto.DatabaseResponse;
-import com.cyfuture.dbaas.dto.DeleteDatabaseResponse;
 import com.cyfuture.dbaas.dto.PrivateEndpointResponse;
 import com.cyfuture.dbaas.dto.PublicEndpointResponse;
 import com.cyfuture.dbaas.dto.OperationResponse;
+import com.cyfuture.dbaas.dto.PageResponse;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.OperationMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
+import com.cyfuture.dbaas.mapper.OperationMapper;
 import com.cyfuture.dbaas.model.DatabaseEngine;
 import com.cyfuture.dbaas.model.DatabaseMode;
 import com.cyfuture.dbaas.model.DatabaseStatus;
@@ -36,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.net.URLEncoder;
+import java.util.Comparator;
 import java.util.regex.Pattern;
 
 @Service
@@ -54,6 +56,7 @@ public class DatabaseService {
     private final ProjectService projectService;
     private final SharedGatewayService sharedGatewayService;
     private final OperationMetadataRepository operationRepository;
+    private final OperationMapper operationMapper;
 
     public CreateDatabaseResponse create(String project, String idempotencyKey,
                                          CreateDatabaseRequest request) {
@@ -146,11 +149,19 @@ public class DatabaseService {
     }
 
     private CreateDatabaseResponse createResponse(DatabaseMetadata database, String message) {
+        String operationUrl = operationUrl(database);
+        OperationStatus operationStatus = operationRepository
+                .findByOperationIdAndDatabaseIdAndProjectName(
+                        database.getOperationId(), database.getDatabaseId(), database.getProjectName())
+                .map(OperationMetadata::getStatus)
+                .orElse(OperationStatus.PENDING);
         return new CreateDatabaseResponse(database.getDatabaseId(), database.getOperationId(),
                 database.getProjectName(),
                 database.getNamespaceName(), database.getDisplayName(),
-                database.getEngine(), database.getStatus(), database.getProvisioningStage(),
-                database.getProgress(), statusUrl(database), operationUrl(database), message);
+                database.getEngine(), database.getStatus(), operationStatus,
+                database.getProvisioningStage(), database.getProgress(), operationUrl,
+                statusUrl(database), operationUrl, OperationMapper.POLLING_INTERVAL_SECONDS,
+                message);
     }
 
     private String statusUrl(DatabaseMetadata database) {
@@ -209,14 +220,34 @@ public class DatabaseService {
         }
     }
 
-    public List<DatabaseResponse> list(String project) {
+    public PageResponse<DatabaseResponse> list(String project, int page, int size,
+                                               DatabaseStatus status,
+                                               DatabaseEngine engine,
+                                               String sort,
+                                               String direction) {
         validateProject(project);
+        int safePage = Math.max(0, page);
+        int safeSize = Math.min(Math.max(1, size), 100);
+        validateDirection(direction);
+        Comparator<DatabaseMetadata> comparator = databaseComparator(sort);
+        if ("asc".equalsIgnoreCase(direction)) {
+            comparator = comparator.reversed();
+        }
 
-        return databaseRepository
+        List<DatabaseResponse> filtered = databaseRepository
                 .findByProjectNameOrderByCreatedAtDesc(project)
                 .stream()
+                .filter(database -> status == null || database.getStatus() == status)
+                .filter(database -> engine == null || database.getEngine() == engine)
+                .sorted(comparator)
                 .map(this::getDatabaseForList)
                 .toList();
+        int from = Math.min(safePage * safeSize, filtered.size());
+        int to = Math.min(from + safeSize, filtered.size());
+        int totalPages = filtered.isEmpty() ? 0
+                : (int) Math.ceil((double) filtered.size() / safeSize);
+        return new PageResponse<>(filtered.subList(from, to), safePage, safeSize,
+                filtered.size(), totalPages);
     }
 
     public ConnectionResponse connection(String project,
@@ -253,19 +284,32 @@ public class DatabaseService {
 
     public OperationResponse rotateCredentials(String project,
                                                String databaseId) {
-        return credentialLifecycleService.rotate(
-                requireDatabase(project, databaseId));
+        DatabaseMetadata database = requireDatabase(project, databaseId);
+        if (database.getStatus() != DatabaseStatus.RUNNING
+                || stage(database) != ProvisioningStage.READY) {
+            throw new ApiException(HttpStatus.CONFLICT, "DATABASE_NOT_READY", true,
+                    "Database must be ready before credentials can be rotated");
+        }
+        operationRepository.findByDatabaseIdAndProjectNameAndStatusIn(databaseId, project,
+                        List.of(OperationStatus.PENDING, OperationStatus.RUNNING))
+                .stream()
+                .findFirst()
+                .ifPresent(operation -> {
+                    throw new ApiException(HttpStatus.CONFLICT,
+                            "Operation " + operation.getOperationId()
+                                    + " is already running for database " + databaseId);
+                });
+        return credentialLifecycleService.rotate(database);
     }
 
-    public DeleteDatabaseResponse delete(String project, String databaseId) {
+    public OperationResponse delete(String project, String databaseId) {
         DatabaseMetadata database = requireDatabase(project, databaseId);
         if (database.getStatus() == DatabaseStatus.DELETED) {
-            return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETED,
-                    "Database was already deleted; metadata is preserved");
+            return operationMapper.toResponse(completedDeleteOperation(database,
+                    "Database was already deleted; metadata is preserved"));
         }
         if (database.getStatus() == DatabaseStatus.DELETING) {
-            return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETING,
-                    database.getMessage() == null ? "Database deletion is already running" : database.getMessage());
+            return operationMapper.toResponse(deleteOperation(database));
         }
         if (database.isDeletionProtection()) {
             throw new ApiException(HttpStatus.CONFLICT,
@@ -297,7 +341,9 @@ public class DatabaseService {
             database.setMessage("Database deletion is waiting for public route removal");
             database.setUpdatedAt(Instant.now());
             databaseRepository.save(database);
-            return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETING, database.getMessage());
+            operation.setMessage(database.getMessage());
+            operationRepository.save(operation);
+            return operationMapper.toResponse(operation);
         }
 
         try {
@@ -312,7 +358,7 @@ public class DatabaseService {
                 database.setUpdatedAt(Instant.now());
                 databaseRepository.save(database);
                 finishDeleteOperation(operation, OperationStatus.SUCCEEDED, database.getMessage());
-                return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETED, database.getMessage());
+                return operationMapper.toResponse(operation);
             }
             database.setMessage("KubeBlocks deletion is running");
             database.setUpdatedAt(Instant.now());
@@ -323,8 +369,9 @@ public class DatabaseService {
             database.setUpdatedAt(Instant.now());
             databaseRepository.save(database);
         }
-        return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETING,
-                database.getMessage());
+        operation.setMessage(database.getMessage());
+        operationRepository.save(operation);
+        return operationMapper.toResponse(operation);
     }
 
     public DatabaseResponse setDeletionProtection(String project,
@@ -340,6 +387,10 @@ public class DatabaseService {
 
     public void validateProject(String project) {
         projectService.requireActiveProject(project);
+    }
+
+    public void validateDatabaseAccess(String project, String databaseId) {
+        requireDatabase(project, databaseId);
     }
 
     public Map<?, ?> options() {
@@ -387,7 +438,14 @@ public class DatabaseService {
     }
 
     private PublicEndpointResponse publicEndpoint(DatabaseMetadata metadata) {
-        return sharedGatewayService.endpoint(metadata);
+        PublicEndpointResponse endpoint = sharedGatewayService.endpoint(metadata);
+        boolean databaseReady = metadata.getStatus() == DatabaseStatus.RUNNING
+                && stage(metadata) == ProvisioningStage.READY;
+        if (!databaseReady && endpoint.ready()) {
+            return new PublicEndpointResponse(endpoint.host(), endpoint.port(), false,
+                    endpoint.allowedCidrs());
+        }
+        return endpoint;
     }
 
     private List<String> metadataCidrs(DatabaseMetadata metadata) {
@@ -461,6 +519,32 @@ public class DatabaseService {
                 .startedAt(Instant.now())
                 .build();
         return operationRepository.save(operation);
+    }
+
+    private OperationMetadata completedDeleteOperation(DatabaseMetadata database,
+                                                       String message) {
+        OperationMetadata existing = operationRepository
+                .findByDatabaseIdAndProjectNameOrderByCreatedAtDesc(
+                        database.getDatabaseId(), database.getProjectName())
+                .stream()
+                .filter(operation -> operation.getType() == OperationType.DELETE)
+                .findFirst()
+                .orElse(null);
+        if (existing != null) return existing;
+        Instant now = Instant.now();
+        return operationRepository.save(OperationMetadata.builder()
+                .operationId("op-" + shortId())
+                .databaseId(database.getDatabaseId())
+                .projectName(database.getProjectName())
+                .type(OperationType.DELETE)
+                .status(OperationStatus.SUCCEEDED)
+                .provisioningStage(ProvisioningStage.READY)
+                .progress(100)
+                .message(message)
+                .createdAt(now)
+                .startedAt(now)
+                .completedAt(now)
+                .build());
     }
 
     private void finishDeleteOperation(OperationMetadata operation,
@@ -580,6 +664,36 @@ public class DatabaseService {
             throw new ApiException(HttpStatus.BAD_REQUEST, "REPLICA_SET requires at least 2 replicas");
         if (request.mode() == DatabaseMode.SHARDING && request.shards() < 2)
             throw new ApiException(HttpStatus.BAD_REQUEST, "MongoDB SHARDING requires at least 2 shards");
+        if (request.engine() != DatabaseEngine.MONGODB && request.shards() != 0)
+            throw new ApiException(HttpStatus.BAD_REQUEST, request.engine() + " requires shards=0");
+        if (request.engine() == DatabaseEngine.MONGODB
+                && request.mode() != DatabaseMode.SHARDING
+                && request.shards() != 0)
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "MongoDB " + request.mode() + " requires shards=0");
+    }
+
+    private Comparator<DatabaseMetadata> databaseComparator(String sort) {
+        Comparator<DatabaseMetadata> comparator = switch (sort == null ? "createdAt" : sort) {
+            case "name" -> Comparator.comparing(DatabaseMetadata::getDisplayName,
+                    Comparator.nullsLast(String::compareToIgnoreCase));
+            case "status" -> Comparator.comparing(database -> String.valueOf(database.getStatus()));
+            case "engine" -> Comparator.comparing(database -> String.valueOf(database.getEngine()));
+            case "updatedAt" -> Comparator.comparing(DatabaseMetadata::getUpdatedAt,
+                    Comparator.nullsLast(Comparator.naturalOrder()));
+            case "createdAt" -> Comparator.comparing(DatabaseMetadata::getCreatedAt,
+                    Comparator.nullsLast(Comparator.naturalOrder()));
+            default -> throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "Unsupported sort value. Use createdAt, updatedAt, name, status or engine");
+        };
+        return comparator.reversed();
+    }
+
+    private void validateDirection(String direction) {
+        if (!"asc".equalsIgnoreCase(direction) && !"desc".equalsIgnoreCase(direction)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "Unsupported direction value. Use asc or desc");
+        }
     }
 
     private DatabaseResponse getDatabaseForList(
