@@ -19,7 +19,7 @@ import lombok.Setter;
 import java.time.Instant;
 
 @Entity
-@Table(name = "databases", uniqueConstraints = @UniqueConstraint(
+@Table(name = "`databases`", uniqueConstraints = @UniqueConstraint(
         name = "uk_database_project_idempotency",
         columnNames = {"project_name", "idempotency_key"}))
 @Getter
