@@ -182,13 +182,11 @@ public class DatabaseStateReconciler {
         try {
             update(database::setDesiredStatus, DatabaseStatus.DELETED);
             update(database::setStatus, DatabaseStatus.DELETING);
-
             if (database.getDeleteRequestedAt() == null) {
                 update(database::setDeleteRequestedAt, Instant.now());
             }
 
             String gatewayFailure = null;
-
             try {
                 sharedGatewayService.removeRoute(database);
             } catch (Exception exception) {
@@ -196,21 +194,14 @@ public class DatabaseStateReconciler {
                 update(database::setSyncMessage, gatewayFailure);
             }
 
-            kubeBlocksClient.requestDelete(
-                    database.getNamespaceName(),
-                    database.getDatabaseId()
-            );
+            kubeBlocksClient.requestDelete(database.getNamespaceName(),
+                    database.getDatabaseId());
 
-            KubeBlocksClient.ClusterObservation observed =
-                    kubeBlocksClient.observeCluster(
-                            database.getNamespaceName(),
-                            database.getDatabaseId()
-                    );
+            KubeBlocksClient.ClusterObservation observed = kubeBlocksClient.observeCluster(
+                    database.getNamespaceName(), database.getDatabaseId());
 
             if (!observed.exists()) {
-
                 String portCleanupFailure = null;
-
                 try {
                     sharedGatewayService.releasePort(database);
                 } catch (Exception exception) {
@@ -218,85 +209,45 @@ public class DatabaseStateReconciler {
                 }
 
                 Instant now = Instant.now();
-
                 update(database::setStatus, DatabaseStatus.DELETED);
                 update(database::setDesiredStatus, DatabaseStatus.DELETED);
                 update(database::setDeletedAt, now);
-
                 update(database::setMissingSince, null);
                 update(database::setDegradedSince, null);
-
                 update(database::setPublicPort, null);
-
                 update(database::setObservedReadyReplicas, 0);
                 update(database::setObservedServiceReady, false);
-
                 update(database::setMessage, "Database deletion completed");
-
                 if (gatewayFailure == null && portCleanupFailure == null) {
-                    update(
-                            database::setSyncMessage,
-                            "Deletion confirmed by Kubernetes"
-                    );
+                    update(database::setSyncMessage, "Deletion confirmed by Kubernetes");
                 } else {
-                    update(
-                            database::setSyncMessage,
-                            "Deletion confirmed by Kubernetes; gateway cleanup had an error"
-                    );
+                    update(database::setSyncMessage,
+                            "Deletion confirmed by Kubernetes; gateway cleanup had an error");
                 }
-
-                finishDeleteOperation(
-                        database,
-                        OperationStatus.SUCCEEDED,
-                        "Deletion confirmed by Kubernetes"
-                );
-
+                finishDeleteOperation(database, OperationStatus.SUCCEEDED,
+                        "Deletion confirmed by Kubernetes");
             } else {
-
                 syncObserved(database, observed);
-
                 update(database::setStatus, DatabaseStatus.DELETING);
                 update(database::setDesiredStatus, DatabaseStatus.DELETED);
-
-                update(
-                        database::setMessage,
-                        "KubeBlocks deletion is running"
-                );
-
-                update(
-                        database::setSyncMessage,
+                update(database::setMessage, "KubeBlocks deletion is running");
+                update(database::setSyncMessage,
                         gatewayFailure == null
                                 ? observed.message()
-                                : "Public route cleanup will retry: " + gatewayFailure
-                );
-
-                finishDeleteOperation(
-                        database,
-                        OperationStatus.RUNNING,
-                        "KubeBlocks deletion is running"
-                );
+                                : "Public route cleanup will retry: " + gatewayFailure);
+                finishDeleteOperation(database, OperationStatus.RUNNING,
+                        "KubeBlocks deletion is running");
             }
-
             saveIfChanged(database);
-
         } catch (Exception exception) {
-
             update(database::setStatus, DatabaseStatus.DELETING);
             update(database::setDesiredStatus, DatabaseStatus.DELETED);
-
             update(database::setSyncMessage, safeMessage(exception));
-            update(
-                    database::setMessage,
-                    "Database deletion is waiting for synchronization retry"
-            );
-
+            update(database::setMessage,
+                    "Database deletion is waiting for synchronization retry");
             saveIfChanged(database);
-
-            log.debug(
-                    "Deletion reconciliation for {} will retry: {}",
-                    database.getDatabaseId(),
-                    exception.getMessage()
-            );
+            log.debug("Deletion reconciliation for {} will retry: {}",
+                    database.getDatabaseId(), exception.getMessage());
         }
     }
 

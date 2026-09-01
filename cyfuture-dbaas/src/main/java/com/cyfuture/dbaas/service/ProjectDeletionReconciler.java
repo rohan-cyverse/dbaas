@@ -28,53 +28,28 @@ public class ProjectDeletionReconciler {
 
     @Scheduled(fixedDelayString = "${dbaas.project-reconcile-ms:5000}")
     public void reconcile() {
-
         for (ProjectMetadata project :
                 projectRepository.findByStatusOrderByCreatedAtAsc(
                         ResourceStatus.DELETING)) {
-
             reconcileProject(project);
         }
     }
 
     private void reconcileProject(ProjectMetadata project) {
-
         try {
-
             String namespace = project.getNamespaceName();
-
-            /*
-             * Namespace already gone.
-             */
             if (!kubeBlocksClient.namespaceExists(namespace)) {
-
                 project.setStatus(ResourceStatus.DELETED);
                 project.setUpdatedAt(Instant.now());
-
                 projectRepository.save(project);
-
-                log.info(
-                        "Project {} deletion completed",
-                        project.getProjectName()
-                );
-
+                log.info("Project {} deletion completed", project.getProjectName());
                 return;
             }
 
-            /*
-             * Idempotent.
-             * Calling delete repeatedly on a Terminating
-             * namespace is safe.
-             */
             kubeBlocksClient.requestNamespaceDelete(namespace);
-
         } catch (Exception exception) {
-
-            log.warn(
-                    "Project {} namespace cleanup will retry: {}",
-                    project.getProjectName(),
-                    exception.getMessage()
-            );
+            log.warn("Project {} namespace cleanup will retry: {}",
+                    project.getProjectName(), exception.getMessage());
         }
     }
 }
