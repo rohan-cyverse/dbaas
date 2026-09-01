@@ -37,7 +37,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.net.URLEncoder;
-import java.util.Comparator;
 import java.util.regex.Pattern;
 
 @Service
@@ -220,26 +219,14 @@ public class DatabaseService {
         }
     }
 
-    public PageResponse<DatabaseResponse> list(String project, int page, int size,
-                                               DatabaseStatus status,
-                                               DatabaseEngine engine,
-                                               String sort,
-                                               String direction) {
+    public PageResponse<DatabaseResponse> list(String project, int page, int size) {
         validateProject(project);
         int safePage = Math.max(0, page);
         int safeSize = Math.min(Math.max(1, size), 100);
-        validateDirection(direction);
-        Comparator<DatabaseMetadata> comparator = databaseComparator(sort);
-        if ("asc".equalsIgnoreCase(direction)) {
-            comparator = comparator.reversed();
-        }
 
         List<DatabaseResponse> filtered = databaseRepository
                 .findByProjectNameOrderByCreatedAtDesc(project)
                 .stream()
-                .filter(database -> status == null || database.getStatus() == status)
-                .filter(database -> engine == null || database.getEngine() == engine)
-                .sorted(comparator)
                 .map(this::getDatabaseForList)
                 .toList();
         int from = Math.min(safePage * safeSize, filtered.size());
@@ -334,16 +321,17 @@ public class DatabaseService {
         database.setUpdatedAt(Instant.now());
         databaseRepository.save(database);
 
+        String gatewayFailure = null;
         try {
             sharedGatewayService.removeRoute(database);
         } catch (Exception exception) {
+            gatewayFailure = safeMessage(exception);
             database.setSyncMessage(safeMessage(exception));
-            database.setMessage("Database deletion is waiting for public route removal");
+            database.setMessage("Public route removal will retry; deleting Kubernetes cluster");
             database.setUpdatedAt(Instant.now());
             databaseRepository.save(database);
             operation.setMessage(database.getMessage());
             operationRepository.save(operation);
-            return operationMapper.toResponse(operation);
         }
 
         try {
@@ -355,17 +343,26 @@ public class DatabaseService {
                 database.setStatus(DatabaseStatus.DELETED);
                 database.setDeletedAt(Instant.now());
                 database.setMessage("Database Cluster is absent; metadata is preserved");
+                if (gatewayFailure != null) {
+                    database.setSyncMessage("Deletion confirmed; public route cleanup will retry: "
+                            + gatewayFailure);
+                }
                 database.setUpdatedAt(Instant.now());
                 databaseRepository.save(database);
                 finishDeleteOperation(operation, OperationStatus.SUCCEEDED, database.getMessage());
                 return operationMapper.toResponse(operation);
             }
             database.setMessage("KubeBlocks deletion is running");
+            if (gatewayFailure != null) {
+                database.setSyncMessage("Public route cleanup will retry: " + gatewayFailure);
+            }
             database.setUpdatedAt(Instant.now());
             databaseRepository.save(database);
         } catch (Exception exception) {
             database.setSyncMessage(safeMessage(exception));
-            database.setMessage("Database deletion is waiting for Kubernetes confirmation");
+            database.setMessage(gatewayFailure == null
+                    ? "Database deletion is waiting for Kubernetes confirmation"
+                    : "Database deletion is waiting for Kubernetes confirmation and public route retry");
             database.setUpdatedAt(Instant.now());
             databaseRepository.save(database);
         }
@@ -671,29 +668,6 @@ public class DatabaseService {
                 && request.shards() != 0)
             throw new ApiException(HttpStatus.BAD_REQUEST,
                     "MongoDB " + request.mode() + " requires shards=0");
-    }
-
-    private Comparator<DatabaseMetadata> databaseComparator(String sort) {
-        Comparator<DatabaseMetadata> comparator = switch (sort == null ? "createdAt" : sort) {
-            case "name" -> Comparator.comparing(DatabaseMetadata::getDisplayName,
-                    Comparator.nullsLast(String::compareToIgnoreCase));
-            case "status" -> Comparator.comparing(database -> String.valueOf(database.getStatus()));
-            case "engine" -> Comparator.comparing(database -> String.valueOf(database.getEngine()));
-            case "updatedAt" -> Comparator.comparing(DatabaseMetadata::getUpdatedAt,
-                    Comparator.nullsLast(Comparator.naturalOrder()));
-            case "createdAt" -> Comparator.comparing(DatabaseMetadata::getCreatedAt,
-                    Comparator.nullsLast(Comparator.naturalOrder()));
-            default -> throw new ApiException(HttpStatus.BAD_REQUEST,
-                    "Unsupported sort value. Use createdAt, updatedAt, name, status or engine");
-        };
-        return comparator.reversed();
-    }
-
-    private void validateDirection(String direction) {
-        if (!"asc".equalsIgnoreCase(direction) && !"desc".equalsIgnoreCase(direction)) {
-            throw new ApiException(HttpStatus.BAD_REQUEST,
-                    "Unsupported direction value. Use asc or desc");
-        }
     }
 
     private DatabaseResponse getDatabaseForList(

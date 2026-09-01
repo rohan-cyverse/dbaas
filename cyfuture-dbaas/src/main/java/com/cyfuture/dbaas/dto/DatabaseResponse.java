@@ -6,10 +6,12 @@ import com.cyfuture.dbaas.model.DatabaseMode;
 import com.cyfuture.dbaas.model.SizePlan;
 import com.cyfuture.dbaas.model.ProvisioningStage;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 public record DatabaseResponse(
         String databaseId,
         String project,
+        @JsonIgnore @Schema(hidden = true)
         String namespace,
         String name,
         DatabaseEngine engine,
@@ -22,10 +24,13 @@ public record DatabaseResponse(
         ProvisioningStage stage,
         int progress,
         int replicas,
+        @JsonIgnore @Schema(hidden = true)
         int readyReplicas,
+        @JsonIgnore @Schema(hidden = true)
         int readyVolumes,
+        @JsonIgnore @Schema(hidden = true)
         boolean serviceReady,
-        @JsonIgnore
+        @JsonIgnore @Schema(hidden = true)
         PrivateEndpointResponse privateEndpoint,
         PublicEndpointResponse publicEndpoint,
         String message

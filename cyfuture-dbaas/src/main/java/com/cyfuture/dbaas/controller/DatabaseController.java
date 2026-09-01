@@ -10,10 +10,6 @@ import com.cyfuture.dbaas.dto.PageResponse;
 import com.cyfuture.dbaas.dto.RestartRequest;
 import com.cyfuture.dbaas.dto.StorageExpansionRequest;
 import com.cyfuture.dbaas.dto.VerticalScalingRequest;
-import com.cyfuture.dbaas.model.DatabaseEngine;
-import com.cyfuture.dbaas.model.DatabaseStatus;
-import com.cyfuture.dbaas.model.OperationStatus;
-import com.cyfuture.dbaas.model.OperationType;
 import com.cyfuture.dbaas.service.ClientIpResolver;
 import com.cyfuture.dbaas.service.DatabaseOperationService;
 import com.cyfuture.dbaas.service.DatabaseService;
@@ -96,13 +92,9 @@ public class DatabaseController {
     public PageResponse<DatabaseResponse> list(
             @PathVariable String project,
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int size,
-            @RequestParam(required = false) DatabaseStatus status,
-            @RequestParam(required = false) DatabaseEngine engine,
-            @RequestParam(defaultValue = "createdAt") String sort,
-            @RequestParam(defaultValue = "desc") String direction
+            @RequestParam(defaultValue = "20") int size
     ) {
-        return databaseService.list(project, page, size, status, engine, sort, direction);
+        return databaseService.list(project, page, size);
     }
 
     @GetMapping("/{databaseId}")
@@ -123,11 +115,7 @@ public class DatabaseController {
             @PathVariable String project,
             @PathVariable String databaseId,
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int size,
-            @RequestParam(required = false) OperationStatus status,
-            @RequestParam(required = false) OperationType type,
-            @RequestParam(defaultValue = "createdAt") String sort,
-            @RequestParam(defaultValue = "desc") String direction
+            @RequestParam(defaultValue = "20") int size
     ) {
         databaseService.validateDatabaseAccess(project, databaseId);
 
@@ -135,11 +123,7 @@ public class DatabaseController {
                 project,
                 databaseId,
                 page,
-                size,
-                status,
-                type,
-                sort,
-                direction
+                size
         );
     }
 

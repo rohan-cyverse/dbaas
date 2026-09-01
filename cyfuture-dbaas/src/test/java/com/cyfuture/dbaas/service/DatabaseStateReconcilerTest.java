@@ -131,6 +131,24 @@ class DatabaseStateReconcilerTest {
     }
 
     @Test
+    void deletionStillRequestsKubernetesDeleteWhenGatewayRemovalFails() {
+        DatabaseMetadata database = database(DatabaseStatus.DELETING);
+        database.setPublicPort(31000);
+        org.mockito.Mockito.doThrow(new ApiException(HttpStatus.BAD_GATEWAY,
+                        "Gateway rollout timeout"))
+                .when(gateway).removeRoute(database);
+        when(kubeBlocksClient.observeCluster("dbaas-orders", "db-orders0001"))
+                .thenReturn(observed(true, 1, 2, true));
+
+        reconciler.reconcile(database);
+
+        verify(kubeBlocksClient).requestDelete("dbaas-orders", "db-orders0001");
+        verify(gateway, never()).releasePort(any());
+        assertEquals(DatabaseStatus.DELETING, database.getStatus());
+        verify(databaseRepository).save(database);
+    }
+
+    @Test
     void kubernetesFailureDuringDeletionDoesNotMarkDeletedOrReleasePort() {
         DatabaseMetadata database = database(DatabaseStatus.DELETING);
         org.mockito.Mockito.doThrow(new ApiException(HttpStatus.BAD_GATEWAY,

@@ -91,7 +91,7 @@ Database creation requires an `Idempotency-Key` header. Example:
 }
 ```
 
-Public access is automatic. `allowedCidrs` may be omitted. In local development the API can discover the caller's public egress address. Behind Cyfuture.ai, disable that fallback and forward trusted proxy headers.
+Public access is automatic. The frontend does not need to send allowlist CIDRs; the API derives the caller IP. In local development the API can discover the caller's public egress address. Behind Cyfuture.ai, disable that fallback and forward trusted proxy headers.
 
 List endpoints return a page envelope:
 
@@ -105,7 +105,7 @@ List endpoints return a page envelope:
 }
 ```
 
-Database listing supports `page`, `size`, `status`, `engine`, `sort=createdAt|updatedAt|name|status|engine` and `direction=asc|desc`. Operation listing supports `page`, `size`, `status`, `type`, `sort=createdAt|completedAt|status|type` and `direction=asc|desc`.
+Database and operation listing support only `page` and `size`. Results are returned newest-first.
 
 ### Async operations and polling
 
@@ -121,8 +121,6 @@ Example:
   "type": "RESTART",
   "status": "PENDING",
   "terminal": false,
-  "stage": "QUEUED",
-  "progress": 0,
   "message": "Database restart request queued",
   "failureReason": null,
   "statusUrl": "/api/v1/projects/test-project/databases/db-a1b2c3d4e5f6/operations/op-a1b2c3d4e5f6",
@@ -133,13 +131,13 @@ Example:
 }
 ```
 
-Poll operation status with `GET statusUrl` until `terminal=true` and `status` is `SUCCEEDED` or `FAILED`. Operation polling is read-only: it reads MySQL metadata only and does not submit provisioning, roll gateway pods, or update allowlists. After a browser refresh, recover by listing `/operations?sort=createdAt&direction=desc` for the database and polling the latest non-terminal operation. Keep database health separate by reading `GET /api/v1/projects/{project}/databases/{databaseId}`.
+Poll operation status with `GET statusUrl` until `terminal=true` and `status` is `SUCCEEDED` or `FAILED`. Operation polling is read-only: it reads MySQL metadata only and does not submit provisioning, roll gateway pods, or update allowlists. After a browser refresh, recover by listing `/operations?page=0&size=20` for the database and polling the latest non-terminal operation. Keep database health separate by reading `GET /api/v1/projects/{project}/databases/{databaseId}`.
 
-Creation responses include both operation and health URLs. `statusUrl` is the operation polling URL. `databaseStatusUrl` is the database health/status URL.
+Creation responses return the operation polling URL in `statusUrl`.
 
 ### Frontend response changes
 
-Frontend-facing JSON no longer includes `privateEndpoint` on database status/list responses. The connection endpoint no longer serializes `privateEndpoint` or `privateConnectionUri`. Internal Kubernetes service discovery and shared-gateway routing still use the private endpoint in backend code.
+Frontend-facing JSON is intentionally small. Database status/list responses omit `privateEndpoint`, `namespace`, backend readiness counters and gateway allowlist CIDRs. Operation responses omit `project`, `stage` and `progress`. The connection endpoint omits `privateEndpoint` and `privateConnectionUri`. Internal Kubernetes service discovery and shared-gateway routing still use those backend-only values.
 
 `publicEndpoint.ready` is true only when the database has reached `RUNNING` and `READY` and the shared gateway route is configured and rolled out. A public host or port alone is not enough.
 

@@ -45,13 +45,12 @@ class OperationServiceTest {
     }
 
     @Test
-    void paginatesAndFiltersOperationsWithoutChangingState() {
+    void paginatesOperationsWithoutChangingState() {
         when(repository.findByDatabaseIdAndProjectNameOrderByCreatedAtDesc(
                 "db-orders0001", "orders"))
                 .thenReturn(java.util.List.of(operation()));
 
-        var page = service.listForDatabase("orders", "db-orders0001", 0, 10,
-                OperationStatus.SUCCEEDED, OperationType.CREATE, "createdAt", "desc");
+        var page = service.listForDatabase("orders", "db-orders0001", 0, 10);
 
         assertEquals(1, page.totalItems());
         assertEquals(1, page.items().size());

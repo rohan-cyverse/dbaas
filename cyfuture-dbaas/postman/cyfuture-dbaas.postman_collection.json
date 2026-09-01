@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "2b9fb3b4-4dd5-4b58-8df7-f8793713c0b2",
     "name": "Cyfuture DBaaS - Projects and All Database Engines",
-    "description": "Complete project-scoped DBaaS API collection for PostgreSQL, MySQL and MongoDB provisioning in every currently supported deployment mode.\n\nAsync operations return 202 Accepted with operationId, databaseId, status, statusUrl and suggestedPollingIntervalSeconds. Poll statusUrl until terminal=true and status is SUCCEEDED or FAILED. Operation polling is read-only and must not be used to trigger provisioning, shared-gateway rollout or allowlist changes.\n\nBreaking frontend response changes: database list/status responses omit privateEndpoint; connection responses omit privateEndpoint and privateConnectionUri. Credentials are only returned by the connection endpoint. Errors return code, message, fieldErrors and requestId. Retry DATABASE_NOT_READY, 502 and 503 with backoff; reuse an Idempotency-Key only for the same request body.",
+    "description": "Complete project-scoped DBaaS API collection for PostgreSQL, MySQL and MongoDB provisioning in every currently supported deployment mode.\n\nAsync operations return a small 202 Accepted body with operationId, databaseId, status, statusUrl and suggestedPollingIntervalSeconds. Poll statusUrl until terminal=true and status is SUCCEEDED or FAILED. Operation polling is read-only and must not be used to trigger provisioning, shared-gateway rollout or allowlist changes.\n\nBreaking frontend response changes: database list/status responses omit privateEndpoint, namespace, backend readiness counters and allowedCidrs; operation responses omit project/stage/progress; connection responses omit privateEndpoint and privateConnectionUri. Credentials are only returned by the connection endpoint. Errors return code, message, fieldErrors and requestId. Retry DATABASE_NOT_READY, 502 and 503 with backoff; reuse an Idempotency-Key only for the same request body.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -27,10 +27,6 @@
       "value": "create-orders-postgres-001"
     },
     {
-      "key": "statusUrl",
-      "value": ""
-    },
-    {
       "key": "operationUrl",
       "value": ""
     },
@@ -45,10 +41,6 @@
     {
       "key": "newStorageSize",
       "value": "30Gi"
-    },
-    {
-      "key": "databaseStatusUrl",
-      "value": ""
     },
     {
       "key": "xRequestId",
@@ -203,22 +195,21 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Create response has operation and database status links', function () {",
+                  "pm.test('Create response has minimal async contract', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
                   "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
-                  "  pm.expect(body.databaseStatusUrl).to.be.a('string');",
-                  "  pm.expect(body.operationUrl).to.be.a('string');",
                   "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
-                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "  pm.expect(body.namespace).to.be.undefined;",
+                  "  pm.expect(body.databaseStatusUrl).to.be.undefined;",
+                  "  pm.expect(body.operationUrl).to.be.undefined;",
+                  "  pm.expect(body.progress).to.be.undefined;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl || body.statusUrl);",
-                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -270,22 +261,21 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Create response has operation and database status links', function () {",
+                  "pm.test('Create response has minimal async contract', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
                   "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
-                  "  pm.expect(body.databaseStatusUrl).to.be.a('string');",
-                  "  pm.expect(body.operationUrl).to.be.a('string');",
                   "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
-                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "  pm.expect(body.namespace).to.be.undefined;",
+                  "  pm.expect(body.databaseStatusUrl).to.be.undefined;",
+                  "  pm.expect(body.operationUrl).to.be.undefined;",
+                  "  pm.expect(body.progress).to.be.undefined;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl || body.statusUrl);",
-                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -337,22 +327,21 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Create response has operation and database status links', function () {",
+                  "pm.test('Create response has minimal async contract', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
                   "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
-                  "  pm.expect(body.databaseStatusUrl).to.be.a('string');",
-                  "  pm.expect(body.operationUrl).to.be.a('string');",
                   "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
-                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "  pm.expect(body.namespace).to.be.undefined;",
+                  "  pm.expect(body.databaseStatusUrl).to.be.undefined;",
+                  "  pm.expect(body.operationUrl).to.be.undefined;",
+                  "  pm.expect(body.progress).to.be.undefined;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl || body.statusUrl);",
-                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -404,22 +393,21 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Create response has operation and database status links', function () {",
+                  "pm.test('Create response has minimal async contract', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
                   "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
-                  "  pm.expect(body.databaseStatusUrl).to.be.a('string');",
-                  "  pm.expect(body.operationUrl).to.be.a('string');",
                   "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
-                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "  pm.expect(body.namespace).to.be.undefined;",
+                  "  pm.expect(body.databaseStatusUrl).to.be.undefined;",
+                  "  pm.expect(body.operationUrl).to.be.undefined;",
+                  "  pm.expect(body.progress).to.be.undefined;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl || body.statusUrl);",
-                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -471,22 +459,21 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Create response has operation and database status links', function () {",
+                  "pm.test('Create response has minimal async contract', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
                   "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
-                  "  pm.expect(body.databaseStatusUrl).to.be.a('string');",
-                  "  pm.expect(body.operationUrl).to.be.a('string');",
                   "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
-                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "  pm.expect(body.namespace).to.be.undefined;",
+                  "  pm.expect(body.databaseStatusUrl).to.be.undefined;",
+                  "  pm.expect(body.operationUrl).to.be.undefined;",
+                  "  pm.expect(body.progress).to.be.undefined;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl || body.statusUrl);",
-                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -538,22 +525,21 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Create response has operation and database status links', function () {",
+                  "pm.test('Create response has minimal async contract', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
                   "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
-                  "  pm.expect(body.databaseStatusUrl).to.be.a('string');",
-                  "  pm.expect(body.operationUrl).to.be.a('string');",
                   "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
-                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "  pm.expect(body.namespace).to.be.undefined;",
+                  "  pm.expect(body.databaseStatusUrl).to.be.undefined;",
+                  "  pm.expect(body.operationUrl).to.be.undefined;",
+                  "  pm.expect(body.progress).to.be.undefined;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl || body.statusUrl);",
-                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -605,22 +591,21 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Create response has operation and database status links', function () {",
+                  "pm.test('Create response has minimal async contract', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
                   "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
-                  "  pm.expect(body.databaseStatusUrl).to.be.a('string');",
-                  "  pm.expect(body.operationUrl).to.be.a('string');",
                   "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
-                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "  pm.expect(body.namespace).to.be.undefined;",
+                  "  pm.expect(body.databaseStatusUrl).to.be.undefined;",
+                  "  pm.expect(body.operationUrl).to.be.undefined;",
+                  "  pm.expect(body.progress).to.be.undefined;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl || body.statusUrl);",
-                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -676,7 +661,7 @@
           }
         ],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases?page=0&size=20&sort=createdAt&direction=desc",
+          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases?page=0&size=20",
           "host": [
             "{{baseUrl}}"
           ],
@@ -695,14 +680,6 @@
             {
               "key": "size",
               "value": "20"
-            },
-            {
-              "key": "sort",
-              "value": "createdAt"
-            },
-            {
-              "key": "direction",
-              "value": "desc"
             }
           ]
         }
@@ -740,10 +717,16 @@
             "exec": [
               "pm.test('Database status returned', function () { pm.response.to.have.status(200); });",
               "const body = pm.response.json();",
-              "pm.test('Progress contract is present', function () {",
+              "pm.test('Database status is frontend safe', function () {",
+              "  pm.expect(body.status).to.be.a('string');",
               "  pm.expect(body.stage).to.be.a('string');",
               "  pm.expect(body.progress).to.be.within(0, 100);",
               "  pm.expect(body.privateEndpoint).to.be.undefined;",
+              "  pm.expect(body.namespace).to.be.undefined;",
+              "  pm.expect(body.readyReplicas).to.be.undefined;",
+              "  pm.expect(body.readyVolumes).to.be.undefined;",
+              "  pm.expect(body.serviceReady).to.be.undefined;",
+              "  if (body.publicEndpoint) pm.expect(body.publicEndpoint.allowedCidrs).to.be.undefined;",
               "});"
             ],
             "type": "text/javascript"
@@ -785,12 +768,16 @@
             "exec": [
               "pm.test('Operation status returned', function () { pm.response.to.have.status(200); });",
               "const body = pm.response.json();",
-              "pm.test('Operation progress is present', function () {",
-              "  pm.expect(body.stage).to.be.a('string');",
-              "  pm.expect(body.progress).to.be.within(0, 100);",
+              "pm.test('Operation response is minimal and pollable', function () {",
+              "  pm.expect(body.operationId).to.be.a('string');",
+              "  pm.expect(body.databaseId).to.be.a('string');",
+              "  pm.expect(body.status).to.be.a('string');",
               "  pm.expect(body.statusUrl).to.be.a('string');",
               "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
               "  pm.expect(body.terminal).to.be.a('boolean');",
+              "  pm.expect(body.project).to.be.undefined;",
+              "  pm.expect(body.stage).to.be.undefined;",
+              "  pm.expect(body.progress).to.be.undefined;",
               "});"
             ],
             "type": "text/javascript"
@@ -817,12 +804,14 @@
                   "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
                   "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+                  "  pm.expect(body.project).to.be.undefined;",
+                  "  pm.expect(body.stage).to.be.undefined;",
+                  "  pm.expect(body.progress).to.be.undefined;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('operationUrl', body.statusUrl || body.operationUrl);",
-                  "  if (body.databaseStatusUrl) pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -881,12 +870,14 @@
                   "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
                   "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+                  "  pm.expect(body.project).to.be.undefined;",
+                  "  pm.expect(body.stage).to.be.undefined;",
+                  "  pm.expect(body.progress).to.be.undefined;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('operationUrl', body.statusUrl || body.operationUrl);",
-                  "  if (body.databaseStatusUrl) pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -945,12 +936,14 @@
                   "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
                   "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+                  "  pm.expect(body.project).to.be.undefined;",
+                  "  pm.expect(body.stage).to.be.undefined;",
+                  "  pm.expect(body.progress).to.be.undefined;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('operationUrl', body.statusUrl || body.operationUrl);",
-                  "  if (body.databaseStatusUrl) pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -1009,12 +1002,14 @@
                   "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
                   "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+                  "  pm.expect(body.project).to.be.undefined;",
+                  "  pm.expect(body.stage).to.be.undefined;",
+                  "  pm.expect(body.progress).to.be.undefined;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('operationUrl', body.statusUrl || body.operationUrl);",
-                  "  if (body.databaseStatusUrl) pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -1073,12 +1068,14 @@
                   "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
                   "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+                  "  pm.expect(body.project).to.be.undefined;",
+                  "  pm.expect(body.stage).to.be.undefined;",
+                  "  pm.expect(body.progress).to.be.undefined;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('operationUrl', body.statusUrl || body.operationUrl);",
-                  "  if (body.databaseStatusUrl) pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.statusUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -1160,7 +1157,7 @@
           }
         ],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/operations?page=0&size=20&sort=createdAt&direction=desc",
+          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/operations?page=0&size=20",
           "host": [
             "{{baseUrl}}"
           ],
@@ -1181,14 +1178,6 @@
             {
               "key": "size",
               "value": "20"
-            },
-            {
-              "key": "sort",
-              "value": "createdAt"
-            },
-            {
-              "key": "direction",
-              "value": "desc"
             }
           ]
         }
@@ -1252,12 +1241,14 @@
               "  pm.expect(body.status).to.be.a('string');",
               "  pm.expect(body.statusUrl).to.be.a('string');",
               "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+              "  pm.expect(body.project).to.be.undefined;",
+              "  pm.expect(body.stage).to.be.undefined;",
+              "  pm.expect(body.progress).to.be.undefined;",
               "});",
               "if (pm.response.code === 202) {",
               "  pm.collectionVariables.set('databaseId', body.databaseId);",
               "  pm.collectionVariables.set('operationId', body.operationId);",
-              "  pm.collectionVariables.set('operationUrl', body.statusUrl || body.operationUrl);",
-              "  if (body.databaseStatusUrl) pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
+              "  pm.collectionVariables.set('operationUrl', body.statusUrl);",
               "}"
             ],
             "type": "text/javascript"
@@ -1394,12 +1385,14 @@
               "  pm.expect(body.status).to.be.a('string');",
               "  pm.expect(body.statusUrl).to.be.a('string');",
               "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+              "  pm.expect(body.project).to.be.undefined;",
+              "  pm.expect(body.stage).to.be.undefined;",
+              "  pm.expect(body.progress).to.be.undefined;",
               "});",
               "if (pm.response.code === 202) {",
               "  pm.collectionVariables.set('databaseId', body.databaseId);",
               "  pm.collectionVariables.set('operationId', body.operationId);",
-              "  pm.collectionVariables.set('operationUrl', body.statusUrl || body.operationUrl);",
-              "  if (body.databaseStatusUrl) pm.collectionVariables.set('databaseStatusUrl', body.databaseStatusUrl);",
+              "  pm.collectionVariables.set('operationUrl', body.statusUrl);",
               "}"
             ],
             "type": "text/javascript"
@@ -1433,7 +1426,7 @@
     },
     {
       "name": "Frontend Contract and Recovery Tests",
-      "description": "Smoke tests for frontend-safe responses, operation recovery after refresh, validation errors and pagination. Run these against an existing project/database after provisioning at least one database.",
+      "description": "Smoke tests for the simplified frontend contract: small responses, page/size pagination, operation recovery, validation errors and credential isolation.",
       "item": [
         {
           "name": "Health Check",
@@ -1480,7 +1473,7 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases?page=0&size=20&sort=createdAt&direction=desc",
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases?page=0&size=20",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -1499,14 +1492,6 @@
                 {
                   "key": "size",
                   "value": "20"
-                },
-                {
-                  "key": "sort",
-                  "value": "createdAt"
-                },
-                {
-                  "key": "direction",
-                  "value": "desc"
                 }
               ]
             }
@@ -1525,11 +1510,15 @@
                   "  pm.expect(body.totalItems).to.be.a('number');",
                   "  pm.expect(body.totalPages).to.be.a('number');",
                   "});",
-                  "pm.test('Database rows are frontend safe', function () {",
+                  "pm.test('Rows do not expose backend-only fields', function () {",
                   "  body.items.forEach(item => {",
                   "    pm.expect(item.privateEndpoint).to.be.undefined;",
+                  "    pm.expect(item.namespace).to.be.undefined;",
+                  "    pm.expect(item.readyReplicas).to.be.undefined;",
+                  "    pm.expect(item.readyVolumes).to.be.undefined;",
+                  "    pm.expect(item.serviceReady).to.be.undefined;",
                   "    pm.expect(item.password).to.be.undefined;",
-                  "    if (item.publicEndpoint) pm.expect(item.publicEndpoint.ready).to.be.a('boolean');",
+                  "    if (item.publicEndpoint) pm.expect(item.publicEndpoint.allowedCidrs).to.be.undefined;",
                   "  });",
                   "});",
                   "if (body.items.length && !pm.collectionVariables.get('databaseId')) pm.collectionVariables.set('databaseId', body.items[0].databaseId);"
@@ -1571,14 +1560,18 @@
                 "exec": [
                   "pm.test('Database status returned', function () { pm.response.to.have.status(200); });",
                   "const body = pm.response.json();",
-                  "pm.test('Status has health fields and no credentials/private endpoint', function () {",
+                  "pm.test('Only useful status fields are exposed', function () {",
                   "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.stage).to.be.a('string');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
                   "  pm.expect(body.privateEndpoint).to.be.undefined;",
+                  "  pm.expect(body.namespace).to.be.undefined;",
+                  "  pm.expect(body.readyReplicas).to.be.undefined;",
+                  "  pm.expect(body.readyVolumes).to.be.undefined;",
+                  "  pm.expect(body.serviceReady).to.be.undefined;",
                   "  pm.expect(body.password).to.be.undefined;",
                   "});",
-                  "pm.test('Public readiness is explicit boolean', function () { if (body.publicEndpoint) pm.expect(body.publicEndpoint.ready).to.be.a('boolean'); });"
+                  "pm.test('Public endpoint is minimal', function () { if (body.publicEndpoint) { pm.expect(body.publicEndpoint.ready).to.be.a('boolean'); pm.expect(body.publicEndpoint.allowedCidrs).to.be.undefined; } });"
                 ],
                 "type": "text/javascript"
               }
@@ -1596,7 +1589,7 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/operations?page=0&size=20&sort=createdAt&direction=desc",
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/operations?page=0&size=20",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -1617,14 +1610,6 @@
                 {
                   "key": "size",
                   "value": "20"
-                },
-                {
-                  "key": "sort",
-                  "value": "createdAt"
-                },
-                {
-                  "key": "direction",
-                  "value": "desc"
                 }
               ]
             }
@@ -1642,13 +1627,16 @@
                   "  pm.collectionVariables.set('operationId', op.operationId);",
                   "  pm.collectionVariables.set('operationUrl', op.statusUrl);",
                   "}",
-                  "pm.test('Operation rows contain polling fields', function () {",
+                  "pm.test('Operation rows are minimal and pollable', function () {",
                   "  body.items.forEach(item => {",
                   "    pm.expect(item.operationId).to.be.a('string');",
                   "    pm.expect(item.status).to.be.a('string');",
                   "    pm.expect(item.terminal).to.be.a('boolean');",
                   "    pm.expect(item.statusUrl).to.be.a('string');",
                   "    pm.expect(item.suggestedPollingIntervalSeconds).to.be.a('number');",
+                  "    pm.expect(item.project).to.be.undefined;",
+                  "    pm.expect(item.stage).to.be.undefined;",
+                  "    pm.expect(item.progress).to.be.undefined;",
                   "  });",
                   "});"
                 ],
@@ -1685,13 +1673,16 @@
                 "exec": [
                   "pm.test('Operation status returned', function () { pm.response.to.have.status(200); });",
                   "const body = pm.response.json();",
-                  "pm.test('Polling contract is stable', function () {",
+                  "pm.test('Polling contract is stable and minimal', function () {",
                   "  pm.expect(body.operationId).to.be.a('string');",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.status).to.be.a('string');",
                   "  pm.expect(body.terminal).to.be.a('boolean');",
                   "  pm.expect(body.statusUrl).to.be.a('string');",
                   "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+                  "  pm.expect(body.project).to.be.undefined;",
+                  "  pm.expect(body.stage).to.be.undefined;",
+                  "  pm.expect(body.progress).to.be.undefined;",
                   "  if (body.status === 'FAILED') pm.expect(body.failureReason).to.be.a('string');",
                   "});"
                 ],
@@ -1901,73 +1892,6 @@
             "body": {
               "mode": "raw",
               "raw": "{\"name\":\"pg-shards-bad\",\"engine\":\"POSTGRESQL\",\"mode\":\"STANDALONE\",\"version\":\"17.5.0\",\"size\":\"C1G1\",\"storageGi\":10,\"replicas\":1,\"shards\":2,\"deletionProtection\":true}"
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "pm.test('Error status returned', function () { pm.expect(pm.response.code).to.be.oneOf([400, 404, 409, 422]); });",
-                  "const body = pm.response.json();",
-                  "pm.test('Standard error contract is present', function () {",
-                  "  pm.expect(body.code).to.be.a('string');",
-                  "  pm.expect(body.message).to.be.a('string');",
-                  "  pm.expect(body.fieldErrors).to.be.an('array');",
-                  "  pm.expect(body.requestId).to.be.a('string');",
-                  "  pm.expect(pm.response.headers.get('X-Request-Id')).to.eql(body.requestId);",
-                  "});",
-                  "pm.test('No stack trace or obvious secrets are exposed', function () {",
-                  "  const text = pm.response.text();",
-                  "  pm.expect(text).to.not.include('java.lang');",
-                  "  pm.expect(text).to.not.match(/password\\s*[:=]\\s*[^\\s,;\"']+/i);",
-                  "});"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ]
-        },
-        {
-          "name": "Validation - Bad Sort Parameter",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "X-Request-Id",
-                "value": "{{xRequestId}}"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases?page=0&size=20&sort=privateEndpoint&direction=desc",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "projects",
-                "{{project}}",
-                "databases"
-              ],
-              "query": [
-                {
-                  "key": "page",
-                  "value": "0"
-                },
-                {
-                  "key": "size",
-                  "value": "20"
-                },
-                {
-                  "key": "sort",
-                  "value": "privateEndpoint"
-                },
-                {
-                  "key": "direction",
-                  "value": "desc"
-                }
-              ]
             }
           },
           "event": [

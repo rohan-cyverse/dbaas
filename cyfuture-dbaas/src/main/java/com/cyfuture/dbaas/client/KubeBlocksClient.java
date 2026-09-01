@@ -140,8 +140,8 @@ public class KubeBlocksClient {
     }
 
     public void delete(String namespace, String databaseId) {
-        get(namespace, databaseId);
         try {
+            ensureDeletable(namespace, databaseId);
             customObjectsApi.deleteNamespacedCustomObject(
                     GROUP, VERSION, namespace, CLUSTERS, databaseId).execute();
         } catch (io.kubernetes.client.openapi.ApiException exception) {
@@ -155,6 +155,7 @@ public class KubeBlocksClient {
 
     public void requestDelete(String namespace, String databaseId) {
         try {
+            ensureDeletable(namespace, databaseId);
             customObjectsApi.deleteNamespacedCustomObject(
                     GROUP, VERSION, namespace, CLUSTERS, databaseId).execute();
         } catch (io.kubernetes.client.openapi.ApiException exception) {
@@ -213,12 +214,12 @@ public class KubeBlocksClient {
 
     public DatabaseResponse setDeletionProtection(String namespace, String databaseId, boolean enabled) {
         try {
-            Map<String, Object> cluster = asMap(customObjectsApi.getNamespacedCustomObject(
+            Map<String, Object> cluster = mutableMap(customObjectsApi.getNamespacedCustomObject(
                     GROUP, VERSION, namespace, CLUSTERS, databaseId).execute());
-            asMap(cluster.get("spec")).put("terminationPolicy", enabled ? "DoNotTerminate" : "Delete");
-            Map<String, Object> metadata = asMap(cluster.get("metadata"));
-            asMap(metadata.get("annotations")).put(
-                    "dbaas.cyfuture.com/deletion-protection", String.valueOf(enabled));
+            mutableChildMap(cluster, "spec")
+                    .put("terminationPolicy", enabled ? "DoNotTerminate" : "Delete");
+            mutableChildMap(mutableChildMap(cluster, "metadata"), "annotations")
+                    .put("dbaas.cyfuture.com/deletion-protection", String.valueOf(enabled));
             customObjectsApi.replaceNamespacedCustomObject(
                     GROUP, VERSION, namespace, CLUSTERS, databaseId, cluster).execute();
             return get(namespace, databaseId);
@@ -818,9 +819,9 @@ public class KubeBlocksClient {
 
     private void cleanupPartialDeployment(String namespace, String databaseId) {
         try {
-            Map<String, Object> cluster = asMap(customObjectsApi.getNamespacedCustomObject(
+            Map<String, Object> cluster = mutableMap(customObjectsApi.getNamespacedCustomObject(
                     GROUP, VERSION, namespace, CLUSTERS, databaseId).execute());
-            asMap(cluster.get("spec")).put("terminationPolicy", "Delete");
+            mutableChildMap(cluster, "spec").put("terminationPolicy", "Delete");
             customObjectsApi.replaceNamespacedCustomObject(
                     GROUP, VERSION, namespace, CLUSTERS, databaseId, cluster).execute();
             customObjectsApi.deleteNamespacedCustomObject(
@@ -925,6 +926,38 @@ public class KubeBlocksClient {
     @SuppressWarnings("unchecked")
     private Map<String, Object> asMap(Object value) {
         return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+    }
+
+    private void ensureDeletable(String namespace, String databaseId)
+            throws io.kubernetes.client.openapi.ApiException {
+        Map<String, Object> cluster = mutableMap(customObjectsApi.getNamespacedCustomObject(
+                GROUP, VERSION, namespace, CLUSTERS, databaseId).execute());
+        boolean changed = false;
+        Map<String, Object> spec = mutableChildMap(cluster, "spec");
+        if (!"Delete".equals(spec.get("terminationPolicy"))) {
+            spec.put("terminationPolicy", "Delete");
+            changed = true;
+        }
+        Map<String, Object> annotations =
+                mutableChildMap(mutableChildMap(cluster, "metadata"), "annotations");
+        if (!"false".equals(annotations.get("dbaas.cyfuture.com/deletion-protection"))) {
+            annotations.put("dbaas.cyfuture.com/deletion-protection", "false");
+            changed = true;
+        }
+        if (changed) {
+            customObjectsApi.replaceNamespacedCustomObject(
+                    GROUP, VERSION, namespace, CLUSTERS, databaseId, cluster).execute();
+        }
+    }
+
+    private Map<String, Object> mutableMap(Object value) {
+        return new LinkedHashMap<>(asMap(value));
+    }
+
+    private Map<String, Object> mutableChildMap(Map<String, Object> parent, String key) {
+        Map<String, Object> child = mutableMap(parent.get(key));
+        parent.put(key, child);
+        return child;
     }
 
     private int number(Object value) {

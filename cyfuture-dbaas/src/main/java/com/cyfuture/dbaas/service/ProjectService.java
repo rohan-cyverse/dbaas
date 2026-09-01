@@ -4,8 +4,10 @@ import com.cyfuture.dbaas.config.DatabaseProperties;
 import com.cyfuture.dbaas.dto.CreateProjectRequest;
 import com.cyfuture.dbaas.dto.ProjectResponse;
 import com.cyfuture.dbaas.dto.UpdateProjectRequest;
+import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.ProjectMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
+import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.ResourceStatus;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.ProjectMetadataRepository;
@@ -13,6 +15,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -71,12 +74,21 @@ public class ProjectService {
         return toResponse(projectRepository.save(metadata));
     }
 
+    @Transactional
     public void delete(String project) {
         ProjectMetadata metadata = requireActiveProject(project);
-        if (databaseRepository.existsByProjectName(project)) {
+        List<DatabaseMetadata> databases =
+                databaseRepository.findByProjectNameOrderByCreatedAtDesc(project);
+        List<DatabaseMetadata> activeDatabases = databases.stream()
+                .filter(database -> database.getStatus() != DatabaseStatus.DELETED)
+                .toList();
+        if (!activeDatabases.isEmpty()) {
+            DatabaseMetadata blocker = activeDatabases.get(0);
             throw new ApiException(HttpStatus.CONFLICT,
-                    "Project cannot be deleted while it contains databases");
+                    "Project cannot be deleted while database "
+                            + blocker.getDatabaseId() + " is " + blocker.getStatus());
         }
+        databaseRepository.deleteAll(databases);
         projectRepository.delete(metadata);
     }
 

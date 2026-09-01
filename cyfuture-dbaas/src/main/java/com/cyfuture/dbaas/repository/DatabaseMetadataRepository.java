@@ -21,7 +21,6 @@ public interface DatabaseMetadataRepository extends JpaRepository<DatabaseMetada
             @Param("databaseId") String databaseId, @Param("projectName") String projectName);
     Optional<DatabaseMetadata> findByProjectNameAndIdempotencyKey(
             String projectName, String idempotencyKey);
-    boolean existsByProjectName(String projectName);
     List<DatabaseMetadata> findAllByOrderByCreatedAtAsc();
     List<DatabaseMetadata> findByStatusOrderByCreatedAtAsc(DatabaseStatus status);
     List<DatabaseMetadata> findByStatusInOrderByCreatedAtAsc(List<DatabaseStatus> statuses);

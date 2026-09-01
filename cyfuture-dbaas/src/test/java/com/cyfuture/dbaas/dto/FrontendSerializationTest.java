@@ -30,6 +30,11 @@ class FrontendSerializationTest {
         String json = objectMapper.writeValueAsString(response);
 
         assertFalse(json.contains("privateEndpoint"));
+        assertFalse(json.contains("namespace"));
+        assertFalse(json.contains("readyReplicas"));
+        assertFalse(json.contains("readyVolumes"));
+        assertFalse(json.contains("serviceReady"));
+        assertFalse(json.contains("allowedCidrs"));
         assertTrue(json.contains("publicEndpoint"));
     }
 
@@ -45,6 +50,7 @@ class FrontendSerializationTest {
 
         assertFalse(json.contains("privateEndpoint"));
         assertFalse(json.contains("privateConnectionUri"));
+        assertFalse(json.contains("allowedCidrs"));
         assertTrue(json.contains("publicConnectionUri"));
     }
 }

@@ -183,7 +183,13 @@ public class DatabaseStateReconciler {
             if (database.getDeleteRequestedAt() == null) {
                 update(database::setDeleteRequestedAt, Instant.now());
             }
-            sharedGatewayService.removeRoute(database);
+            String gatewayFailure = null;
+            try {
+                sharedGatewayService.removeRoute(database);
+            } catch (Exception exception) {
+                gatewayFailure = safeMessage(exception);
+                update(database::setSyncMessage, gatewayFailure);
+            }
             kubeBlocksClient.requestDelete(database.getNamespaceName(), database.getDatabaseId());
             KubeBlocksClient.ClusterObservation observed = kubeBlocksClient.observeCluster(
                     database.getNamespaceName(), database.getDatabaseId());
@@ -192,13 +198,18 @@ public class DatabaseStateReconciler {
                 update(database::setStatus, DatabaseStatus.DELETED);
                 update(database::setDeletedAt, Instant.now());
                 update(database::setMessage, "Database Cluster is absent; metadata is preserved");
-                update(database::setSyncMessage, "Deletion confirmed by Kubernetes");
+                update(database::setSyncMessage, gatewayFailure == null
+                        ? "Deletion confirmed by Kubernetes"
+                        : "Deletion confirmed by Kubernetes; public route cleanup will retry: "
+                                + gatewayFailure);
                 finishDeleteOperation(database, OperationStatus.SUCCEEDED,
                         "Deletion confirmed by Kubernetes");
             } else {
                 syncObserved(database, observed);
                 update(database::setMessage, "KubeBlocks deletion is running");
-                update(database::setSyncMessage, observed.message());
+                update(database::setSyncMessage, gatewayFailure == null
+                        ? observed.message()
+                        : "Public route cleanup will retry: " + gatewayFailure);
                 finishDeleteOperation(database, OperationStatus.RUNNING,
                         "KubeBlocks deletion is running");
             }
