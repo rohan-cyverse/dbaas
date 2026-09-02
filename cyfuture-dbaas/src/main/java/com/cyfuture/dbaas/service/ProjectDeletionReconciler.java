@@ -27,6 +27,8 @@ import java.time.Instant;
 @Slf4j
 public class ProjectDeletionReconciler {
     private static final String LOCK_NAME = "cyfuture-dbaas-project-reconciler";
+    private static final int PROJECT_MESSAGE_LIMIT = 240;
+    private static final int OPERATION_MESSAGE_LIMIT = 3500;
 
     private final ProjectMetadataRepository projectRepository;
     private final OperationMetadataRepository operationRepository;
@@ -74,7 +76,7 @@ public class ProjectDeletionReconciler {
             }
 
             if (!observation.safeToDelete()) {
-                project.setMessage(observation.message());
+                project.setMessage(projectMessage(observation.message()));
                 project.setUpdatedAt(Instant.now());
                 projectRepository.save(project);
                 finishProjectOperation(project, OperationStatus.RUNNING,
@@ -107,7 +109,7 @@ public class ProjectDeletionReconciler {
         operation.setProvisioningStage(status == OperationStatus.SUCCEEDED
                 ? ProvisioningStage.READY : ProvisioningStage.WAITING_FOR_REPLICAS);
         operation.setProgress(status == OperationStatus.SUCCEEDED ? 100 : 50);
-        operation.setMessage(message);
+        operation.setMessage(operationMessage(message));
         if (operation.getStartedAt() == null) operation.setStartedAt(Instant.now());
         if (status == OperationStatus.SUCCEEDED) operation.setCompletedAt(Instant.now());
         operation.setUpdatedAt(Instant.now());
@@ -140,6 +142,19 @@ public class ProjectDeletionReconciler {
     private String safeMessage(Exception exception) {
         String message = exception.getMessage();
         if (message == null || message.isBlank()) return "Namespace deletion will retry";
-        return message.replaceAll("(?i)(password|passwd|pwd|token|secret)\\s*[:=]\\s*[^\\s,;\"']+", "$1=******");
+        return operationMessage(message.replaceAll("(?i)(password|passwd|pwd|token|secret)\\s*[:=]\\s*[^\\s,;\"']+", "$1=******"));
+    }
+
+    private String projectMessage(String message) {
+        return truncate(message, PROJECT_MESSAGE_LIMIT);
+    }
+
+    private String operationMessage(String message) {
+        return truncate(message, OPERATION_MESSAGE_LIMIT);
+    }
+
+    private String truncate(String message, int limit) {
+        if (message == null || message.length() <= limit) return message;
+        return message.substring(0, Math.max(0, limit - 15)) + "... [truncated]";
     }
 }

@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -113,6 +114,25 @@ class ProjectDeletionReconcilerTest {
 
         verify(kubeBlocksClient, never()).requestNamespaceDelete("dbaas-orders");
         assertEquals(ResourceStatus.DELETING, project.getStatus());
+        verify(projectRepository).save(project);
+    }
+
+    @Test
+    void truncatesLongNamespaceBlockerMessageBeforeSavingProject() {
+        ProjectMetadata project = project();
+        String longMessage = "Namespace deletion is blocked by resources: "
+                + "PersistentVolumeClaim/data-db-orders0001-0, ".repeat(200);
+        when(projectRepository.findByStatusOrderByCreatedAtAsc(ResourceStatus.DELETING))
+                .thenReturn(List.of(project));
+        when(kubeBlocksClient.observeNamespaceDeletion("dbaas-orders", "orders"))
+                .thenReturn(new KubeBlocksClient.NamespaceDeletionObservation(
+                        true, false, false, List.of("PersistentVolumeClaim/data-db-orders0001-0"),
+                        List.of(), longMessage));
+
+        reconciler.reconcile();
+
+        assertTrue(project.getMessage().length() <= 240);
+        assertTrue(project.getMessage().endsWith("[truncated]"));
         verify(projectRepository).save(project);
     }
 

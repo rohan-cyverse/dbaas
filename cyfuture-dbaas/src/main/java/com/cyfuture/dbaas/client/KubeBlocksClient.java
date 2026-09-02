@@ -40,6 +40,8 @@ import java.util.regex.Pattern;
 
 @Component
 public class KubeBlocksClient {
+    private static final int MAX_REPORTED_RESOURCES = 10;
+    private static final int MAX_OBSERVATION_MESSAGE_LENGTH = 1800;
     private static final String GROUP = "apps.kubeblocks.io";
     private static final String VERSION = "v1";
     private static final String CLUSTERS = "clusters";
@@ -191,17 +193,17 @@ public class KubeBlocksClient {
             message = "Cluster and owned runtime resources are absent";
         } else if (complete) {
             message = "Cluster and runtime resources are absent; retained storage remains: "
-                    + String.join(", ", retained);
+                    + summarize(retained);
         } else if (!blocking.isEmpty()) {
-            message = "Deletion is blocked by owned resources: " + String.join(", ", blocking);
+            message = "Deletion is blocked by owned resources: " + summarize(blocking);
         } else {
             message = "KubeBlocks Cluster deletion is still in progress: " + cluster.message();
         }
         if (!finalizers.isEmpty()) {
-            message += ". Finalizers still present: " + String.join(", ", finalizers);
+            message += ". Finalizers still present: " + summarize(finalizers);
         }
         return new DeletionObservation(cluster.exists(), complete, blocking,
-                retained, finalizers, message);
+                retained, finalizers, truncate(message, MAX_OBSERVATION_MESSAGE_LENGTH));
     }
 
     public void requestNamespaceDelete(String namespace) {
@@ -246,12 +248,12 @@ public class KubeBlocksClient {
             boolean safeToDelete = blockers.isEmpty();
             String message = safeToDelete
                     ? "Namespace is empty of DBaaS-managed runtime resources"
-                    : "Namespace deletion is blocked by resources: " + String.join(", ", blockers);
+                    : "Namespace deletion is blocked by resources: " + summarize(blockers);
             if (!finalizers.isEmpty()) {
-                message += ". Finalizers still present: " + String.join(", ", finalizers);
+                message += ". Finalizers still present: " + summarize(finalizers);
             }
             return new NamespaceDeletionObservation(true, false, safeToDelete,
-                    blockers, finalizers, message);
+                    blockers, finalizers, truncate(message, MAX_OBSERVATION_MESSAGE_LENGTH));
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             if (exception.getCode() == 404) {
                 return new NamespaceDeletionObservation(false, true, false,
@@ -1126,6 +1128,20 @@ public class KubeBlocksClient {
         String name = metadata == null || metadata.getName() == null
                 ? "unknown" : metadata.getName();
         return kind + "/" + name;
+    }
+
+    private String summarize(List<String> values) {
+        if (values.isEmpty()) return "";
+        String joined = String.join(", ", values.stream()
+                .limit(MAX_REPORTED_RESOURCES)
+                .toList());
+        int remaining = values.size() - Math.min(values.size(), MAX_REPORTED_RESOURCES);
+        return remaining > 0 ? joined + " and " + remaining + " more" : joined;
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) return value;
+        return value.substring(0, Math.max(0, maxLength - 15)) + "... [truncated]";
     }
 
     @SuppressWarnings("unchecked")
