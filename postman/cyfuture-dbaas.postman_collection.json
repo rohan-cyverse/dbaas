@@ -1,0 +1,1188 @@
+{
+  "info": {
+    "_postman_id": "2b9fb3b4-4dd5-4b58-8df7-f8793713c0b2",
+    "name": "Cyfuture DBaaS - Projects and All Database Engines",
+    "description": "Complete project-scoped DBaaS API collection for PostgreSQL, MySQL and MongoDB provisioning in every currently supported deployment mode.\n\nAsync operations return 202 Accepted with operationId, databaseId, status, statusUrl and suggestedPollingIntervalSeconds. Poll statusUrl until terminal=true and status is SUCCEEDED or FAILED. Operation polling is read-only and must not be used to trigger provisioning, shared-gateway rollout or allowlist changes.\n\nBreaking frontend response changes: database list/status responses omit privateEndpoint; connection responses omit privateEndpoint and privateConnectionUri. Credentials are only returned by the connection endpoint. Errors return code, message, fieldErrors and requestId. Retry DATABASE_NOT_READY, 502 and 503 with backoff; reuse an Idempotency-Key only for the same request body.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "project",
+      "value": "test-project"
+    },
+    {
+      "key": "databaseId",
+      "value": ""
+    },
+    {
+      "key": "operationId",
+      "value": ""
+    },
+    {
+      "key": "idempotencyKey",
+      "value": "create-orders-postgres-001"
+    },
+    {
+      "key": "statusUrl",
+      "value": ""
+    },
+    {
+      "key": "operationUrl",
+      "value": ""
+    },
+    {
+      "key": "componentName",
+      "value": "postgresql"
+    },
+    {
+      "key": "volumeName",
+      "value": "data"
+    },
+    {
+      "key": "newStorageSize",
+      "value": "30Gi"
+    }
+  ],
+  "item": [
+    {
+      "name": "Create Project",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"{{project}}\",\n  \"displayName\": \"Test Project\",\n  \"description\": \"Database provisioning tests\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/projects",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "projects"
+          ]
+        }
+      }
+    },
+    {
+      "name": "List Projects",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/projects",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "projects"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Project",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/projects/{{project}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "projects",
+            "{{project}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Update Project",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"displayName\": \"Updated Test Project\",\n  \"description\": \"Updated project details\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/projects/{{project}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "projects",
+            "{{project}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Database Options",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/databases/options",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "databases",
+            "options"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Database Provisioning - All Engines and Modes",
+      "description": "Create examples for all engine/mode combinations supported by the backend. Each successful request stores databaseId and operationId for the lifecycle requests below.",
+      "item": [
+        {
+          "name": "Create PostgreSQL - Standalone",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Smooth-flow links returned', function () {",
+                  "  pm.expect(body.databaseId).to.be.a('string');",
+                  "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.operationUrl).to.be.a('string');",
+                  "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "});",
+                  "if (pm.response.code === 202) {",
+                  "  pm.collectionVariables.set('databaseId', body.databaseId);",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "create-pg-standalone-{{$timestamp}}-{{$randomInt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"pg-standalone-{{$randomInt}}\",\"remark\":\"Create PostgreSQL - Standalone created from Postman\",\"engine\":\"POSTGRESQL\",\"mode\":\"STANDALONE\",\"version\":\"17.5.0\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":1,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases"
+              ]
+            },
+            "description": "Deploys POSTGRESQL in STANDALONE mode. Run Database Options first to verify the versions installed on the target cluster."
+          }
+        },
+        {
+          "name": "Create PostgreSQL - Replication",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Smooth-flow links returned', function () {",
+                  "  pm.expect(body.databaseId).to.be.a('string');",
+                  "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.operationUrl).to.be.a('string');",
+                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "});",
+                  "if (pm.response.code === 202) {",
+                  "  pm.collectionVariables.set('databaseId', body.databaseId);",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "create-pg-replication-{{$timestamp}}-{{$randomInt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"pg-replication-{{$randomInt}}\",\"remark\":\"Create PostgreSQL - Replication created from Postman\",\"engine\":\"POSTGRESQL\",\"mode\":\"REPLICATION\",\"version\":\"17.5.0\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":2,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases"
+              ]
+            },
+            "description": "Deploys POSTGRESQL in REPLICATION mode. Run Database Options first to verify the versions installed on the target cluster."
+          }
+        },
+        {
+          "name": "Create MySQL - Standalone",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Smooth-flow links returned', function () {",
+                  "  pm.expect(body.databaseId).to.be.a('string');",
+                  "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.operationUrl).to.be.a('string');",
+                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "});",
+                  "if (pm.response.code === 202) {",
+                  "  pm.collectionVariables.set('databaseId', body.databaseId);",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "create-mysql-standalone-{{$timestamp}}-{{$randomInt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"mysql-standalone-{{$randomInt}}\",\"remark\":\"Create MySQL - Standalone created from Postman\",\"engine\":\"MYSQL\",\"mode\":\"STANDALONE\",\"version\":\"8.0.44\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":1,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases"
+              ]
+            },
+            "description": "Deploys MYSQL in STANDALONE mode. Run Database Options first to verify the versions installed on the target cluster."
+          }
+        },
+        {
+          "name": "Create MySQL - Replication",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Smooth-flow links returned', function () {",
+                  "  pm.expect(body.databaseId).to.be.a('string');",
+                  "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.operationUrl).to.be.a('string');",
+                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "});",
+                  "if (pm.response.code === 202) {",
+                  "  pm.collectionVariables.set('databaseId', body.databaseId);",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "create-mysql-replication-{{$timestamp}}-{{$randomInt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"mysql-replication-{{$randomInt}}\",\"remark\":\"Create MySQL - Replication created from Postman\",\"engine\":\"MYSQL\",\"mode\":\"REPLICATION\",\"version\":\"8.0.44\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":2,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases"
+              ]
+            },
+            "description": "Deploys MYSQL in REPLICATION mode. Run Database Options first to verify the versions installed on the target cluster."
+          }
+        },
+        {
+          "name": "Create MongoDB - Standalone",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Smooth-flow links returned', function () {",
+                  "  pm.expect(body.databaseId).to.be.a('string');",
+                  "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.operationUrl).to.be.a('string');",
+                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "});",
+                  "if (pm.response.code === 202) {",
+                  "  pm.collectionVariables.set('databaseId', body.databaseId);",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "create-mongo-standalone-{{$timestamp}}-{{$randomInt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"mongo-standalone-{{$randomInt}}\",\"remark\":\"Create MongoDB - Standalone created from Postman\",\"engine\":\"MONGODB\",\"mode\":\"STANDALONE\",\"version\":\"8.0.17\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":1,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases"
+              ]
+            },
+            "description": "Deploys MONGODB in STANDALONE mode. Run Database Options first to verify the versions installed on the target cluster."
+          }
+        },
+        {
+          "name": "Create MongoDB - Replica Set",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Smooth-flow links returned', function () {",
+                  "  pm.expect(body.databaseId).to.be.a('string');",
+                  "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.operationUrl).to.be.a('string');",
+                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "});",
+                  "if (pm.response.code === 202) {",
+                  "  pm.collectionVariables.set('databaseId', body.databaseId);",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "create-mongo-replicaset-{{$timestamp}}-{{$randomInt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"mongo-replicaset-{{$randomInt}}\",\"remark\":\"Create MongoDB - Replica Set created from Postman\",\"engine\":\"MONGODB\",\"mode\":\"REPLICA_SET\",\"version\":\"8.0.17\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":3,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases"
+              ]
+            },
+            "description": "Deploys MONGODB in REPLICA_SET mode. Run Database Options first to verify the versions installed on the target cluster."
+          }
+        },
+        {
+          "name": "Create MongoDB - Sharding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Smooth-flow links returned', function () {",
+                  "  pm.expect(body.databaseId).to.be.a('string');",
+                  "  pm.expect(body.operationId).to.be.a('string');",
+                  "  pm.expect(body.statusUrl).to.be.a('string');",
+                  "  pm.expect(body.operationUrl).to.be.a('string');",
+                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "});",
+                  "if (pm.response.code === 202) {",
+                  "  pm.collectionVariables.set('databaseId', body.databaseId);",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
+                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "create-mongo-sharding-{{$timestamp}}-{{$randomInt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"mongo-sharding-{{$randomInt}}\",\"remark\":\"Create MongoDB - Sharding created from Postman\",\"engine\":\"MONGODB\",\"mode\":\"SHARDING\",\"version\":\"8.0.17\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":3,\"shards\":2,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases"
+              ]
+            },
+            "description": "Deploys MONGODB in SHARDING mode. Run Database Options first to verify the versions installed on the target cluster."
+          }
+        }
+      ]
+    },
+    {
+      "name": "List Project Databases",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases?page=0&size=20&sort=createdAt&direction=desc",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "projects",
+            "{{project}}",
+            "databases"
+          ],
+          "query": [
+            {
+              "key": "page",
+              "value": "0"
+            },
+            {
+              "key": "size",
+              "value": "20"
+            },
+            {
+              "key": "sort",
+              "value": "createdAt"
+            },
+            {
+              "key": "direction",
+              "value": "desc"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Database",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "projects",
+            "{{project}}",
+            "databases",
+            "{{databaseId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Database status returned', function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test('Progress contract is present', function () {",
+              "  pm.expect(body.stage).to.be.a('string');",
+              "  pm.expect(body.progress).to.be.within(0, 100);",
+              "  pm.expect(body.privateEndpoint).to.be.undefined;",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Get Operation",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/operations/{{operationId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "projects",
+            "{{project}}",
+            "databases",
+            "{{databaseId}}",
+            "operations",
+            "{{operationId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Operation status returned', function () { pm.response.to.have.status(200); });",
+              "const body = pm.response.json();",
+              "pm.test('Operation progress is present', function () {",
+              "  pm.expect(body.stage).to.be.a('string');",
+              "  pm.expect(body.progress).to.be.within(0, 100);",
+              "  pm.expect(body.statusUrl).to.be.a('string');",
+              "  pm.expect(body.suggestedPollingIntervalSeconds).to.be.a('number');",
+              "  pm.expect(body.terminal).to.be.a('boolean');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "KubeBlocks Operations",
+      "description": "Project-scoped KubeBlocks OpsRequest examples. Set databaseId to a RUNNING database first. For MongoDB sharding use componentName values such as mongos, config-server or shard.",
+      "item": [
+        {
+          "name": "Vertical Scaling",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Operation accepted', function () { pm.response.to.have.status(202); });",
+                  "if (pm.response.code === 202) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "vertical-scale-{{$timestamp}}-{{$randomInt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"componentName\": \"{{componentName}}\",\n  \"requests\": {\n    \"cpu\": \"1\",\n    \"memory\": \"2Gi\"\n  },\n  \"limits\": {\n    \"cpu\": \"2\",\n    \"memory\": \"4Gi\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/vertical-scaling",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases",
+                "{{databaseId}}",
+                "vertical-scaling"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Horizontal Scaling",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Operation accepted', function () { pm.response.to.have.status(202); });",
+                  "if (pm.response.code === 202) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "horizontal-scale-{{$timestamp}}-{{$randomInt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"componentName\": \"{{componentName}}\",\n  \"targetReplicas\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/horizontal-scaling",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases",
+                "{{databaseId}}",
+                "horizontal-scaling"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Storage Expansion",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Operation accepted', function () { pm.response.to.have.status(202); });",
+                  "if (pm.response.code === 202) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "storage-expand-{{$timestamp}}-{{$randomInt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"componentName\": \"{{componentName}}\",\n  \"volumeName\": \"{{volumeName}}\",\n  \"newStorageSize\": \"{{newStorageSize}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/storage-expansion",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases",
+                "{{databaseId}}",
+                "storage-expansion"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Restart Component",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Operation accepted', function () { pm.response.to.have.status(202); });",
+                  "if (pm.response.code === 202) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "restart-component-{{$timestamp}}-{{$randomInt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"componentName\": \"{{componentName}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/restart",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases",
+                "{{databaseId}}",
+                "restart"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Restart Database",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Operation accepted', function () { pm.response.to.have.status(202); });",
+                  "if (pm.response.code === 202) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "restart-database-{{$timestamp}}-{{$randomInt}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/restart",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{project}}",
+                "databases",
+                "{{databaseId}}",
+                "restart"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reconciliation - Orphans",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/reconciliation/orphans",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "reconciliation",
+            "orphans"
+          ]
+        },
+        "description": "Lists DBaaS-managed KubeBlocks clusters that are absent from MySQL metadata. The API never adopts or deletes these clusters automatically."
+      }
+    },
+    {
+      "name": "List Database Operations",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/operations?page=0&size=20&sort=createdAt&direction=desc",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "projects",
+            "{{project}}",
+            "databases",
+            "{{databaseId}}",
+            "operations"
+          ],
+          "query": [
+            {
+              "key": "page",
+              "value": "0"
+            },
+            {
+              "key": "size",
+              "value": "20"
+            },
+            {
+              "key": "sort",
+              "value": "createdAt"
+            },
+            {
+              "key": "direction",
+              "value": "desc"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Connection",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/connection",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "projects",
+            "{{project}}",
+            "databases",
+            "{{databaseId}}",
+            "connection"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "if (pm.response.code === 200) {",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.publicConnectionUri).to.be.a('string');",
+              "  pm.expect(body.privateConnectionUri).to.be.undefined;",
+              "  pm.expect(body.privateEndpoint).to.be.undefined;",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Rotate Credentials",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "if (pm.response.code === 202) {",
+              "  const body = pm.response.json();",
+              "  pm.collectionVariables.set('operationId', body.operationId);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/credentials/rotate",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "projects",
+            "{{project}}",
+            "databases",
+            "{{databaseId}}",
+            "credentials",
+            "rotate"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Disable Deletion Protection",
+      "request": {
+        "method": "PUT",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/deletion-protection?enabled=false",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "projects",
+            "{{project}}",
+            "databases",
+            "{{databaseId}}",
+            "deletion-protection"
+          ],
+          "query": [
+            {
+              "key": "enabled",
+              "value": "false"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Enable Deletion Protection",
+      "request": {
+        "method": "PUT",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/deletion-protection?enabled=true",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "projects",
+            "{{project}}",
+            "databases",
+            "{{databaseId}}",
+            "deletion-protection"
+          ],
+          "query": [
+            {
+              "key": "enabled",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Delete Database",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "projects",
+            "{{project}}",
+            "databases",
+            "{{databaseId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Delete Project (only when empty)",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/projects/{{project}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "projects",
+            "{{project}}"
+          ]
+        }
+      }
+    }
+  ]
+}

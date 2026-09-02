@@ -1,0 +1,8 @@
+.env
+target/
+.idea/
+*.iml
+*.kubeconfig
+*.pem
+*.key
+application-local.properties
