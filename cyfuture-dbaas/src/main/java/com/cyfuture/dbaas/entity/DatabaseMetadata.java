@@ -12,6 +12,7 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
+import jakarta.persistence.Version;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -81,4 +82,6 @@ public class DatabaseMetadata {
     private Instant degradedSince;
     private Instant deleteRequestedAt;
     private Instant deletedAt;
+    @Version
+    private long metadataVersion;
 }

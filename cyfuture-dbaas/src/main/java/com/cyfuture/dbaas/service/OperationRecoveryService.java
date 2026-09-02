@@ -46,9 +46,13 @@ public class OperationRecoveryService {
                                     request(database));
                         } else if (operation.getType() != OperationType.CREATE) {
                             operation.setStatus(OperationStatus.PENDING);
-                            operation.setMessage("Resuming KubeBlocks operation after application restart");
+                            operation.setMessage(operation.getType() == OperationType.DELETE
+                                    ? "Resuming deletion after application restart"
+                                    : "Resuming KubeBlocks operation after application restart");
                             operationRepository.save(operation);
-                            operationSubmitter.submit(operation.getOperationId());
+                            if (operation.getType() != OperationType.DELETE) {
+                                operationSubmitter.submit(operation.getOperationId());
+                            }
                         }
                     });
         }

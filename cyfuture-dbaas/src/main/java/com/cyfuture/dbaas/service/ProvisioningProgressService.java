@@ -21,6 +21,11 @@ public class ProvisioningProgressService {
 
     public void update(DatabaseMetadata database, ProvisioningStage stage,
                        int progress, String message) {
+        if (database.getDesiredStatus() == DatabaseStatus.DELETED
+                || database.getStatus() == DatabaseStatus.DELETING
+                || database.getStatus() == DatabaseStatus.DELETED) {
+            return;
+        }
         int safeProgress = Math.max(0, Math.min(progress, 100));
         database.setProvisioningStage(stage);
         database.setProgress(safeProgress);
@@ -38,11 +43,17 @@ public class ProvisioningProgressService {
             operation.setProgress(safeProgress);
             operation.setMessage(message);
             if (operation.getStartedAt() == null) operation.setStartedAt(Instant.now());
+            operation.setUpdatedAt(Instant.now());
             operationRepository.save(operation);
         });
     }
 
     public void ready(DatabaseMetadata database) {
+        if (database.getDesiredStatus() == DatabaseStatus.DELETED
+                || database.getStatus() == DatabaseStatus.DELETING
+                || database.getStatus() == DatabaseStatus.DELETED) {
+            return;
+        }
         database.setStatus(DatabaseStatus.RUNNING);
         update(database, ProvisioningStage.READY, 100,
                 "Database is ready to accept connections");
@@ -53,11 +64,17 @@ public class ProvisioningProgressService {
             operation.setMessage("Database is ready to accept connections");
             if (operation.getStartedAt() == null) operation.setStartedAt(Instant.now());
             operation.setCompletedAt(Instant.now());
+            operation.setUpdatedAt(Instant.now());
             operationRepository.save(operation);
         });
     }
 
     public void failed(DatabaseMetadata database, String message) {
+        if (database.getDesiredStatus() == DatabaseStatus.DELETED
+                || database.getStatus() == DatabaseStatus.DELETING
+                || database.getStatus() == DatabaseStatus.DELETED) {
+            return;
+        }
         database.setStatus(DatabaseStatus.FAILED);
         update(database, ProvisioningStage.FAILED, 100, message);
         operationRepository.findById(database.getOperationId()).ifPresent(operation -> {
@@ -67,6 +84,7 @@ public class ProvisioningProgressService {
             operation.setMessage(message);
             if (operation.getStartedAt() == null) operation.setStartedAt(Instant.now());
             operation.setCompletedAt(Instant.now());
+            operation.setUpdatedAt(Instant.now());
             operationRepository.save(operation);
         });
     }

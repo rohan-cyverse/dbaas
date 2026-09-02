@@ -163,6 +163,17 @@ public class SharedGatewayService {
         databaseRepository.save(database);
     }
 
+    public synchronized boolean routeActive(DatabaseMetadata database) {
+        Integer reservedPort = database.getPublicPort();
+        if (reservedPort == null) return false;
+        Infrastructure infrastructure = infrastructure();
+        String config = infrastructure.configMap().getData() == null ? ""
+                : infrastructure.configMap().getData().getOrDefault(CONFIG_KEY, "");
+        boolean configured = config.contains("# route " + database.getDatabaseId())
+                || config.contains("backend database_" + reservedPort);
+        return configured || !rolloutReady(infrastructure.deployment(), config);
+    }
+
     @Scheduled(fixedDelayString = "${dbaas.gateway.reconcile-ms:10000}")
     public void scheduledReconcile() {
         try {

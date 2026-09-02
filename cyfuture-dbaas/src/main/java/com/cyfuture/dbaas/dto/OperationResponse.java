@@ -24,9 +24,11 @@ public record OperationResponse(
         int progress,
         String message,
         String failureReason,
+        boolean retryable,
         String statusUrl,
         int suggestedPollingIntervalSeconds,
         Instant createdAt,
         Instant startedAt,
-        Instant completedAt
+        Instant completedAt,
+        Instant updatedAt
 ) {}

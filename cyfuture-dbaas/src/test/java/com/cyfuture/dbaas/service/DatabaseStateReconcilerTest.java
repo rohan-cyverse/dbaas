@@ -113,9 +113,11 @@ class DatabaseStateReconcilerTest {
         DatabaseMetadata database = database(DatabaseStatus.DELETING);
         database.setPublicPort(31000);
         OperationMetadata operation = deleteOperation();
-        when(kubeBlocksClient.observeCluster("dbaas-orders", "db-orders0001"))
-                .thenReturn(KubeBlocksClient.ClusterObservation.missing(
-                        "dbaas-orders", "db-orders0001"));
+        when(kubeBlocksClient.observeDeletion("dbaas-orders", "db-orders0001"))
+                .thenReturn(new KubeBlocksClient.DeletionObservation(
+                        false, true, List.of(), List.of(), List.of(),
+                        "Cluster and owned runtime resources are absent"));
+        when(gateway.routeActive(database)).thenReturn(false);
         when(operationRepository.findByDatabaseIdAndProjectNameAndStatusIn(
                 "db-orders0001", "orders", List.of(OperationStatus.PENDING, OperationStatus.RUNNING)))
                 .thenReturn(List.of(operation));
@@ -137,14 +139,35 @@ class DatabaseStateReconcilerTest {
         org.mockito.Mockito.doThrow(new ApiException(HttpStatus.BAD_GATEWAY,
                         "Gateway rollout timeout"))
                 .when(gateway).removeRoute(database);
-        when(kubeBlocksClient.observeCluster("dbaas-orders", "db-orders0001"))
-                .thenReturn(observed(true, 1, 2, true));
+        when(kubeBlocksClient.observeDeletion("dbaas-orders", "db-orders0001"))
+                .thenReturn(new KubeBlocksClient.DeletionObservation(
+                        true, false, List.of("Pod/db-orders0001-0"), List.of(),
+                        List.of(), "Deletion is blocked by owned resources"));
 
         reconciler.reconcile(database);
 
         verify(kubeBlocksClient).requestDelete("dbaas-orders", "db-orders0001");
         verify(gateway, never()).releasePort(any());
         assertEquals(DatabaseStatus.DELETING, database.getStatus());
+        verify(databaseRepository).save(database);
+    }
+
+    @Test
+    void clusterMissingWithOwnedResourcesDoesNotMarkDeletedOrReleasePort() {
+        DatabaseMetadata database = database(DatabaseStatus.DELETING);
+        database.setPublicPort(31000);
+        when(kubeBlocksClient.observeDeletion("dbaas-orders", "db-orders0001"))
+                .thenReturn(new KubeBlocksClient.DeletionObservation(
+                        false, false, List.of("Service/db-orders0001-postgresql"),
+                        List.of("PersistentVolumeClaim/data-db-orders0001-0"),
+                        List.of("Service/db-orders0001-postgresql:cleanup.kubeblocks.io"),
+                        "Deletion is blocked by owned resources"));
+        when(gateway.routeActive(database)).thenReturn(false);
+
+        reconciler.reconcile(database);
+
+        assertEquals(DatabaseStatus.DELETING, database.getStatus());
+        verify(gateway, never()).releasePort(any());
         verify(databaseRepository).save(database);
     }
 

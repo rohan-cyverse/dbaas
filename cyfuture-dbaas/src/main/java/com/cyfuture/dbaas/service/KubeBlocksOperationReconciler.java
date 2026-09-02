@@ -60,6 +60,7 @@ public class KubeBlocksOperationReconciler {
                 operation.setCompletedAt(live.completedAt() == null ? Instant.now() : live.completedAt());
                 if (status == OperationStatus.SUCCEEDED) syncDatabaseMetadata(database, operation);
             }
+            operation.setUpdatedAt(Instant.now());
             operationRepository.save(operation);
         } catch (Exception exception) {
             log.debug("KubeBlocks operation reconciliation for {} will retry: {}",

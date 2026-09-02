@@ -2,6 +2,7 @@ package com.cyfuture.dbaas.repository;
 
 import com.cyfuture.dbaas.entity.OperationMetadata;
 import com.cyfuture.dbaas.model.OperationStatus;
+import com.cyfuture.dbaas.model.OperationType;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.List;
@@ -19,4 +20,6 @@ public interface OperationMetadataRepository extends JpaRepository<OperationMeta
             String databaseId, String projectName, String idempotencyKey);
     List<OperationMetadata> findByDatabaseIdAndProjectNameAndStatusIn(
             String databaseId, String projectName, List<OperationStatus> statuses);
+    Optional<OperationMetadata> findByDatabaseIdAndProjectNameAndType(
+            String databaseId, String projectName, OperationType type);
 }

@@ -9,6 +9,7 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -64,4 +65,7 @@ public class OperationMetadata {
     private Instant createdAt;
     private Instant startedAt;
     private Instant completedAt;
+    private Instant updatedAt;
+    @Version
+    private long metadataVersion;
 }

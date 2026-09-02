@@ -197,10 +197,18 @@ public class DatabaseStateReconciler {
             kubeBlocksClient.requestDelete(database.getNamespaceName(),
                     database.getDatabaseId());
 
-            KubeBlocksClient.ClusterObservation observed = kubeBlocksClient.observeCluster(
+            KubeBlocksClient.DeletionObservation deletion = kubeBlocksClient.observeDeletion(
                     database.getNamespaceName(), database.getDatabaseId());
 
-            if (!observed.exists()) {
+            boolean routeActive = true;
+            try {
+                routeActive = sharedGatewayService.routeActive(database);
+            } catch (Exception exception) {
+                gatewayFailure = safeMessage(exception);
+                update(database::setSyncMessage, gatewayFailure);
+            }
+
+            if (deletion.complete() && gatewayFailure == null && !routeActive) {
                 String portCleanupFailure = null;
                 try {
                     sharedGatewayService.releasePort(database);
@@ -214,29 +222,33 @@ public class DatabaseStateReconciler {
                 update(database::setDeletedAt, now);
                 update(database::setMissingSince, null);
                 update(database::setDegradedSince, null);
-                update(database::setPublicPort, null);
                 update(database::setObservedReadyReplicas, 0);
                 update(database::setObservedServiceReady, false);
                 update(database::setMessage, "Database deletion completed");
                 if (gatewayFailure == null && portCleanupFailure == null) {
-                    update(database::setSyncMessage, "Deletion confirmed by Kubernetes");
+                    update(database::setSyncMessage, deletion.message());
                 } else {
                     update(database::setSyncMessage,
                             "Deletion confirmed by Kubernetes; gateway cleanup had an error");
                 }
                 finishDeleteOperation(database, OperationStatus.SUCCEEDED,
-                        "Deletion confirmed by Kubernetes");
+                        deletion.message());
             } else {
-                syncObserved(database, observed);
                 update(database::setStatus, DatabaseStatus.DELETING);
                 update(database::setDesiredStatus, DatabaseStatus.DELETED);
-                update(database::setMessage, "KubeBlocks deletion is running");
-                update(database::setSyncMessage,
-                        gatewayFailure == null
-                                ? observed.message()
-                                : "Public route cleanup will retry: " + gatewayFailure);
+                update(database::setObservedReadyReplicas, 0);
+                update(database::setObservedServiceReady, false);
+                update(database::setMessage,
+                        routeActive
+                                ? "Database deletion is waiting for public route removal"
+                                : "Database deletion is waiting for Kubernetes owned resources to disappear");
+                String sync = gatewayFailure == null
+                        ? deletion.message()
+                        : "Public route cleanup will retry: " + gatewayFailure
+                        + ". Kubernetes state: " + deletion.message();
+                update(database::setSyncMessage, sync);
                 finishDeleteOperation(database, OperationStatus.RUNNING,
-                        "KubeBlocks deletion is running");
+                        database.getMessage() + ": " + sync);
             }
             saveIfChanged(database);
         } catch (Exception exception) {
@@ -293,6 +305,7 @@ public class DatabaseStateReconciler {
         operation.setMessage(message);
         if (operation.getStartedAt() == null) operation.setStartedAt(Instant.now());
         if (status == OperationStatus.SUCCEEDED) operation.setCompletedAt(Instant.now());
+        operation.setUpdatedAt(Instant.now());
         operationRepository.save(operation);
     }
 

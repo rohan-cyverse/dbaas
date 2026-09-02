@@ -16,10 +16,12 @@ import io.kubernetes.client.openapi.apis.CoreV1Api;
 import io.kubernetes.client.openapi.apis.CustomObjectsApi;
 import io.kubernetes.client.openapi.apis.StorageV1Api;
 import io.kubernetes.client.openapi.models.V1Namespace;
+import io.kubernetes.client.openapi.models.V1ConfigMap;
 import io.kubernetes.client.openapi.models.V1ObjectMeta;
 import io.kubernetes.client.openapi.models.V1Pod;
 import io.kubernetes.client.openapi.models.V1PersistentVolumeClaim;
 import io.kubernetes.client.openapi.models.V1Secret;
+import io.kubernetes.client.openapi.models.V1Service;
 import io.kubernetes.client.openapi.models.V1Taint;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -141,7 +143,7 @@ public class KubeBlocksClient {
 
     public void delete(String namespace, String databaseId) {
         try {
-            ensureDeletable(namespace, databaseId);
+            ensureDeletionPermitted(namespace, databaseId);
             customObjectsApi.deleteNamespacedCustomObject(
                     GROUP, VERSION, namespace, CLUSTERS, databaseId).execute();
         } catch (io.kubernetes.client.openapi.ApiException exception) {
@@ -155,7 +157,7 @@ public class KubeBlocksClient {
 
     public void requestDelete(String namespace, String databaseId) {
         try {
-            ensureDeletable(namespace, databaseId);
+            ensureDeletionPermitted(namespace, databaseId);
             customObjectsApi.deleteNamespacedCustomObject(
                     GROUP, VERSION, namespace, CLUSTERS, databaseId).execute();
         } catch (io.kubernetes.client.openapi.ApiException exception) {
@@ -163,6 +165,43 @@ public class KubeBlocksClient {
             throw new ApiException(HttpStatus.BAD_GATEWAY,
                     "KubeBlocks could not delete the database: " + kubernetesMessage(exception));
         }
+    }
+
+    public DeletionObservation observeDeletion(String namespace, String databaseId) {
+        ClusterObservation cluster = observeCluster(namespace, databaseId);
+        List<String> blocking = new ArrayList<>();
+        List<String> retained = new ArrayList<>();
+        List<String> finalizers = new ArrayList<>();
+
+        try {
+            collectOwnedResources(namespace, databaseId, blocking, retained, finalizers);
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 404 && !cluster.exists()) {
+                return new DeletionObservation(false, true, List.of(), List.of(),
+                        List.of(), "Namespace and KubeBlocks Cluster are absent");
+            }
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not inspect owned Kubernetes resources for "
+                            + databaseId + ": " + kubernetesMessage(exception));
+        }
+
+        boolean complete = !cluster.exists() && blocking.isEmpty();
+        String message;
+        if (complete && retained.isEmpty()) {
+            message = "Cluster and owned runtime resources are absent";
+        } else if (complete) {
+            message = "Cluster and runtime resources are absent; retained storage remains: "
+                    + String.join(", ", retained);
+        } else if (!blocking.isEmpty()) {
+            message = "Deletion is blocked by owned resources: " + String.join(", ", blocking);
+        } else {
+            message = "KubeBlocks Cluster deletion is still in progress: " + cluster.message();
+        }
+        if (!finalizers.isEmpty()) {
+            message += ". Finalizers still present: " + String.join(", ", finalizers);
+        }
+        return new DeletionObservation(cluster.exists(), complete, blocking,
+                retained, finalizers, message);
     }
 
     public void requestNamespaceDelete(String namespace) {
@@ -189,6 +228,37 @@ public class KubeBlocksClient {
             throw new ApiException(HttpStatus.BAD_GATEWAY,
                     "Could not verify namespace "
                             + namespace + ": " + kubernetesMessage(exception));
+        }
+    }
+
+    public NamespaceDeletionObservation observeNamespaceDeletion(String namespace, String project) {
+        try {
+            V1Namespace live = coreV1Api.readNamespace(namespace).execute();
+            validateManagedProjectNamespace(live, project);
+            List<String> blockers = new ArrayList<>();
+            List<String> finalizers = new ArrayList<>();
+            V1ObjectMeta metadata = live.getMetadata();
+            if (metadata != null && metadata.getFinalizers() != null) {
+                metadata.getFinalizers().forEach(finalizer ->
+                        finalizers.add("Namespace/" + namespace + ":" + finalizer));
+            }
+            collectNamespaceResources(namespace, blockers, finalizers);
+            boolean safeToDelete = blockers.isEmpty();
+            String message = safeToDelete
+                    ? "Namespace is empty of DBaaS-managed runtime resources"
+                    : "Namespace deletion is blocked by resources: " + String.join(", ", blockers);
+            if (!finalizers.isEmpty()) {
+                message += ". Finalizers still present: " + String.join(", ", finalizers);
+            }
+            return new NamespaceDeletionObservation(true, false, safeToDelete,
+                    blockers, finalizers, message);
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 404) {
+                return new NamespaceDeletionObservation(false, true, false,
+                        List.of(), List.of(), "Namespace is absent");
+            }
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not inspect namespace " + namespace + ": " + kubernetesMessage(exception));
         }
     }
 
@@ -930,6 +1000,20 @@ public class KubeBlocksClient {
         }
     }
 
+    private void validateManagedProjectNamespace(V1Namespace namespace, String project) {
+        String name = namespace.getMetadata() == null ? null : namespace.getMetadata().getName();
+        if (name == null
+                || !name.startsWith(properties.getNamespacePrefix())
+                || "default".equals(name)
+                || "kube-system".equals(name)
+                || "kube-public".equals(name)
+                || "kube-node-lease".equals(name)) {
+            throw new ApiException(HttpStatus.CONFLICT,
+                    "Refusing to manage unrelated or system namespace " + name);
+        }
+        validateNamespaceOwnership(namespace, project);
+    }
+
     private DatabaseStatus mapStatus(String phase) {
         if ("Running".equalsIgnoreCase(phase)) return DatabaseStatus.RUNNING;
         if ("Failed".equalsIgnoreCase(phase) || "Abnormal".equalsIgnoreCase(phase)) return DatabaseStatus.FAILED;
@@ -950,30 +1034,126 @@ public class KubeBlocksClient {
         return phase.isBlank() ? "KubeBlocks is processing the request" : "KubeBlocks phase: " + phase;
     }
 
+    private void collectOwnedResources(String namespace, String databaseId,
+                                       List<String> blocking,
+                                       List<String> retained,
+                                       List<String> finalizers)
+            throws io.kubernetes.client.openapi.ApiException {
+        for (V1Pod pod : coreV1Api.listNamespacedPod(namespace).execute().getItems()) {
+            if (ownedByDatabase(pod.getMetadata(), databaseId)) {
+                blocking.add(resourceName("Pod", pod.getMetadata()));
+                collectFinalizers("Pod", pod.getMetadata(), finalizers);
+            }
+        }
+        for (V1Service service : coreV1Api.listNamespacedService(namespace).execute().getItems()) {
+            if (ownedByDatabase(service.getMetadata(), databaseId)) {
+                blocking.add(resourceName("Service", service.getMetadata()));
+                collectFinalizers("Service", service.getMetadata(), finalizers);
+            }
+        }
+        for (V1Secret secret : coreV1Api.listNamespacedSecret(namespace).execute().getItems()) {
+            if (ownedByDatabase(secret.getMetadata(), databaseId)) {
+                blocking.add(resourceName("Secret", secret.getMetadata()));
+                collectFinalizers("Secret", secret.getMetadata(), finalizers);
+            }
+        }
+        for (V1ConfigMap configMap : coreV1Api.listNamespacedConfigMap(namespace).execute().getItems()) {
+            if (ownedByDatabase(configMap.getMetadata(), databaseId)) {
+                blocking.add(resourceName("ConfigMap", configMap.getMetadata()));
+                collectFinalizers("ConfigMap", configMap.getMetadata(), finalizers);
+            }
+        }
+        for (V1PersistentVolumeClaim claim : coreV1Api
+                .listNamespacedPersistentVolumeClaim(namespace).execute().getItems()) {
+            if (ownedByDatabase(claim.getMetadata(), databaseId)) {
+                retained.add(resourceName("PersistentVolumeClaim", claim.getMetadata()));
+                collectFinalizers("PersistentVolumeClaim", claim.getMetadata(), finalizers);
+            }
+        }
+    }
+
+    private void collectNamespaceResources(String namespace, List<String> blockers,
+                                           List<String> finalizers)
+            throws io.kubernetes.client.openapi.ApiException {
+        coreV1Api.listNamespacedPod(namespace).execute().getItems()
+                .forEach(item -> addNamespaceResource("Pod", item.getMetadata(), blockers, finalizers));
+        coreV1Api.listNamespacedService(namespace).execute().getItems()
+                .forEach(item -> addNamespaceResource("Service", item.getMetadata(), blockers, finalizers));
+        coreV1Api.listNamespacedSecret(namespace).execute().getItems()
+                .forEach(item -> addNamespaceResource("Secret", item.getMetadata(), blockers, finalizers));
+        coreV1Api.listNamespacedConfigMap(namespace).execute().getItems()
+                .forEach(item -> addNamespaceResource("ConfigMap", item.getMetadata(), blockers, finalizers));
+        coreV1Api.listNamespacedPersistentVolumeClaim(namespace).execute().getItems()
+                .forEach(item -> addNamespaceResource("PersistentVolumeClaim", item.getMetadata(), blockers, finalizers));
+    }
+
+    private void addNamespaceResource(String kind, V1ObjectMeta metadata,
+                                      List<String> blockers, List<String> finalizers) {
+        if (metadata == null || infrastructureInjectedResource(kind, metadata.getName())) return;
+        blockers.add(resourceName(kind, metadata));
+        collectFinalizers(kind, metadata, finalizers);
+    }
+
+    private boolean infrastructureInjectedResource(String kind, String name) {
+        if (name == null) return true;
+        return ("Service".equals(kind) && "kubernetes".equals(name))
+                || ("ConfigMap".equals(kind) && "kube-root-ca.crt".equals(name))
+                || ("Secret".equals(kind) && name.startsWith("default-token-"));
+    }
+
+    private boolean ownedByDatabase(V1ObjectMeta metadata, String databaseId) {
+        if (metadata == null) return false;
+        Map<String, String> labels = metadata.getLabels() == null
+                ? Map.of() : metadata.getLabels();
+        if (databaseId.equals(labels.get("dbaas.cyfuture.com/database-id"))
+                || databaseId.equals(labels.get("app.kubernetes.io/instance"))) {
+            return true;
+        }
+        if (metadata.getOwnerReferences() == null) return false;
+        return metadata.getOwnerReferences().stream()
+                .anyMatch(reference -> databaseId.equals(reference.getName())
+                        || databaseId.equals(reference.getUid()));
+    }
+
+    private void collectFinalizers(String kind, V1ObjectMeta metadata,
+                                   List<String> finalizers) {
+        if (metadata == null || metadata.getFinalizers() == null) return;
+        metadata.getFinalizers().forEach(finalizer ->
+                finalizers.add(resourceName(kind, metadata) + ":" + finalizer));
+    }
+
+    private String resourceName(String kind, V1ObjectMeta metadata) {
+        String name = metadata == null || metadata.getName() == null
+                ? "unknown" : metadata.getName();
+        return kind + "/" + name;
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, Object> asMap(Object value) {
         return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
     }
 
-    private void ensureDeletable(String namespace, String databaseId)
+    private void ensureDeletionPermitted(String namespace, String databaseId)
             throws io.kubernetes.client.openapi.ApiException {
-        Map<String, Object> cluster = mutableMap(customObjectsApi.getNamespacedCustomObject(
+        Map<String, Object> cluster = asMap(customObjectsApi.getNamespacedCustomObject(
                 GROUP, VERSION, namespace, CLUSTERS, databaseId).execute());
-        boolean changed = false;
-        Map<String, Object> spec = mutableChildMap(cluster, "spec");
-        if (!"Delete".equals(spec.get("terminationPolicy"))) {
-            spec.put("terminationPolicy", "Delete");
-            changed = true;
-        }
+        Map<String, Object> spec = asMap(cluster.get("spec"));
         Map<String, Object> annotations =
-                mutableChildMap(mutableChildMap(cluster, "metadata"), "annotations");
-        if (!"false".equals(annotations.get("dbaas.cyfuture.com/deletion-protection"))) {
-            annotations.put("dbaas.cyfuture.com/deletion-protection", "false");
-            changed = true;
+                asMap(asMap(cluster.get("metadata")).get("annotations"));
+        String terminationPolicy = String.valueOf(spec.getOrDefault("terminationPolicy", ""));
+        boolean protectedByAnnotation = Boolean.parseBoolean(String.valueOf(
+                annotations.getOrDefault("dbaas.cyfuture.com/deletion-protection", "false")));
+        if (protectedByAnnotation || "DoNotTerminate".equalsIgnoreCase(terminationPolicy)) {
+            throw new ApiException(HttpStatus.CONFLICT,
+                    "KubeBlocks Cluster deletion protection is enabled; disable protection before deleting");
         }
-        if (changed) {
-            customObjectsApi.replaceNamespacedCustomObject(
-                    GROUP, VERSION, namespace, CLUSTERS, databaseId, cluster).execute();
+        if (!terminationPolicy.isBlank()
+                && !"Delete".equalsIgnoreCase(terminationPolicy)
+                && !"Halt".equalsIgnoreCase(terminationPolicy)
+                && !"WipeOut".equalsIgnoreCase(terminationPolicy)) {
+            throw new ApiException(HttpStatus.CONFLICT,
+                    "Unsupported KubeBlocks terminationPolicy "
+                            + terminationPolicy + "; manual operator review is required");
         }
     }
 
@@ -1067,6 +1247,24 @@ public class KubeBlocksClient {
             String project,
             String engine,
             String phase,
+            String message
+    ) {}
+
+    public record DeletionObservation(
+            boolean clusterExists,
+            boolean complete,
+            List<String> blockingResources,
+            List<String> retainedResources,
+            List<String> finalizers,
+            String message
+    ) {}
+
+    public record NamespaceDeletionObservation(
+            boolean exists,
+            boolean complete,
+            boolean safeToDelete,
+            List<String> blockingResources,
+            List<String> finalizers,
             String message
     ) {}
 }

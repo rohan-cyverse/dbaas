@@ -27,6 +27,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.nio.charset.StandardCharsets;
@@ -144,6 +145,7 @@ public class DatabaseService {
                 .progress(0)
                 .message("Waiting for background worker")
                 .createdAt(now)
+                .updatedAt(now)
                 .build();
     }
 
@@ -290,7 +292,16 @@ public class DatabaseService {
     }
 
     public OperationResponse delete(String project, String databaseId) {
-        DatabaseMetadata database = requireDatabase(project, databaseId);
+        return requestDelete(project, databaseId);
+    }
+
+    @Transactional
+    OperationResponse requestDelete(String project, String databaseId) {
+        projectService.requireActiveProject(project);
+        DatabaseMetadata database = databaseRepository
+                .findByDatabaseIdAndProjectNameForUpdate(databaseId, project)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND,
+                        "Database " + databaseId + " was not found in project " + project));
         if (database.getStatus() == DatabaseStatus.DELETED) {
             return operationMapper.toResponse(completedDeleteOperation(database,
                     "Database was already deleted; metadata is preserved"));
@@ -316,57 +327,18 @@ public class DatabaseService {
         OperationMetadata operation = deleteOperation(database);
         database.setDesiredStatus(DatabaseStatus.DELETED);
         database.setStatus(DatabaseStatus.DELETING);
-        database.setDeleteRequestedAt(Instant.now());
-        database.setMessage("Database deletion requested; removing public route");
+        if (database.getDeleteRequestedAt() == null) {
+            database.setDeleteRequestedAt(Instant.now());
+        }
+        database.setMessage("Database deletion requested; background reconciliation is removing Kubernetes resources and public routing");
         database.setUpdatedAt(Instant.now());
         databaseRepository.save(database);
 
-        String gatewayFailure = null;
-        try {
-            sharedGatewayService.removeRoute(database);
-        } catch (Exception exception) {
-            gatewayFailure = safeMessage(exception);
-            database.setSyncMessage(safeMessage(exception));
-            database.setMessage("Public route removal will retry; deleting Kubernetes cluster");
-            database.setUpdatedAt(Instant.now());
-            databaseRepository.save(database);
-            operation.setMessage(database.getMessage());
-            operationRepository.save(operation);
-        }
-
-        try {
-            kubeBlocksClient.requestDelete(database.getNamespaceName(), databaseId);
-            KubeBlocksClient.ClusterObservation observation = kubeBlocksClient.observeCluster(
-                    database.getNamespaceName(), databaseId);
-            if (!observation.exists()) {
-                sharedGatewayService.releasePort(database);
-                database.setStatus(DatabaseStatus.DELETED);
-                database.setDeletedAt(Instant.now());
-                database.setMessage("Database Cluster is absent; metadata is preserved");
-                if (gatewayFailure != null) {
-                    database.setSyncMessage("Deletion confirmed; public route cleanup will retry: "
-                            + gatewayFailure);
-                }
-                database.setUpdatedAt(Instant.now());
-                databaseRepository.save(database);
-                finishDeleteOperation(operation, OperationStatus.SUCCEEDED, database.getMessage());
-                return operationMapper.toResponse(operation);
-            }
-            database.setMessage("KubeBlocks deletion is running");
-            if (gatewayFailure != null) {
-                database.setSyncMessage("Public route cleanup will retry: " + gatewayFailure);
-            }
-            database.setUpdatedAt(Instant.now());
-            databaseRepository.save(database);
-        } catch (Exception exception) {
-            database.setSyncMessage(safeMessage(exception));
-            database.setMessage(gatewayFailure == null
-                    ? "Database deletion is waiting for Kubernetes confirmation"
-                    : "Database deletion is waiting for Kubernetes confirmation and public route retry");
-            database.setUpdatedAt(Instant.now());
-            databaseRepository.save(database);
-        }
+        operation.setStatus(OperationStatus.RUNNING);
+        operation.setProvisioningStage(ProvisioningStage.WAITING_FOR_REPLICAS);
+        operation.setProgress(Math.max(operation.getProgress(), 20));
         operation.setMessage(database.getMessage());
+        operation.setUpdatedAt(Instant.now());
         operationRepository.save(operation);
         return operationMapper.toResponse(operation);
     }
@@ -503,6 +475,7 @@ public class DatabaseService {
                 .findFirst()
                 .orElse(null);
         if (existing != null) return existing;
+        Instant now = Instant.now();
         OperationMetadata operation = OperationMetadata.builder()
                 .operationId("op-" + shortId())
                 .databaseId(database.getDatabaseId())
@@ -512,8 +485,9 @@ public class DatabaseService {
                 .provisioningStage(ProvisioningStage.WAITING_FOR_REPLICAS)
                 .progress(20)
                 .message("Database deletion requested")
-                .createdAt(Instant.now())
-                .startedAt(Instant.now())
+                .createdAt(now)
+                .startedAt(now)
+                .updatedAt(now)
                 .build();
         return operationRepository.save(operation);
     }
@@ -541,6 +515,7 @@ public class DatabaseService {
                 .createdAt(now)
                 .startedAt(now)
                 .completedAt(now)
+                .updatedAt(now)
                 .build());
     }
 
@@ -553,6 +528,7 @@ public class DatabaseService {
         operation.setProgress(100);
         operation.setMessage(message);
         operation.setCompletedAt(Instant.now());
+        operation.setUpdatedAt(Instant.now());
         operationRepository.save(operation);
     }
 

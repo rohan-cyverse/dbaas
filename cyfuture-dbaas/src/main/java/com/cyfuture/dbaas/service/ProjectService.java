@@ -2,14 +2,21 @@ package com.cyfuture.dbaas.service;
 
 import com.cyfuture.dbaas.config.DatabaseProperties;
 import com.cyfuture.dbaas.dto.CreateProjectRequest;
+import com.cyfuture.dbaas.dto.OperationResponse;
 import com.cyfuture.dbaas.dto.ProjectResponse;
 import com.cyfuture.dbaas.dto.UpdateProjectRequest;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
+import com.cyfuture.dbaas.entity.OperationMetadata;
 import com.cyfuture.dbaas.entity.ProjectMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
+import com.cyfuture.dbaas.mapper.OperationMapper;
 import com.cyfuture.dbaas.model.DatabaseStatus;
+import com.cyfuture.dbaas.model.OperationStatus;
+import com.cyfuture.dbaas.model.OperationType;
+import com.cyfuture.dbaas.model.ProvisioningStage;
 import com.cyfuture.dbaas.model.ResourceStatus;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
+import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import com.cyfuture.dbaas.repository.ProjectMetadataRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -28,9 +35,12 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 public class ProjectService {
+    static final String PROJECT_OPERATION_DATABASE_ID = "__project__";
     private final ProjectMetadataRepository projectRepository;
     private final DatabaseMetadataRepository databaseRepository;
+    private final OperationMetadataRepository operationRepository;
     private final DatabaseProperties properties;
+    private final OperationMapper operationMapper;
 
     public ProjectResponse create(CreateProjectRequest request) {
         if (projectRepository.findByProjectName(request.name()).isPresent()) {
@@ -78,16 +88,19 @@ public class ProjectService {
     }
 
     @Transactional
-    public void delete(String project) {
+    public OperationResponse delete(String project) {
         ProjectMetadata metadata = projectRepository
-                .findByProjectName(project)
+                .findByProjectNameForUpdate(project)
                 .orElseThrow(() -> new ApiException(
                         HttpStatus.NOT_FOUND,
                         "Project " + project + " was not found"));
 
-        if (metadata.getStatus() == ResourceStatus.DELETED
-                || metadata.getStatus() == ResourceStatus.DELETING) {
-            return;
+        if (metadata.getStatus() == ResourceStatus.DELETED) {
+            return operationMapper.toResponse(completedProjectDeleteOperation(project,
+                    "Project was already deleted; metadata is preserved"));
+        }
+        if (metadata.getStatus() == ResourceStatus.DELETING) {
+            return operationMapper.toResponse(projectDeleteOperation(project));
         }
 
         List<DatabaseMetadata> databases =
@@ -99,15 +112,27 @@ public class ProjectService {
         if (!activeDatabases.isEmpty()) {
             DatabaseMetadata blocker = activeDatabases.get(0);
             throw new ApiException(HttpStatus.CONFLICT,
-                    "Project cannot be deleted while database "
+                    "Project deletion is non-cascading; delete database "
                             + blocker.getDatabaseId()
                             + " is "
-                            + blocker.getStatus());
+                            + blocker.getStatus()
+                            + " before deleting the project");
         }
 
+        OperationMetadata operation = projectDeleteOperation(project);
         metadata.setStatus(ResourceStatus.DELETING);
+        metadata.setOperationId(operation.getOperationId());
+        metadata.setMessage("Project deletion requested; namespace cleanup will run in the background");
         metadata.setUpdatedAt(Instant.now());
         projectRepository.save(metadata);
+
+        operation.setStatus(OperationStatus.RUNNING);
+        operation.setProvisioningStage(ProvisioningStage.WAITING_FOR_REPLICAS);
+        operation.setProgress(20);
+        operation.setMessage(metadata.getMessage());
+        operation.setUpdatedAt(Instant.now());
+        operationRepository.save(operation);
+        return operationMapper.toResponse(operation);
     }
 
     public ProjectMetadata requireActiveProject(String project) {
@@ -153,5 +178,50 @@ public class ProjectService {
                 metadata.getCreatedAt(),
                 metadata.getUpdatedAt()
         );
+    }
+
+    private OperationMetadata projectDeleteOperation(String project) {
+        OperationMetadata existing = operationRepository
+                .findByDatabaseIdAndProjectNameAndType(
+                        PROJECT_OPERATION_DATABASE_ID, project, OperationType.DELETE)
+                .orElse(null);
+        if (existing != null) return existing;
+        Instant now = Instant.now();
+        return operationRepository.save(OperationMetadata.builder()
+                .operationId("op-" + shortId())
+                .databaseId(PROJECT_OPERATION_DATABASE_ID)
+                .projectName(project)
+                .type(OperationType.DELETE)
+                .status(OperationStatus.RUNNING)
+                .provisioningStage(ProvisioningStage.QUEUED)
+                .progress(0)
+                .message("Project deletion requested")
+                .createdAt(now)
+                .startedAt(now)
+                .updatedAt(now)
+                .build());
+    }
+
+    private OperationMetadata completedProjectDeleteOperation(String project, String message) {
+        OperationMetadata existing = operationRepository
+                .findByDatabaseIdAndProjectNameAndType(
+                        PROJECT_OPERATION_DATABASE_ID, project, OperationType.DELETE)
+                .orElse(null);
+        if (existing != null) return existing;
+        Instant now = Instant.now();
+        return operationRepository.save(OperationMetadata.builder()
+                .operationId("op-" + shortId())
+                .databaseId(PROJECT_OPERATION_DATABASE_ID)
+                .projectName(project)
+                .type(OperationType.DELETE)
+                .status(OperationStatus.SUCCEEDED)
+                .provisioningStage(ProvisioningStage.READY)
+                .progress(100)
+                .message(message)
+                .createdAt(now)
+                .startedAt(now)
+                .completedAt(now)
+                .updatedAt(now)
+                .build());
     }
 }

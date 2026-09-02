@@ -17,6 +17,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -93,27 +94,34 @@ class KubeBlocksClientTest {
     }
 
     @Test
-    void requestDeleteForcesKubeBlocksTerminationPolicyToDelete() throws Exception {
+    void requestDeleteDoesNotOverrideKubeBlocksTerminationPolicy() throws Exception {
         when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
                 "dbaas-orders", "clusters", "db-orders0001").execute())
-                .thenReturn(clusterWithTerminationPolicy("DoNotTerminate"));
+                .thenReturn(clusterWithTerminationPolicy("Delete", false));
         when(customObjectsApi.replaceNamespacedCustomObject(eq("apps.kubeblocks.io"),
                 eq("v1"), eq("dbaas-orders"), eq("clusters"),
                 eq("db-orders0001"), any()).execute()).thenReturn(Map.of());
 
         client.requestDelete("dbaas-orders", "db-orders0001");
 
-        ArgumentCaptor<Object> body = ArgumentCaptor.forClass(Object.class);
-        verify(customObjectsApi).replaceNamespacedCustomObject(eq("apps.kubeblocks.io"),
+        verify(customObjectsApi, never()).replaceNamespacedCustomObject(eq("apps.kubeblocks.io"),
                 eq("v1"), eq("dbaas-orders"), eq("clusters"),
-                eq("db-orders0001"), body.capture());
-        Map<?, ?> cluster = (Map<?, ?>) body.getValue();
-        Map<?, ?> spec = (Map<?, ?>) cluster.get("spec");
-        Map<?, ?> metadata = (Map<?, ?>) cluster.get("metadata");
-        Map<?, ?> annotations = (Map<?, ?>) metadata.get("annotations");
-        assertEquals("Delete", spec.get("terminationPolicy"));
-        assertEquals("false", annotations.get("dbaas.cyfuture.com/deletion-protection"));
+                eq("db-orders0001"), any());
         verify(customObjectsApi).deleteNamespacedCustomObject(
+                "apps.kubeblocks.io", "v1", "dbaas-orders", "clusters", "db-orders0001");
+    }
+
+    @Test
+    void requestDeleteRespectsKubeBlocksDeletionProtection() throws Exception {
+        when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
+                "dbaas-orders", "clusters", "db-orders0001").execute())
+                .thenReturn(clusterWithTerminationPolicy("DoNotTerminate", true));
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+                com.cyfuture.dbaas.exception.ApiException.class,
+                () -> client.requestDelete("dbaas-orders", "db-orders0001"));
+
+        verify(customObjectsApi, never()).deleteNamespacedCustomObject(
                 "apps.kubeblocks.io", "v1", "dbaas-orders", "clusters", "db-orders0001");
     }
 
@@ -170,11 +178,11 @@ class KubeBlocksClientTest {
         return cluster;
     }
 
-    private Map<String, Object> clusterWithTerminationPolicy(String policy) {
+    private Map<String, Object> clusterWithTerminationPolicy(String policy, boolean protectedByAnnotation) {
         Map<String, Object> spec = new java.util.LinkedHashMap<>();
         spec.put("terminationPolicy", policy);
         Map<String, Object> annotations = new java.util.LinkedHashMap<>();
-        annotations.put("dbaas.cyfuture.com/deletion-protection", "true");
+        annotations.put("dbaas.cyfuture.com/deletion-protection", String.valueOf(protectedByAnnotation));
         Map<String, Object> metadata = new java.util.LinkedHashMap<>();
         metadata.put("annotations", annotations);
         Map<String, Object> cluster = new java.util.LinkedHashMap<>();

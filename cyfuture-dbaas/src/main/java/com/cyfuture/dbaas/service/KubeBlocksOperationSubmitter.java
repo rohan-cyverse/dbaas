@@ -36,6 +36,7 @@ public class KubeBlocksOperationSubmitter {
             operation.setProgress(10);
             operation.setMessage("Submitting KubeBlocks OpsRequest");
             if (operation.getStartedAt() == null) operation.setStartedAt(Instant.now());
+            operation.setUpdatedAt(Instant.now());
             operationRepository.save(operation);
 
             switch (operation.getType()) {
@@ -51,6 +52,7 @@ public class KubeBlocksOperationSubmitter {
             operation.setProvisioningStage(ProvisioningStage.WAITING_FOR_REPLICAS);
             operation.setProgress(20);
             operation.setMessage("KubeBlocks OpsRequest accepted");
+            operation.setUpdatedAt(Instant.now());
             operationRepository.save(operation);
         } catch (Exception exception) {
             operation.setStatus(OperationStatus.FAILED);
@@ -59,6 +61,7 @@ public class KubeBlocksOperationSubmitter {
             operation.setMessage(safeMessage(exception));
             if (operation.getStartedAt() == null) operation.setStartedAt(Instant.now());
             operation.setCompletedAt(Instant.now());
+            operation.setUpdatedAt(Instant.now());
             operationRepository.save(operation);
         }
     }

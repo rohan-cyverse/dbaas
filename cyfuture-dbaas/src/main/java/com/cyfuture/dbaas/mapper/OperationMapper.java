@@ -23,15 +23,22 @@ public class OperationMapper {
                 .message(operation.getMessage())
                 .failureReason(operation.getStatus() == com.cyfuture.dbaas.model.OperationStatus.FAILED
                         ? operation.getMessage() : null)
+                .retryable(!terminal || operation.getStatus() == com.cyfuture.dbaas.model.OperationStatus.FAILED)
                 .statusUrl(statusUrl(operation))
                 .suggestedPollingIntervalSeconds(POLLING_INTERVAL_SECONDS)
                 .createdAt(operation.getCreatedAt())
                 .startedAt(operation.getStartedAt())
                 .completedAt(operation.getCompletedAt())
+                .updatedAt(operation.getUpdatedAt() == null ? operation.getCreatedAt() : operation.getUpdatedAt())
                 .build();
     }
 
     private String statusUrl(OperationMetadata operation) {
+        if (operation.getDatabaseId() != null
+                && operation.getDatabaseId().startsWith("__project__")) {
+            return "/api/v1/projects/" + operation.getProjectName()
+                    + "/operations/" + operation.getOperationId();
+        }
         return "/api/v1/projects/" + operation.getProjectName()
                 + "/databases/" + operation.getDatabaseId()
                 + "/operations/" + operation.getOperationId();

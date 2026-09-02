@@ -190,6 +190,7 @@ public class DatabaseOperationService {
                 .message("Waiting for background worker")
                 .idempotencyKey(idempotencyKey)
                 .createdAt(now)
+                .updatedAt(now)
                 .build();
     }
 
@@ -202,6 +203,7 @@ public class DatabaseOperationService {
     private OperationResponse queue(OperationMetadata operation, String requestHash, String message) {
         operation.setRequestHash(requestHash);
         operation.setMessage(message);
+        operation.setUpdatedAt(Instant.now());
         try {
             operationRepository.save(operation);
         } catch (DataIntegrityViolationException exception) {
