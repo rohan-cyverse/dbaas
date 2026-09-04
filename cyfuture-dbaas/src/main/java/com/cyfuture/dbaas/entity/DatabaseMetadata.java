@@ -19,7 +19,9 @@ import lombok.Setter;
 import java.time.Instant;
 
 @Entity
-@Table(name = "databases", uniqueConstraints = @UniqueConstraint(
+// `databases` is a reserved word in MySQL 8; retain the existing table name and
+// make Hibernate quote it in SELECT/INSERT/UPDATE statements.
+@Table(name = "`databases`", uniqueConstraints = @UniqueConstraint(
         name = "uk_database_project_idempotency",
         columnNames = {"project_name", "idempotency_key"}))
 @Getter
@@ -67,6 +69,7 @@ public class DatabaseMetadata {
     private String timezone;
     @Column(length = 1000)
     private String allowedCidrs;
+    @Column(name = "public_port", unique = true)
     private Integer publicPort;
     @Column(length = 2000)
     private String tags;

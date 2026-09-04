@@ -552,7 +552,7 @@ public class DatabaseService {
             case MYSQL -> "mysql://" + user + ":" + secret + "@" + host + ":"
                     + port + "/" + database;
             case MONGODB -> "mongodb://" + user + ":" + secret + "@" + host + ":"
-                    + port + "/" + database + "?authSource=" + urlEncode(database)
+                    + port + "/" + database + "?authSource=admin"
                     + (publicRoute && mode != DatabaseMode.SHARDING
                     ? "&directConnection=true" : "");
         };

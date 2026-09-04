@@ -57,5 +57,6 @@ public class DatabaseProperties {
         private String configMapName = "dbaas-public-gateway-config";
         private int portStart = 31000;
         private int portEnd = 31009;
+        private String publicHost;
     }
 }

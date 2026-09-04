@@ -52,18 +52,23 @@ public class SharedGatewayService {
     private final KubeBlocksClient kubeBlocksClient;
     private final CoreV1Api coreV1Api;
     private final AppsV1Api appsV1Api;
+    private final GatewayReconciliationLock gatewayLock;
+    private final DatabaseBackendResolver backendResolver;
 
     public SharedGatewayService(DatabaseProperties properties,
                                 DatabaseMetadataRepository databaseRepository,
                                 PublicPortAllocator portAllocator,
                                 KubeBlocksClient kubeBlocksClient,
-                                ApiClient apiClient) {
+                                ApiClient apiClient, GatewayReconciliationLock gatewayLock,
+                                DatabaseBackendResolver backendResolver) {
         this.properties = properties;
         this.databaseRepository = databaseRepository;
         this.portAllocator = portAllocator;
         this.kubeBlocksClient = kubeBlocksClient;
         this.coreV1Api = new CoreV1Api(apiClient);
         this.appsV1Api = new AppsV1Api(apiClient);
+        this.gatewayLock = gatewayLock;
+        this.backendResolver = backendResolver;
     }
 
     public synchronized PublicEndpointResponse configure(DatabaseMetadata database) {
@@ -77,9 +82,11 @@ public class SharedGatewayService {
     }
 
     public synchronized void reconcileNow() {
+        gatewayLock.execute(this::reconcileUnlocked);
+    }
+
+    private void reconcileUnlocked() {
         Infrastructure infrastructure = infrastructure();
-        adoptExistingRoutes(infrastructure.configMap());
-        assignMissingPorts();
         List<Route> routes = activeRoutes();
         String config = render(routes);
         String checksum = checksum(config);
@@ -187,8 +194,9 @@ public class SharedGatewayService {
                 DatabaseResponse live = kubeBlocksClient.get(
                         database.getNamespaceName(), database.getDatabaseId());
                 if (live.privateEndpoint() != null && live.privateEndpoint().ready()) {
+                    DatabaseBackendResolver.DatabaseBackendEndpoint endpoint = backendResolver.resolve(database);
                     routes.add(new Route(database.getDatabaseId(), database.getPublicPort(),
-                            live.privateEndpoint().host(), live.privateEndpoint().port(), allowed));
+                            endpoint.host(), endpoint.port(), allowed));
                 }
             } catch (Exception ignored) {
                 // The scheduled reconciler retries while KubeBlocks creates the Service.
@@ -357,6 +365,7 @@ public class SharedGatewayService {
     }
 
     private String externalHost(V1Service service) {
+        if (settings().getPublicHost() != null && !settings().getPublicHost().isBlank()) return settings().getPublicHost();
         if (service.getStatus() == null || service.getStatus().getLoadBalancer() == null
                 || service.getStatus().getLoadBalancer().getIngress() == null
                 || service.getStatus().getLoadBalancer().getIngress().isEmpty()) return null;
