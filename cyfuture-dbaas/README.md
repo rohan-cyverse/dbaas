@@ -7,11 +7,12 @@ Spring Boot control-plane API for provisioning PostgreSQL, MySQL and MongoDB thr
 The application intentionally uses a simple hierarchy:
 
 ```text
-Project
-└── Databases
+Backend-managed Organization
+  -> Projects
+     -> Databases
 ```
 
-Organizations are logical tenant boundaries, not Kubernetes namespaces. Each organization has an immutable `org-xxxx` ID and a user-facing friendly display name such as `amber-river`. When omitted, a friendly name is generated automatically; Kubernetes resource identity never depends on it.
+The organization is a backend-managed logical tenant boundary, not a Kubernetes namespace. DBaaS creates the default organization with an immutable `org-xxxx` ID and a friendly display name such as `amber-river`. Clients cannot create, select, or delete organizations; they may update only its display name and description. Kubernetes resource identity never depends on either field.
 
 Each project receives one Kubernetes namespace. New projects use `dbaas-p-<projectId>`. Namespaces belonging to projects created by an older release are retained, so existing databases are not moved or recreated.
 
@@ -35,15 +36,16 @@ Each project receives one Kubernetes namespace. New projects use `dbaas-p-<proje
 
 ## API routes
 
+### Organization
+
+```text
+GET    /api/v1/organization
+PUT    /api/v1/organization
+```
+
 ### Projects
 
 ```text
-POST   /api/v1/organizations
-GET    /api/v1/organizations
-GET    /api/v1/organizations/{organizationId}
-PUT    /api/v1/organizations/{organizationId}
-POST   /api/v1/organizations/{organizationId}/projects
-GET    /api/v1/organizations/{organizationId}/projects
 
 POST   /api/v1/projects
 GET    /api/v1/projects
@@ -155,4 +157,4 @@ Import:
 postman/cyfuture-dbaas.postman_collection.json
 ```
 
-The collection contains project management and all supported PostgreSQL, MySQL and MongoDB lifecycle requests. It no longer contains an organization variable or organization requests.
+The collection contains backend-managed organization settings, direct project creation, and all supported PostgreSQL, MySQL and MongoDB lifecycle requests. It intentionally has no organization-create or organization-selection request.

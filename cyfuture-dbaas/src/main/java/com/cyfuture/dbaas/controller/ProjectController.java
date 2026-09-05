@@ -29,7 +29,7 @@ public class ProjectController {
     private final ProjectService projectService;
 
     @PostMapping
-    @Operation(summary = "Create a project")
+    @Operation(summary = "Create a project in the backend-managed organization")
     public ResponseEntity<ProjectResponse> create(
             @Valid @RequestBody CreateProjectRequest request) {
         return ResponseEntity.status(HttpStatus.CREATED)

@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "2b9fb3b4-4dd5-4b58-8df7-f8793713c0b2",
-    "name": "Cyfuture DBaaS - Projects and All Database Engines",
-    "description": "Complete project-scoped DBaaS API collection for PostgreSQL, MySQL and MongoDB provisioning in every currently supported deployment mode.",
+    "name": "Cyfuture DBaaS - Organizations, Projects and Databases",
+    "description": "DBaaS creates and manages the default organization in the backend. Users can view or update only its displayName and description, then create projects directly. Immutable IDs (org-xxxx, prj-xxxx, db-xxxx) identify resources; friendly display names are safe to change and never rename Kubernetes resources. Keep an Idempotency-Key unchanged only when retrying the exact same infrastructure request.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -11,8 +11,8 @@
       "value": "http://localhost:8080"
     },
     {
-      "key": "project",
-      "value": "test-project"
+      "key": "projectId",
+      "value": ""
     },
     {
       "key": "databaseId",
@@ -21,10 +21,6 @@
     {
       "key": "operationId",
       "value": ""
-    },
-    {
-      "key": "idempotencyKey",
-      "value": "create-orders-postgres-001"
     },
     {
       "key": "statusUrl",
@@ -49,34 +45,121 @@
   ],
   "item": [
     {
-      "name": "Create Project",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"name\": \"{{project}}\",\n  \"displayName\": \"Test Project\",\n  \"description\": \"Database provisioning tests\"\n}"
-        },
-        "url": {
-          "raw": "{{baseUrl}}/api/v1/projects",
-          "host": [
-            "{{baseUrl}}"
+      "name": "1. Organization Settings and Project Creation",
+      "description": "The organization is created and selected by the backend. There is no user-facing create, list, or organization-selection request. Users may only update its display name and description, then create projects directly.",
+      "item": [
+        {
+          "name": "Get Backend-Managed Organization",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Organization is available', function () { pm.response.to.have.status(200); });",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.organizationId).to.match(/^org-/);",
+                  "  pm.expect(body.displayName).to.be.a('string').and.not.empty;",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
           ],
-          "path": [
-            "api",
-            "v1",
-            "projects"
-          ]
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/organization",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "organization"
+              ]
+            },
+            "description": "Returns the backend-managed default organization. If the seed has not yet run, the backend creates it with an immutable ID and a friendly display name."
+          }
+        },
+        {
+          "name": "Update Organization Name and Description",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"displayName\": \"Customer Platform\",\n  \"description\": \"Updated tenant details\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/organization",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "organization"
+              ]
+            },
+            "description": "Only displayName and description are accepted. The backend-managed organization ID, status, and project ownership cannot be changed by this API."
+          }
+        },
+        {
+          "name": "Create Project",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Project created', function () { pm.response.to.have.status(201); });",
+                  "if (pm.response.code === 201) {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.projectId).to.match(/^prj-/);",
+                  "  pm.expect(body.namespace).to.equal('dbaas-p-' + body.projectId);",
+                  "  pm.collectionVariables.set('projectId', body.projectId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"displayName\": \"Test Project\",\n  \"description\": \"Database provisioning tests\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects"
+              ]
+            },
+            "description": "Only displayName and description are accepted. The backend assigns the default organization, projectId, and namespace internally. Omit displayName if you want a generated friendly name."
+          }
         }
-      }
+      ]
     },
     {
-      "name": "List Projects",
+      "name": "2. List Projects",
       "request": {
         "method": "GET",
         "header": [],
@@ -99,7 +182,7 @@
         "method": "GET",
         "header": [],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}",
+          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}",
           "host": [
             "{{baseUrl}}"
           ],
@@ -107,7 +190,7 @@
             "api",
             "v1",
             "projects",
-            "{{project}}"
+            "{{projectId}}"
           ]
         }
       }
@@ -127,7 +210,7 @@
           "raw": "{\n  \"displayName\": \"Updated Test Project\",\n  \"description\": \"Updated project details\"\n}"
         },
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}",
+          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}",
           "host": [
             "{{baseUrl}}"
           ],
@@ -135,7 +218,7 @@
             "api",
             "v1",
             "projects",
-            "{{project}}"
+            "{{projectId}}"
           ]
         }
       }
@@ -207,7 +290,7 @@
               "raw": "{\"name\":\"pg-standalone-{{$randomInt}}\",\"remark\":\"Create PostgreSQL - Standalone created from Postman\",\"engine\":\"POSTGRESQL\",\"mode\":\"STANDALONE\",\"version\":\"17.5.0\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":1,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
             },
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -215,7 +298,7 @@
                 "api",
                 "v1",
                 "projects",
-                "{{project}}",
+                "{{projectId}}",
                 "databases"
               ]
             },
@@ -266,7 +349,7 @@
               "raw": "{\"name\":\"pg-replication-{{$randomInt}}\",\"remark\":\"Create PostgreSQL - Replication created from Postman\",\"engine\":\"POSTGRESQL\",\"mode\":\"REPLICATION\",\"version\":\"17.5.0\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":2,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
             },
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -274,7 +357,7 @@
                 "api",
                 "v1",
                 "projects",
-                "{{project}}",
+                "{{projectId}}",
                 "databases"
               ]
             },
@@ -325,7 +408,7 @@
               "raw": "{\"name\":\"mysql-standalone-{{$randomInt}}\",\"remark\":\"Create MySQL - Standalone created from Postman\",\"engine\":\"MYSQL\",\"mode\":\"STANDALONE\",\"version\":\"8.0.44\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":1,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
             },
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -333,7 +416,7 @@
                 "api",
                 "v1",
                 "projects",
-                "{{project}}",
+                "{{projectId}}",
                 "databases"
               ]
             },
@@ -384,7 +467,7 @@
               "raw": "{\"name\":\"mysql-replication-{{$randomInt}}\",\"remark\":\"Create MySQL - Replication created from Postman\",\"engine\":\"MYSQL\",\"mode\":\"REPLICATION\",\"version\":\"8.0.44\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":2,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
             },
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -392,7 +475,7 @@
                 "api",
                 "v1",
                 "projects",
-                "{{project}}",
+                "{{projectId}}",
                 "databases"
               ]
             },
@@ -443,7 +526,7 @@
               "raw": "{\"name\":\"mongo-standalone-{{$randomInt}}\",\"remark\":\"Create MongoDB - Standalone created from Postman\",\"engine\":\"MONGODB\",\"mode\":\"STANDALONE\",\"version\":\"8.0.17\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":1,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
             },
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -451,7 +534,7 @@
                 "api",
                 "v1",
                 "projects",
-                "{{project}}",
+                "{{projectId}}",
                 "databases"
               ]
             },
@@ -502,7 +585,7 @@
               "raw": "{\"name\":\"mongo-replicaset-{{$randomInt}}\",\"remark\":\"Create MongoDB - Replica Set created from Postman\",\"engine\":\"MONGODB\",\"mode\":\"REPLICA_SET\",\"version\":\"8.0.17\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":3,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
             },
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -510,7 +593,7 @@
                 "api",
                 "v1",
                 "projects",
-                "{{project}}",
+                "{{projectId}}",
                 "databases"
               ]
             },
@@ -561,7 +644,7 @@
               "raw": "{\"name\":\"mongo-sharding-{{$randomInt}}\",\"remark\":\"Create MongoDB - Sharding created from Postman\",\"engine\":\"MONGODB\",\"mode\":\"SHARDING\",\"version\":\"8.0.17\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":3,\"shards\":2,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
             },
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -569,7 +652,7 @@
                 "api",
                 "v1",
                 "projects",
-                "{{project}}",
+                "{{projectId}}",
                 "databases"
               ]
             },
@@ -584,7 +667,7 @@
         "method": "GET",
         "header": [],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases",
+          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
           "host": [
             "{{baseUrl}}"
           ],
@@ -592,7 +675,7 @@
             "api",
             "v1",
             "projects",
-            "{{project}}",
+            "{{projectId}}",
             "databases"
           ]
         }
@@ -604,7 +687,7 @@
         "method": "GET",
         "header": [],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}",
+          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}",
           "host": [
             "{{baseUrl}}"
           ],
@@ -612,7 +695,7 @@
             "api",
             "v1",
             "projects",
-            "{{project}}",
+            "{{projectId}}",
             "databases",
             "{{databaseId}}"
           ]
@@ -641,7 +724,7 @@
         "method": "GET",
         "header": [],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/operations/{{operationId}}",
+          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/operations/{{operationId}}",
           "host": [
             "{{baseUrl}}"
           ],
@@ -649,7 +732,7 @@
             "api",
             "v1",
             "projects",
-            "{{project}}",
+            "{{projectId}}",
             "databases",
             "{{databaseId}}",
             "operations",
@@ -676,7 +759,7 @@
     },
     {
       "name": "KubeBlocks Operations",
-      "description": "Project-scoped KubeBlocks OpsRequest examples. Set databaseId to a RUNNING database first. For MongoDB sharding use componentName values such as mongos, config-server or shard.",
+      "description": "Project-scoped KubeBlocks OpsRequest examples. Set databaseId to a RUNNING database first. Vertical scaling uses PreferInPlace and safely falls back to a replication-aware pod recreation when required. For MongoDB sharding use componentName values such as mongos, config-server or shard.",
       "item": [
         {
           "name": "Vertical Scaling",
@@ -712,7 +795,7 @@
               "raw": "{\n  \"componentName\": \"{{componentName}}\",\n  \"requests\": {\n    \"cpu\": \"1\",\n    \"memory\": \"2Gi\"\n  },\n  \"limits\": {\n    \"cpu\": \"2\",\n    \"memory\": \"4Gi\"\n  }\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/vertical-scaling",
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/vertical-scaling",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -720,12 +803,13 @@
                 "api",
                 "v1",
                 "projects",
-                "{{project}}",
+                "{{projectId}}",
                 "databases",
                 "{{databaseId}}",
                 "vertical-scaling"
               ]
-            }
+            },
+            "description": "KubeBlocks first prefers an in-place resize. If that is unsupported, DBaaS allows a replication-safe pod recreation. Poll Get Operation: it succeeds only after ready pods report the requested CPU and memory, and InstanceUpdateRestricted is surfaced instead of leaving the operation RUNNING indefinitely."
           }
         },
         {
@@ -762,7 +846,7 @@
               "raw": "{\n  \"componentName\": \"{{componentName}}\",\n  \"targetReplicas\": 3\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/horizontal-scaling",
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/horizontal-scaling",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -770,7 +854,7 @@
                 "api",
                 "v1",
                 "projects",
-                "{{project}}",
+                "{{projectId}}",
                 "databases",
                 "{{databaseId}}",
                 "horizontal-scaling"
@@ -812,7 +896,7 @@
               "raw": "{\n  \"componentName\": \"{{componentName}}\",\n  \"volumeName\": \"{{volumeName}}\",\n  \"newStorageSize\": \"{{newStorageSize}}\"\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/storage-expansion",
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/storage-expansion",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -820,7 +904,7 @@
                 "api",
                 "v1",
                 "projects",
-                "{{project}}",
+                "{{projectId}}",
                 "databases",
                 "{{databaseId}}",
                 "storage-expansion"
@@ -862,7 +946,7 @@
               "raw": "{\n  \"componentName\": \"{{componentName}}\"\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/restart",
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restart",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -870,7 +954,7 @@
                 "api",
                 "v1",
                 "projects",
-                "{{project}}",
+                "{{projectId}}",
                 "databases",
                 "{{databaseId}}",
                 "restart"
@@ -912,7 +996,7 @@
               "raw": "{}"
             },
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/restart",
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restart",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -920,7 +1004,7 @@
                 "api",
                 "v1",
                 "projects",
-                "{{project}}",
+                "{{projectId}}",
                 "databases",
                 "{{databaseId}}",
                 "restart"
@@ -956,7 +1040,7 @@
         "method": "GET",
         "header": [],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/operations",
+          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/operations",
           "host": [
             "{{baseUrl}}"
           ],
@@ -964,7 +1048,7 @@
             "api",
             "v1",
             "projects",
-            "{{project}}",
+            "{{projectId}}",
             "databases",
             "{{databaseId}}",
             "operations"
@@ -978,7 +1062,7 @@
         "method": "GET",
         "header": [],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/connection",
+          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/connection",
           "host": [
             "{{baseUrl}}"
           ],
@@ -986,7 +1070,7 @@
             "api",
             "v1",
             "projects",
-            "{{project}}",
+            "{{projectId}}",
             "databases",
             "{{databaseId}}",
             "connection"
@@ -1014,7 +1098,7 @@
         "method": "POST",
         "header": [],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/credentials/rotate",
+          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/credentials/rotate",
           "host": [
             "{{baseUrl}}"
           ],
@@ -1022,7 +1106,7 @@
             "api",
             "v1",
             "projects",
-            "{{project}}",
+            "{{projectId}}",
             "databases",
             "{{databaseId}}",
             "credentials",
@@ -1037,7 +1121,7 @@
         "method": "PUT",
         "header": [],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/deletion-protection?enabled=false",
+          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/deletion-protection?enabled=false",
           "host": [
             "{{baseUrl}}"
           ],
@@ -1045,7 +1129,7 @@
             "api",
             "v1",
             "projects",
-            "{{project}}",
+            "{{projectId}}",
             "databases",
             "{{databaseId}}",
             "deletion-protection"
@@ -1065,7 +1149,7 @@
         "method": "PUT",
         "header": [],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}/deletion-protection?enabled=true",
+          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/deletion-protection?enabled=true",
           "host": [
             "{{baseUrl}}"
           ],
@@ -1073,7 +1157,7 @@
             "api",
             "v1",
             "projects",
-            "{{project}}",
+            "{{projectId}}",
             "databases",
             "{{databaseId}}",
             "deletion-protection"
@@ -1089,11 +1173,22 @@
     },
     {
       "name": "Delete Database",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Deletion accepted', function () { pm.response.to.have.status(202); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
       "request": {
         "method": "DELETE",
         "header": [],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}/databases/{{databaseId}}",
+          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}",
           "host": [
             "{{baseUrl}}"
           ],
@@ -1101,11 +1196,12 @@
             "api",
             "v1",
             "projects",
-            "{{project}}",
+            "{{projectId}}",
             "databases",
             "{{databaseId}}"
           ]
-        }
+        },
+        "description": "Disable deletion protection before calling this endpoint. DBaaS keeps the database in DELETING until the KubeBlocks Cluster and all database-specific credential/helper resources are gone; shared services and KubeBlocks child resources are not manually deleted."
       }
     },
     {
@@ -1114,7 +1210,7 @@
         "method": "DELETE",
         "header": [],
         "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{project}}",
+          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}",
           "host": [
             "{{baseUrl}}"
           ],
@@ -1122,7 +1218,7 @@
             "api",
             "v1",
             "projects",
-            "{{project}}"
+            "{{projectId}}"
           ]
         }
       }

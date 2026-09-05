@@ -27,7 +27,6 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 public class ProjectService {
-    public static final String LEGACY_ORGANIZATION_ID = "org-legacy";
     private final ProjectMetadataRepository projectRepository;
     private final DatabaseMetadataRepository databaseRepository;
     private final OrganizationService organizationService;
@@ -35,11 +34,7 @@ public class ProjectService {
     private final DatabaseProperties properties;
 
     public ProjectResponse create(CreateProjectRequest request) {
-        return create(LEGACY_ORGANIZATION_ID, request);
-    }
-
-    public ProjectResponse create(String organizationId, CreateProjectRequest request) {
-        organizationService.requireActive(organizationId);
+        String organizationId = organizationService.requireDefaultOrganization().getOrganizationId();
         Instant now = Instant.now();
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-" + shortId());
@@ -62,13 +57,7 @@ public class ProjectService {
     }
 
     public List<ProjectResponse> list() {
-        return projectRepository.findAllByOrderByCreatedAtDesc()
-                .stream().map(this::toResponse).toList();
-    }
-
-    public List<ProjectResponse> list(String organizationId) {
-        organizationService.requireActive(organizationId);
-        return projectRepository.findByOrganizationIdOrderByCreatedAtDesc(organizationId)
+        return projectRepository.findByOrganizationIdOrderByCreatedAtDesc(currentOrganizationId())
                 .stream().map(this::toResponse).toList();
     }
 
@@ -103,15 +92,25 @@ public class ProjectService {
     }
 
     public ProjectMetadata requireActiveProject(String project) {
+        String organizationId = currentOrganizationId();
         ProjectMetadata metadata = projectRepository
                 .findByProjectName(project)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND,
                         "Project " + project + " was not found"));
+        if (!organizationId.equals(metadata.getOrganizationId())) {
+            // Do not disclose whether another organization's immutable project ID exists.
+            throw new ApiException(HttpStatus.NOT_FOUND,
+                    "Project " + project + " was not found");
+        }
         if (metadata.getStatus() != ResourceStatus.ACTIVE) {
             throw new ApiException(HttpStatus.CONFLICT,
                     "Project " + project + " is not active");
         }
         return metadata;
+    }
+
+    private String currentOrganizationId() {
+        return organizationService.requireDefaultOrganization().getOrganizationId();
     }
 
     private String namespaceFor(String project) {
