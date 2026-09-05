@@ -9,6 +9,7 @@ import com.cyfuture.dbaas.entity.OperationMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.DatabaseEngine;
 import com.cyfuture.dbaas.model.DatabaseStatus;
+import com.cyfuture.dbaas.model.DesiredState;
 import com.cyfuture.dbaas.model.OperationStatus;
 import com.cyfuture.dbaas.model.OperationType;
 import com.cyfuture.dbaas.mapper.OperationMapper;
@@ -23,6 +24,7 @@ import io.kubernetes.client.openapi.models.V1Job;
 import io.kubernetes.client.openapi.models.V1JobCondition;
 import io.kubernetes.client.openapi.models.V1JobSpec;
 import io.kubernetes.client.openapi.models.V1ObjectMeta;
+import io.kubernetes.client.openapi.models.V1OwnerReference;
 import io.kubernetes.client.openapi.models.V1PodSpec;
 import io.kubernetes.client.openapi.models.V1PodTemplateSpec;
 import io.kubernetes.client.openapi.models.V1Secret;
@@ -47,6 +49,11 @@ public class CredentialLifecycleService {
     private static final String READY = "READY";
     private static final String PENDING = "PENDING";
     private static final String FAILED = "FAILED";
+    private static final String MANAGED_BY = "app.kubernetes.io/managed-by";
+    private static final String MANAGED_BY_VALUE = "cyfuture-dbaas";
+    private static final String DATABASE_ID = "dbaas.cyfuture.com/database-id";
+    private static final String PROJECT_ID = "dbaas.cyfuture.com/project-id";
+    private static final String HELPER = "dbaas.cyfuture.com/credential-helper";
     private static final char[] PASSWORD_CHARS =
             "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789".toCharArray();
 
@@ -63,16 +70,31 @@ public class CredentialLifecycleService {
                                       OperationMetadataRepository operationRepository,
                                       OperationMapper operationMapper,
                                       ApiClient apiClient) {
+        this(kubeBlocksClient, properties, operationRepository, operationMapper,
+                new CoreV1Api(apiClient), new BatchV1Api(apiClient));
+    }
+
+    CredentialLifecycleService(KubeBlocksClient kubeBlocksClient,
+                               DatabaseProperties properties,
+                               OperationMetadataRepository operationRepository,
+                               OperationMapper operationMapper,
+                               CoreV1Api coreV1Api,
+                               BatchV1Api batchV1Api) {
         this.kubeBlocksClient = kubeBlocksClient;
         this.properties = properties;
         this.operationRepository = operationRepository;
         this.operationMapper = operationMapper;
-        this.coreV1Api = new CoreV1Api(apiClient);
-        this.batchV1Api = new BatchV1Api(apiClient);
+        this.coreV1Api = coreV1Api;
+        this.batchV1Api = batchV1Api;
     }
 
     public void reconcile(DatabaseMetadata metadata) {
         try {
+            if (metadata.getDesiredState() == DesiredState.DELETED
+                    || metadata.getStatus() == DatabaseStatus.DELETING
+                    || metadata.getStatus() == DatabaseStatus.DELETED) {
+                return;
+            }
             DatabaseResponse database = kubeBlocksClient.get(
                     metadata.getNamespaceName(), metadata.getDatabaseId());
             if (database.status() != DatabaseStatus.RUNNING
@@ -83,7 +105,10 @@ public class CredentialLifecycleService {
 
             V1Secret secret = readOrCreateSecret(metadata);
             Map<String, String> annotations = annotations(secret);
-            if (READY.equals(annotations.get(STATUS))) return;
+            if (READY.equals(annotations.get(STATUS))) {
+                deleteFinishedCredentialJobs(metadata);
+                return;
+            }
 
             int generation = Integer.parseInt(annotations.getOrDefault(GENERATION, "1"));
             String jobName = jobName(metadata.getDatabaseId(), generation);
@@ -106,6 +131,7 @@ public class CredentialLifecycleService {
                 replaceSecret(metadata.getNamespaceName(), secret);
                 markOperation(operationId, OperationStatus.SUCCEEDED,
                         "Managed database credentials are ready", true);
+                deleteJob(metadata.getNamespaceName(), jobName);
             } else if (failed(job)) {
                 String operationId = annotations.get(OPERATION_ID);
                 byte[] previousPassword = secret.getData() == null
@@ -216,7 +242,8 @@ public class CredentialLifecycleService {
             throws io.kubernetes.client.openapi.ApiException {
         String name = secretName(metadata.getDatabaseId());
         try {
-            return coreV1Api.readNamespacedSecret(name, metadata.getNamespaceName()).execute();
+            return ensureSecretMetadata(metadata,
+                    coreV1Api.readNamespacedSecret(name, metadata.getNamespaceName()).execute());
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             if (exception.getCode() != 404) throw exception;
             String suffix = metadata.getDatabaseId().substring(3).replace("-", "");
@@ -224,9 +251,8 @@ public class CredentialLifecycleService {
                     .metadata(new V1ObjectMeta()
                             .name(name)
                             .namespace(metadata.getNamespaceName())
-                            .labels(Map.of(
-                                    "app.kubernetes.io/managed-by", "cyfuture-dbaas",
-                                    "dbaas.cyfuture.com/database-id", metadata.getDatabaseId()))
+                            .labels(helperLabels(metadata))
+                            .ownerReferences(ownerReferences(metadata))
                             .annotations(new LinkedHashMap<>(Map.of(
                                     STATUS, PENDING,
                                     GENERATION, "1"))))
@@ -269,22 +295,181 @@ public class CredentialLifecycleService {
                 .metadata(new V1ObjectMeta()
                         .name(name)
                         .namespace(metadata.getNamespaceName())
-                        .labels(Map.of(
-                                "app.kubernetes.io/managed-by", "cyfuture-dbaas",
-                                "dbaas.cyfuture.com/database-id", metadata.getDatabaseId())))
+                        .labels(helperLabels(metadata))
+                        .ownerReferences(ownerReferences(metadata)))
                 .spec(new V1JobSpec()
                         .backoffLimit(2)
                         .activeDeadlineSeconds(300L)
-                        .ttlSecondsAfterFinished(3600)
+                        .ttlSecondsAfterFinished(60)
                         .template(new V1PodTemplateSpec()
-                                .metadata(new V1ObjectMeta().labels(Map.of(
-                                        "app", name,
-                                        "dbaas.cyfuture.com/database-id", metadata.getDatabaseId())))
+                                .metadata(new V1ObjectMeta().labels(jobPodLabels(metadata, name)))
                                 .spec(new V1PodSpec()
                                         .automountServiceAccountToken(false)
                                         .restartPolicy("Never")
                                         .containers(List.of(container)))));
         batchV1Api.createNamespacedJob(metadata.getNamespaceName(), job).execute();
+    }
+
+    /**
+     * Removes only DB-specific credential resources. Cluster-scoped/shared
+     * credential services are deliberately out of scope because they do not
+     * carry this database's helper labels or deterministic helper names.
+     */
+    public CredentialCleanupObservation cleanupDatabaseResources(DatabaseMetadata metadata) {
+        String namespace = metadata.getNamespaceName();
+        try {
+            for (V1Job job : batchV1Api.listNamespacedJob(namespace).execute().getItems()) {
+                if (isCredentialHelper(job.getMetadata(), metadata)) {
+                    deleteJob(namespace, job.getMetadata().getName());
+                }
+            }
+            for (io.kubernetes.client.openapi.models.V1Pod pod : coreV1Api
+                    .listNamespacedPod(namespace).execute().getItems()) {
+                if (isCredentialHelper(pod.getMetadata(), metadata)) {
+                    deletePod(namespace, pod.getMetadata().getName());
+                }
+            }
+            for (V1Secret secret : coreV1Api.listNamespacedSecret(namespace).execute().getItems()) {
+                if (isCredentialHelper(secret.getMetadata(), metadata)) {
+                    deleteSecret(namespace, secret.getMetadata().getName());
+                }
+            }
+            return databaseResourcesGone(metadata);
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 404) return CredentialCleanupObservation.gone();
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not clean database credential helper resources: " + exception.getMessage());
+        }
+    }
+
+    /** Verifies helper Jobs, Pods and managed credential Secrets have actually disappeared. */
+    public CredentialCleanupObservation databaseResourcesGone(DatabaseMetadata metadata) {
+        String namespace = metadata.getNamespaceName();
+        try {
+            int jobs = (int) batchV1Api.listNamespacedJob(namespace).execute().getItems().stream()
+                    .filter(job -> isCredentialHelper(job.getMetadata(), metadata)).count();
+            int pods = (int) coreV1Api.listNamespacedPod(namespace).execute().getItems().stream()
+                    .filter(pod -> isCredentialHelper(pod.getMetadata(), metadata)).count();
+            int secrets = (int) coreV1Api.listNamespacedSecret(namespace).execute().getItems().stream()
+                    .filter(secret -> isCredentialHelper(secret.getMetadata(), metadata)).count();
+            return new CredentialCleanupObservation(jobs == 0 && pods == 0 && secrets == 0,
+                    jobs, pods, secrets,
+                    jobs == 0 && pods == 0 && secrets == 0
+                            ? "No database-specific credential helper resources remain"
+                            : "Credential cleanup is waiting for " + jobs + " Job(s), " + pods
+                            + " Pod(s), and " + secrets + " Secret(s)");
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 404) return CredentialCleanupObservation.gone();
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not verify database credential helper cleanup: " + exception.getMessage());
+        }
+    }
+
+    private V1Secret ensureSecretMetadata(DatabaseMetadata metadata, V1Secret secret)
+            throws io.kubernetes.client.openapi.ApiException {
+        Map<String, String> labels = secret.getMetadata().getLabels() == null
+                ? new LinkedHashMap<>() : new LinkedHashMap<>(secret.getMetadata().getLabels());
+        boolean changed = false;
+        for (Map.Entry<String, String> entry : helperLabels(metadata).entrySet()) {
+            if (!entry.getValue().equals(labels.put(entry.getKey(), entry.getValue()))) changed = true;
+        }
+        if (!hasClusterOwner(secret.getMetadata())) {
+            secret.getMetadata().setOwnerReferences(ownerReferences(metadata));
+            changed = true;
+        }
+        if (!changed) return secret;
+        secret.getMetadata().setLabels(labels);
+        replaceSecret(metadata.getNamespaceName(), secret);
+        return secret;
+    }
+
+    private Map<String, String> helperLabels(DatabaseMetadata metadata) {
+        Map<String, String> labels = new LinkedHashMap<>();
+        labels.put(MANAGED_BY, MANAGED_BY_VALUE);
+        labels.put(DATABASE_ID, metadata.getDatabaseId());
+        labels.put(PROJECT_ID, metadata.getProjectName());
+        // Short aliases make audit/cleanup selectors easy for cluster operators.
+        labels.put("database-id", metadata.getDatabaseId());
+        labels.put("project-id", metadata.getProjectName());
+        labels.put(HELPER, "true");
+        return labels;
+    }
+
+    private Map<String, String> jobPodLabels(DatabaseMetadata metadata, String jobName) {
+        Map<String, String> labels = helperLabels(metadata);
+        labels.put("app", jobName);
+        return labels;
+    }
+
+    private List<V1OwnerReference> ownerReferences(DatabaseMetadata metadata) {
+        return List.of(kubeBlocksClient.clusterOwnerReference(metadata.getNamespaceName(),
+                metadata.getDatabaseId()));
+    }
+
+    private boolean hasClusterOwner(V1ObjectMeta metadata) {
+        return metadata.getOwnerReferences() != null && metadata.getOwnerReferences().stream()
+                .anyMatch(owner -> "Cluster".equals(owner.getKind()));
+    }
+
+    private boolean isCredentialHelper(V1ObjectMeta resource, DatabaseMetadata metadata) {
+        if (resource == null || resource.getName() == null) return false;
+        Map<String, String> labels = resource.getLabels() == null ? Map.of() : resource.getLabels();
+        boolean labelled = metadata.getDatabaseId().equals(labels.get(DATABASE_ID))
+                && (metadata.getProjectName().equals(labels.get(PROJECT_ID))
+                || labels.get(PROJECT_ID) == null);
+        if (labelled && "true".equals(labels.get(HELPER))) return true;
+        // Backward-compatible cleanup for helper resources created before the
+        // project/helper labels were introduced. Names are DB-ID specific.
+        return resource.getName().equals(secretName(metadata.getDatabaseId()))
+                || resource.getName().startsWith(metadata.getDatabaseId() + "-credentials-");
+    }
+
+    private void deleteFinishedCredentialJobs(DatabaseMetadata metadata) {
+        try {
+            for (V1Job job : batchV1Api.listNamespacedJob(metadata.getNamespaceName()).execute().getItems()) {
+                if (isCredentialHelper(job.getMetadata(), metadata)
+                        && (succeeded(job) || failed(job))) {
+                    deleteJob(metadata.getNamespaceName(), job.getMetadata().getName());
+                }
+            }
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() != 404) {
+                log.debug("Credential Job cleanup for {} will retry: {}", metadata.getDatabaseId(),
+                        exception.getMessage());
+            }
+        }
+    }
+
+    private void deleteJob(String namespace, String name) throws io.kubernetes.client.openapi.ApiException {
+        try {
+            batchV1Api.deleteNamespacedJob(name, namespace).execute();
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() != 404) throw exception;
+        }
+    }
+
+    private void deletePod(String namespace, String name) throws io.kubernetes.client.openapi.ApiException {
+        try {
+            coreV1Api.deleteNamespacedPod(name, namespace).execute();
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() != 404) throw exception;
+        }
+    }
+
+    private void deleteSecret(String namespace, String name) throws io.kubernetes.client.openapi.ApiException {
+        try {
+            coreV1Api.deleteNamespacedSecret(name, namespace).execute();
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() != 404) throw exception;
+        }
+    }
+
+    public record CredentialCleanupObservation(boolean complete, int jobs, int pods, int secrets,
+                                               String message) {
+        static CredentialCleanupObservation gone() {
+            return new CredentialCleanupObservation(true, 0, 0, 0,
+                    "No database-specific credential helper resources remain");
+        }
     }
 
     private String script(DatabaseEngine engine) {

@@ -64,7 +64,7 @@ public class KubeBlocksOperationSubmitter {
     }
 
     private void submitVertical(DatabaseMetadata database, OperationMetadata operation) {
-        kubeBlocksClient.ensureStrictInPlacePodUpdatePolicy(database.getNamespaceName(),
+        kubeBlocksClient.ensurePreferInPlacePodUpdatePolicy(database.getNamespaceName(),
                 database.getDatabaseId(), operation.getComponentName());
         kubeBlocksClient.createVerticalScalingOpsRequest(database.getNamespaceName(),
                 database.getDatabaseId(), operation.getOpsRequestName(),

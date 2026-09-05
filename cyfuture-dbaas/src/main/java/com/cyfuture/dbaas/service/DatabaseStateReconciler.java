@@ -43,6 +43,7 @@ public class DatabaseStateReconciler {
     private final OperationMetadataRepository operationRepository;
     private final KubeBlocksClient kubeBlocksClient;
     private final SharedGatewayService sharedGatewayService;
+    private final CredentialLifecycleService credentialLifecycleService;
     private final DataSource dataSource;
 
     @Value("${dbaas.state.degraded-grace-ms:30000}")
@@ -184,15 +185,26 @@ public class DatabaseStateReconciler {
                 update(database::setDeleteRequestedAt, Instant.now());
             }
             sharedGatewayService.removeRoute(database);
+            CredentialLifecycleService.CredentialCleanupObservation credentialCleanup =
+                    credentialLifecycleService.cleanupDatabaseResources(database);
             kubeBlocksClient.requestDelete(database.getNamespaceName(), database.getDatabaseId());
             KubeBlocksClient.ClusterObservation observed = kubeBlocksClient.observeCluster(
                     database.getNamespaceName(), database.getDatabaseId());
             if (!observed.exists()) {
+                if (!credentialCleanup.complete()) {
+                    update(database::setMessage,
+                            "Database Cluster is absent; waiting for credential helper cleanup: "
+                                    + credentialCleanup.message());
+                    update(database::setSyncMessage, credentialCleanup.message());
+                    finishDeleteOperation(database, OperationStatus.RUNNING, credentialCleanup.message());
+                    saveIfChanged(database);
+                    return;
+                }
                 sharedGatewayService.releasePort(database);
                 update(database::setStatus, DatabaseStatus.DELETED);
                 update(database::setDeletedAt, Instant.now());
-                update(database::setMessage, "Database Cluster is absent; metadata is preserved");
-                update(database::setSyncMessage, "Deletion confirmed by Kubernetes");
+                update(database::setMessage, "Database Cluster and credential helper resources are absent; metadata is preserved");
+                update(database::setSyncMessage, "Deletion confirmed by Kubernetes and credential cleanup");
                 finishDeleteOperation(database, OperationStatus.SUCCEEDED,
                         "Deletion confirmed by Kubernetes");
             } else {

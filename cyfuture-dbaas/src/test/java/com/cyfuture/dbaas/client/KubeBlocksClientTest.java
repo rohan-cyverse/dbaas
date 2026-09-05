@@ -1,9 +1,22 @@
 package com.cyfuture.dbaas.client;
 
 import com.cyfuture.dbaas.config.DatabaseProperties;
+import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
+import com.cyfuture.dbaas.model.DatabaseEngine;
+import com.cyfuture.dbaas.model.DatabaseMode;
+import com.cyfuture.dbaas.model.SizePlan;
 import io.kubernetes.client.openapi.apis.CoreV1Api;
 import io.kubernetes.client.openapi.apis.CustomObjectsApi;
 import io.kubernetes.client.openapi.apis.StorageV1Api;
+import io.kubernetes.client.openapi.models.V1Container;
+import io.kubernetes.client.openapi.models.V1ObjectMeta;
+import io.kubernetes.client.openapi.models.V1Pod;
+import io.kubernetes.client.openapi.models.V1PodCondition;
+import io.kubernetes.client.openapi.models.V1PodList;
+import io.kubernetes.client.openapi.models.V1PodSpec;
+import io.kubernetes.client.openapi.models.V1PodStatus;
+import io.kubernetes.client.openapi.models.V1ResourceRequirements;
+import io.kubernetes.client.custom.Quantity;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -17,18 +30,21 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class KubeBlocksClientTest {
     private CustomObjectsApi customObjectsApi;
+    private CoreV1Api coreV1Api;
     private KubeBlocksClient client;
 
     @BeforeEach
     void setUp() throws Exception {
         customObjectsApi = mock(CustomObjectsApi.class, RETURNS_DEEP_STUBS);
+        coreV1Api = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
         client = new KubeBlocksClient(new DatabaseProperties(), customObjectsApi,
-                mock(CoreV1Api.class), mock(StorageV1Api.class));
+                coreV1Api, mock(StorageV1Api.class));
         when(customObjectsApi.getClusterCustomObject("apiextensions.k8s.io", "v1",
                 "customresourcedefinitions", "opsrequests.operations.kubeblocks.io")
                 .execute()).thenReturn(opsRequestCrd());
@@ -72,15 +88,15 @@ class KubeBlocksClientTest {
     }
 
     @Test
-    void enablesStrictInPlacePolicyBeforeVerticalScaling() throws Exception {
+    void migratesStrictInPlacePolicyToPreferInPlaceBeforeVerticalScaling() throws Exception {
         when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
                 "dbaas-orders", "clusters", "db-orders0001").execute())
-                .thenReturn(clusterWithPolicy("PreferInPlace"));
+                .thenReturn(clusterWithPolicy("StrictInPlace"));
         when(customObjectsApi.replaceNamespacedCustomObject(eq("apps.kubeblocks.io"),
                 eq("v1"), eq("dbaas-orders"), eq("clusters"),
                 eq("db-orders0001"), any()).execute()).thenReturn(Map.of());
 
-        client.ensureStrictInPlacePodUpdatePolicy("dbaas-orders",
+        client.ensurePreferInPlacePodUpdatePolicy("dbaas-orders",
                 "db-orders0001", "postgresql");
 
         ArgumentCaptor<Object> body = ArgumentCaptor.forClass(Object.class);
@@ -89,7 +105,7 @@ class KubeBlocksClientTest {
                 eq("db-orders0001"), body.capture());
         Map<?, ?> spec = (Map<?, ?>) ((Map<?, ?>) body.getValue()).get("spec");
         Map<?, ?> component = (Map<?, ?>) ((List<?>) spec.get("componentSpecs")).get(0);
-        assertEquals("StrictInPlace", component.get("podUpdatePolicy"));
+        assertEquals("PreferInPlace", component.get("podUpdatePolicy"));
     }
 
     @Test
@@ -106,6 +122,79 @@ class KubeBlocksClientTest {
         assertTrue(components.get(2).sharding());
         assertEquals("20Gi", components.get(2).storage("data"));
         assertEquals("StrictInPlace", components.get(2).podUpdatePolicy());
+    }
+
+    @Test
+    void createsPostgresqlMongoAndMysqlWithPreferInPlacePolicy() throws Exception {
+        client.create("dbaas-orders", "prj-orders", "db-postgres0001",
+                request(DatabaseEngine.POSTGRESQL, DatabaseMode.REPLICATION));
+        client.create("dbaas-orders", "prj-orders", "db-mongo000001",
+                request(DatabaseEngine.MONGODB, DatabaseMode.REPLICA_SET));
+        client.create("dbaas-orders", "prj-orders", "db-mysql000001",
+                request(DatabaseEngine.MYSQL, DatabaseMode.REPLICATION));
+
+        ArgumentCaptor<Object> bodies = ArgumentCaptor.forClass(Object.class);
+        verify(customObjectsApi, times(3)).createNamespacedCustomObject(
+                eq("apps.kubeblocks.io"), eq("v1"), eq("dbaas-orders"), eq("clusters"), bodies.capture());
+        for (Object body : bodies.getAllValues()) {
+            Map<?, ?> spec = (Map<?, ?>) ((Map<?, ?>) body).get("spec");
+            for (Object component : (List<?>) spec.get("componentSpecs")) {
+                assertEquals("PreferInPlace", ((Map<?, ?>) component).get("podUpdatePolicy"));
+            }
+        }
+    }
+
+    @Test
+    void migratesEveryManagedStrictInPlaceComponentWithoutTouchingUnmanagedClusters() throws Exception {
+        Map<String, Object> managed = clusterWithPolicy("StrictInPlace");
+        managed.put("metadata", new java.util.LinkedHashMap<>(Map.of(
+                "name", "db-orders0001", "namespace", "dbaas-orders",
+                "labels", Map.of("app.kubernetes.io/managed-by", "cyfuture-dbaas"))));
+        Map<String, Object> unmanaged = clusterWithPolicy("StrictInPlace");
+        unmanaged.put("metadata", Map.of("name", "other", "namespace", "default", "labels", Map.of()));
+        when(customObjectsApi.listClusterCustomObject("apps.kubeblocks.io", "v1", "clusters")
+                .execute()).thenReturn(Map.of("items", List.of(managed, unmanaged)));
+        when(customObjectsApi.replaceNamespacedCustomObject(eq("apps.kubeblocks.io"), eq("v1"),
+                eq("dbaas-orders"), eq("clusters"), eq("db-orders0001"), any()).execute())
+                .thenReturn(Map.of());
+
+        assertEquals(1, client.migrateManagedClustersToPreferInPlace());
+        Map<?, ?> component = (Map<?, ?>) ((List<?>) ((Map<?, ?>) managed.get("spec"))
+                .get("componentSpecs")).get(0);
+        assertEquals("PreferInPlace", component.get("podUpdatePolicy"));
+    }
+
+    @Test
+    void verifiesActualRequestedPodResourcesBeforeCompletingVerticalScaling() throws Exception {
+        when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
+                "dbaas-orders", "clusters", "db-orders0001").execute())
+                .thenReturn(clusterWithPolicy("PreferInPlace"));
+        V1ResourceRequirements resources = new V1ResourceRequirements()
+                .requests(Map.of("cpu", new Quantity("1000m"), "memory", new Quantity("2048Mi")))
+                .limits(Map.of("cpu", new Quantity("2"), "memory", new Quantity("4Gi")));
+        V1Pod pod = new V1Pod()
+                .metadata(new V1ObjectMeta().name("db-orders0001-postgresql-0").labels(Map.of(
+                        "app.kubernetes.io/instance", "db-orders0001",
+                        "apps.kubeblocks.io/component-name", "postgresql")))
+                .spec(new V1PodSpec().containers(List.of(new V1Container()
+                        .name("postgresql").resources(resources))))
+                .status(new V1PodStatus().conditions(List.of(new V1PodCondition()
+                        .type("Ready").status("True"))));
+        when(coreV1Api.listNamespacedPod("dbaas-orders")
+                .labelSelector("app.kubernetes.io/instance=db-orders0001").execute())
+                .thenReturn(new V1PodList().items(List.of(pod, pod)));
+
+        KubeBlocksClient.VerticalScalingObservation observation = client.observeVerticalScaling(
+                "dbaas-orders", "db-orders0001", "postgresql",
+                Map.of("cpu", "1", "memory", "2Gi"),
+                Map.of("cpu", "2", "memory", "4Gi"));
+
+        assertTrue(observation.complete());
+    }
+
+    private CreateDatabaseRequest request(DatabaseEngine engine, DatabaseMode mode) {
+        return new CreateDatabaseRequest("orders-db", null, engine, mode, "test-version",
+                SizePlan.C1G1, 10, 2, 0, null, List.of(), false, Map.of());
     }
 
     private Map<String, Object> opsRequestCrd() {

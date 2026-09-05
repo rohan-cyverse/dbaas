@@ -307,18 +307,37 @@ public class DatabaseService {
         }
 
         try {
+            CredentialLifecycleService.CredentialCleanupObservation credentialCleanup =
+                    credentialLifecycleService.cleanupDatabaseResources(database);
+            if (!credentialCleanup.complete()) {
+                database.setMessage("Database deletion is waiting for credential helper cleanup: "
+                        + credentialCleanup.message());
+                database.setUpdatedAt(Instant.now());
+                databaseRepository.save(database);
+                return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETING,
+                        database.getMessage());
+            }
             kubeBlocksClient.requestDelete(database.getNamespaceName(), databaseId);
             KubeBlocksClient.ClusterObservation observation = kubeBlocksClient.observeCluster(
                     database.getNamespaceName(), databaseId);
             if (!observation.exists()) {
-                sharedGatewayService.releasePort(database);
-                database.setStatus(DatabaseStatus.DELETED);
-                database.setDeletedAt(Instant.now());
-                database.setMessage("Database Cluster is absent; metadata is preserved");
+                CredentialLifecycleService.CredentialCleanupObservation remaining =
+                        credentialLifecycleService.cleanupDatabaseResources(database);
+                if (remaining.complete()) {
+                    sharedGatewayService.releasePort(database);
+                    database.setStatus(DatabaseStatus.DELETED);
+                    database.setDeletedAt(Instant.now());
+                    database.setMessage("Database Cluster and credential helper resources are absent; metadata is preserved");
+                    database.setUpdatedAt(Instant.now());
+                    databaseRepository.save(database);
+                    finishDeleteOperation(operation, OperationStatus.SUCCEEDED, database.getMessage());
+                    return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETED, database.getMessage());
+                }
+                database.setMessage("Database Cluster is absent; waiting for credential helper cleanup: "
+                        + remaining.message());
                 database.setUpdatedAt(Instant.now());
                 databaseRepository.save(database);
-                finishDeleteOperation(operation, OperationStatus.SUCCEEDED, database.getMessage());
-                return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETED, database.getMessage());
+                return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETING, database.getMessage());
             }
             database.setMessage("KubeBlocks deletion is running");
             database.setUpdatedAt(Instant.now());

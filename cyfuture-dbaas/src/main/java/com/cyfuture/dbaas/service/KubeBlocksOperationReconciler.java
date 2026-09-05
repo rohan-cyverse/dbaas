@@ -10,6 +10,7 @@ import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -23,6 +24,9 @@ public class KubeBlocksOperationReconciler {
     private final OperationMetadataRepository operationRepository;
     private final DatabaseMetadataRepository databaseRepository;
     private final KubeBlocksClient kubeBlocksClient;
+
+    @Value("${dbaas.vertical-scaling-timeout-ms:900000}")
+    private long verticalScalingTimeoutMs = 900_000L;
 
     @Scheduled(fixedDelayString = "${dbaas.operation-reconcile-ms:5000}")
     public void reconcile() {
@@ -46,9 +50,15 @@ public class KubeBlocksOperationReconciler {
                     database.getNamespaceName(), operation.getOpsRequestName());
             operation.setMessage(safeMessage(live.message()));
             operation.setProgress(progress(live.progress(), status(live.phase())));
-            if (live.startedAt() != null) operation.setStartedAt(live.startedAt());
+            if (live.startedAt() != null && (operation.getStartedAt() == null
+                    || live.startedAt().isBefore(operation.getStartedAt()))) {
+                operation.setStartedAt(live.startedAt());
+            }
 
             OperationStatus status = status(live.phase());
+            if (operation.getType() == OperationType.VERTICAL_SCALING) {
+                status = reconcileVerticalScaling(database, operation, live, status);
+            }
             operation.setStatus(status);
             operation.setProvisioningStage(status == OperationStatus.FAILED
                     ? ProvisioningStage.FAILED
@@ -62,9 +72,76 @@ public class KubeBlocksOperationReconciler {
             }
             operationRepository.save(operation);
         } catch (Exception exception) {
+            if (operation.getType() == OperationType.VERTICAL_SCALING && timedOut(operation)) {
+                failTimedOutVerticalOperation(operation,
+                        "Could not verify VerticalScaling before timeout: " + safeMessage(exception.getMessage()));
+            }
             log.debug("KubeBlocks operation reconciliation for {} will retry: {}",
                     operation.getOperationId(), exception.getMessage());
         }
+    }
+
+    private OperationStatus reconcileVerticalScaling(DatabaseMetadata database,
+                                                     OperationMetadata operation,
+                                                     KubeBlocksClient.OpsRequestInfo live,
+                                                     OperationStatus reported) {
+        if (instanceUpdateRestricted(live)) {
+            operation.setMessage("KubeBlocks rejected VerticalScaling because InstanceUpdateRestricted: "
+                    + safeMessage(live.message()));
+            return OperationStatus.FAILED;
+        }
+
+        if (reported == OperationStatus.SUCCEEDED) {
+            KubeBlocksClient.VerticalScalingObservation observation = kubeBlocksClient
+                    .observeVerticalScaling(database.getNamespaceName(), database.getDatabaseId(),
+                            operation.getComponentName(),
+                            java.util.Map.of("cpu", operation.getCpuRequest(),
+                                    "memory", operation.getMemoryRequest()),
+                            java.util.Map.of("cpu", operation.getCpuLimit(),
+                                    "memory", operation.getMemoryLimit()));
+            operation.setMessage(safeMessage(observation.message()));
+            if (observation.complete()) return OperationStatus.SUCCEEDED;
+            if (timedOut(operation)) {
+                operation.setMessage("VerticalScaling timed out after KubeBlocks completed but "
+                        + "requested Pod resources were not observed: " + safeMessage(observation.message()));
+                return OperationStatus.FAILED;
+            }
+            // The OpsRequest may say 100% before recreated Pods have picked up
+            // their requested resources. Keep this visibly non-terminal.
+            operation.setProgress(95);
+            return OperationStatus.RUNNING;
+        }
+
+        if (timedOut(operation)) {
+            operation.setMessage("VerticalScaling timed out waiting for KubeBlocks OpsRequest; last status: "
+                    + safeMessage(live.message()));
+            return OperationStatus.FAILED;
+        }
+        return reported;
+    }
+
+    private boolean instanceUpdateRestricted(KubeBlocksClient.OpsRequestInfo live) {
+        return containsIgnoreCase(live.reason(), "InstanceUpdateRestricted")
+                || containsIgnoreCase(live.message(), "InstanceUpdateRestricted");
+    }
+
+    private boolean containsIgnoreCase(String value, String expected) {
+        return value != null && value.toLowerCase(java.util.Locale.ROOT)
+                .contains(expected.toLowerCase(java.util.Locale.ROOT));
+    }
+
+    private boolean timedOut(OperationMetadata operation) {
+        Instant started = operation.getStartedAt() == null ? operation.getCreatedAt() : operation.getStartedAt();
+        return started != null && !started.plusMillis(verticalScalingTimeoutMs).isAfter(Instant.now());
+    }
+
+    private void failTimedOutVerticalOperation(OperationMetadata operation, String message) {
+        operation.setStatus(OperationStatus.FAILED);
+        operation.setProvisioningStage(ProvisioningStage.FAILED);
+        operation.setProgress(100);
+        operation.setMessage(message);
+        operation.setCompletedAt(Instant.now());
+        operationRepository.save(operation);
     }
 
     private void syncDatabaseMetadata(DatabaseMetadata database, OperationMetadata operation) {

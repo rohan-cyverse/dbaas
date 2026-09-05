@@ -12,11 +12,13 @@ import com.cyfuture.dbaas.model.DatabaseMode;
 import com.cyfuture.dbaas.model.SizePlan;
 import com.cyfuture.dbaas.model.ProvisioningStage;
 import io.kubernetes.client.openapi.ApiClient;
+import io.kubernetes.client.custom.Quantity;
 import io.kubernetes.client.openapi.apis.CoreV1Api;
 import io.kubernetes.client.openapi.apis.CustomObjectsApi;
 import io.kubernetes.client.openapi.apis.StorageV1Api;
 import io.kubernetes.client.openapi.models.V1Namespace;
 import io.kubernetes.client.openapi.models.V1ObjectMeta;
+import io.kubernetes.client.openapi.models.V1OwnerReference;
 import io.kubernetes.client.openapi.models.V1Pod;
 import io.kubernetes.client.openapi.models.V1PersistentVolumeClaim;
 import io.kubernetes.client.openapi.models.V1Secret;
@@ -47,7 +49,8 @@ public class KubeBlocksClient {
     private static final String OPS_REQUESTS = "opsrequests";
     private static final String OPS_REQUEST_CRD = "opsrequests.operations.kubeblocks.io";
     private static final Pattern QUANTITY = Pattern.compile("^([1-9][0-9]*)(Mi|Gi|Ti)$");
-    private static final String STRICT_IN_PLACE = "StrictInPlace";
+    /** Lets KubeBlocks use in-place resize when available and safely recreate Pods otherwise. */
+    private static final String PREFER_IN_PLACE = "PreferInPlace";
 
     private final DatabaseProperties properties;
     private final CustomObjectsApi customObjectsApi;
@@ -273,11 +276,11 @@ public class KubeBlocksClient {
         return componentNames(components(namespace, databaseId));
     }
 
-    public void ensureStrictInPlacePodUpdatePolicy(String namespace, String databaseId,
+    public void ensurePreferInPlacePodUpdatePolicy(String namespace, String databaseId,
                                                    String componentName) {
         try {
             Map<String, Object> cluster = cluster(namespace, databaseId);
-            if (!setStrictInPlace(cluster, componentName)) return;
+            if (!setPreferInPlace(cluster, componentName)) return;
             customObjectsApi.replaceNamespacedCustomObject(
                     GROUP, VERSION, namespace, CLUSTERS, databaseId, cluster).execute();
         } catch (io.kubernetes.client.openapi.ApiException exception) {
@@ -286,7 +289,90 @@ public class KubeBlocksClient {
                         "Database " + databaseId + " was not found");
             }
             throw new ApiException(HttpStatus.BAD_GATEWAY,
-                    "Could not enable in-place vertical scaling: " + kubernetesMessage(exception));
+                    "Could not set PreferInPlace vertical scaling policy: " + kubernetesMessage(exception));
+        }
+    }
+
+    /** Owner reference for DB-specific helper resources; never use this for shared services. */
+    public V1OwnerReference clusterOwnerReference(String namespace, String databaseId) {
+        Map<String, Object> cluster = cluster(namespace, databaseId);
+        Map<String, Object> metadata = asMap(cluster.get("metadata"));
+        String uid = String.valueOf(metadata.get("uid"));
+        if (uid.isBlank() || "null".equals(uid)) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "KubeBlocks Cluster " + databaseId + " has no UID for helper ownership");
+        }
+        return new V1OwnerReference()
+                .apiVersion(GROUP + "/" + VERSION)
+                .kind("Cluster")
+                .name(databaseId)
+                .uid(uid)
+                .controller(false)
+                .blockOwnerDeletion(false);
+    }
+
+    /**
+     * Patches all DBaaS-owned Cluster CRs that were created by older releases
+     * with StrictInPlace. This only changes the update policy; KubeBlocks still
+     * owns the replication-aware rollout.
+     */
+    public int migrateManagedClustersToPreferInPlace() {
+        try {
+            Map<String, Object> list = asMap(customObjectsApi.listClusterCustomObject(
+                    GROUP, VERSION, CLUSTERS).execute());
+            int migrated = 0;
+            for (Object item : (List<?>) list.getOrDefault("items", List.of())) {
+                Map<String, Object> cluster = asMap(item);
+                Map<String, Object> metadata = asMap(cluster.get("metadata"));
+                Map<String, Object> labels = asMap(metadata.get("labels"));
+                if (!"cyfuture-dbaas".equals(labels.get("app.kubernetes.io/managed-by"))) continue;
+                if (!setPreferInPlace(cluster, null)) continue;
+                String namespace = String.valueOf(metadata.get("namespace"));
+                String name = String.valueOf(metadata.get("name"));
+                if (namespace.isBlank() || name.isBlank() || "null".equals(namespace)
+                        || "null".equals(name)) continue;
+                customObjectsApi.replaceNamespacedCustomObject(
+                        GROUP, VERSION, namespace, CLUSTERS, name, cluster).execute();
+                migrated++;
+            }
+            return migrated;
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not migrate managed Cluster update policies: " + kubernetesMessage(exception));
+        }
+    }
+
+    /**
+     * Checks ready component Pods after a successful VerticalScaling OpsRequest.
+     * A successful CR phase alone is not sufficient: the actual container
+     * requests and limits must match the user request on every expected Pod.
+     */
+    public VerticalScalingObservation observeVerticalScaling(String namespace, String databaseId,
+                                                              String componentName,
+                                                              Map<String, String> requests,
+                                                              Map<String, String> limits) {
+        ClusterComponentInfo component = requireComponent(namespace, databaseId, componentName);
+        int expected = component.replicas() * Math.max(1, component.shards());
+        try {
+            List<V1Pod> pods = coreV1Api.listNamespacedPod(namespace)
+                    .labelSelector("app.kubernetes.io/instance=" + databaseId)
+                    .execute().getItems();
+            List<V1Pod> componentPods = pods.stream()
+                    .filter(pod -> isComponentPod(pod, component.name(), component.sharding()))
+                    .toList();
+            int matching = 0;
+            for (V1Pod pod : componentPods) {
+                if (isReady(pod) && resourcesMatch(pod, requests, limits)) matching++;
+            }
+            boolean complete = componentPods.size() >= expected && matching >= expected;
+            String message = complete
+                    ? "Requested CPU/memory observed on " + matching + "/" + expected + " ready Pods"
+                    : "Waiting for requested CPU/memory on " + matching + "/" + expected
+                    + " ready Pods (" + componentPods.size() + " component Pods observed)";
+            return new VerticalScalingObservation(complete, expected, componentPods.size(), matching, message);
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not verify vertical scaling Pod resources: " + kubernetesMessage(exception));
         }
     }
 
@@ -348,12 +434,13 @@ public class KubeBlocksClient {
             return new OpsRequestInfo(String.valueOf(status.getOrDefault("phase", "Pending")),
                     String.valueOf(status.getOrDefault("progress", "-/-")),
                     lastConditionMessage(status),
+                    lastConditionReason(status),
                     instant(status.get("startTimestamp")),
                     instant(status.get("completionTimestamp")));
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             if (exception.getCode() == 404) {
                 return new OpsRequestInfo("Pending", "-/-",
-                        "Waiting for KubeBlocks OpsRequest submission", null, null);
+                        "Waiting for KubeBlocks OpsRequest submission", null, null, null);
             }
             throw new ApiException(HttpStatus.BAD_GATEWAY,
                     "Could not read KubeBlocks OpsRequest: " + kubernetesMessage(exception));
@@ -401,7 +488,7 @@ public class KubeBlocksClient {
         component.put("name", settings.getComponentName());
         component.put("serviceVersion", request.version());
         component.put("replicas", request.replicas());
-        component.put("podUpdatePolicy", STRICT_IN_PLACE);
+        component.put("podUpdatePolicy", PREFER_IN_PLACE);
         component.put("resources", resources);
         component.put("volumeClaimTemplates", List.of(volume));
         if (request.timezone() != null && !request.timezone().isBlank()) {
@@ -434,7 +521,7 @@ public class KubeBlocksClient {
             shard.put("name", "shard");
             shard.put("serviceVersion", request.version());
             shard.put("replicas", request.replicas());
-            shard.put("podUpdatePolicy", STRICT_IN_PLACE);
+            shard.put("podUpdatePolicy", PREFER_IN_PLACE);
             shard.put("resources", resources);
             shard.put("volumeClaimTemplates", List.of(volume));
 
@@ -442,7 +529,7 @@ public class KubeBlocksClient {
             configServer.put("name", "config-server");
             configServer.put("serviceVersion", request.version());
             configServer.put("replicas", 3);
-            configServer.put("podUpdatePolicy", STRICT_IN_PLACE);
+            configServer.put("podUpdatePolicy", PREFER_IN_PLACE);
             configServer.put("resources", resources);
             configServer.put("volumeClaimTemplates", List.of(volume));
 
@@ -450,7 +537,7 @@ public class KubeBlocksClient {
             mongos.put("name", "mongos");
             mongos.put("serviceVersion", request.version());
             mongos.put("replicas", 2);
-            mongos.put("podUpdatePolicy", STRICT_IN_PLACE);
+            mongos.put("podUpdatePolicy", PREFER_IN_PLACE);
             mongos.put("resources", resources);
 
             spec.put("shardings", List.of(Map.of(
@@ -553,22 +640,22 @@ public class KubeBlocksClient {
                 String.valueOf(component.getOrDefault("podUpdatePolicy", "PreferInPlace")));
     }
 
-    private boolean setStrictInPlace(Map<String, Object> cluster, String componentName) {
+    private boolean setPreferInPlace(Map<String, Object> cluster, String componentName) {
         Map<String, Object> spec = asMap(cluster.get("spec"));
         boolean changed = false;
         for (Object item : (List<?>) spec.getOrDefault("componentSpecs", List.of())) {
             Map<String, Object> component = asMap(item);
-            if (componentName.equals(component.get("name"))
-                    && !STRICT_IN_PLACE.equals(component.get("podUpdatePolicy"))) {
-                component.put("podUpdatePolicy", STRICT_IN_PLACE);
+            if ((componentName == null || componentName.equals(component.get("name")))
+                    && !PREFER_IN_PLACE.equals(component.get("podUpdatePolicy"))) {
+                component.put("podUpdatePolicy", PREFER_IN_PLACE);
                 changed = true;
             }
         }
         for (Object item : (List<?>) spec.getOrDefault("shardings", List.of())) {
             Map<String, Object> template = asMap(asMap(item).get("template"));
-            if (componentName.equals(template.get("name"))
-                    && !STRICT_IN_PLACE.equals(template.get("podUpdatePolicy"))) {
-                template.put("podUpdatePolicy", STRICT_IN_PLACE);
+            if ((componentName == null || componentName.equals(template.get("name")))
+                    && !PREFER_IN_PLACE.equals(template.get("podUpdatePolicy"))) {
+                template.put("podUpdatePolicy", PREFER_IN_PLACE);
                 changed = true;
             }
         }
@@ -665,6 +752,24 @@ public class KubeBlocksClient {
         return String.valueOf(condition.getOrDefault("reason", "KubeBlocks is processing the operation"));
     }
 
+    private String lastConditionReason(Map<String, Object> status) {
+        List<?> conditions = (List<?>) status.getOrDefault("conditions", List.of());
+        if (conditions.isEmpty()) return null;
+        String latest = null;
+        for (Object item : conditions) {
+            Map<String, Object> condition = asMap(item);
+            Object reason = condition.get("reason");
+            String message = String.valueOf(condition.getOrDefault("message", ""));
+            if (message.contains("InstanceUpdateRestricted")) return "InstanceUpdateRestricted";
+            if (reason == null) continue;
+            latest = String.valueOf(reason);
+            // Preserve this terminal/restriction reason even if KubeBlocks adds
+            // a later generic progress condition.
+            if ("InstanceUpdateRestricted".equalsIgnoreCase(latest)) return latest;
+        }
+        return latest;
+    }
+
     private Instant instant(Object value) {
         if (value == null) return null;
         try {
@@ -753,6 +858,72 @@ public class KubeBlocksClient {
         if (pod.getStatus() == null || pod.getStatus().getConditions() == null) return false;
         return pod.getStatus().getConditions().stream()
                 .anyMatch(condition -> "Ready".equals(condition.getType()) && "True".equals(condition.getStatus()));
+    }
+
+    private boolean isComponentPod(V1Pod pod, String componentName, boolean sharding) {
+        if (pod.getMetadata() == null || pod.getMetadata().getLabels() == null) return false;
+        Map<String, String> labels = pod.getMetadata().getLabels();
+        String actual = firstLabel(labels,
+                "apps.kubeblocks.io/component-name",
+                "app.kubernetes.io/component",
+                "kubeblocks.io/component-name");
+        // Single-component non-sharded clusters sometimes omit a component label.
+        return componentName.equals(actual) || (!sharding && actual == null);
+    }
+
+    private String firstLabel(Map<String, String> labels, String... keys) {
+        for (String key : keys) {
+            String value = labels.get(key);
+            if (value != null && !value.isBlank()) return value;
+        }
+        return null;
+    }
+
+    private boolean resourcesMatch(V1Pod pod, Map<String, String> requests,
+                                   Map<String, String> limits) {
+        if (pod.getSpec() == null || pod.getSpec().getContainers() == null) return false;
+        return pod.getSpec().getContainers().stream()
+                .filter(container -> container.getResources() != null)
+                .anyMatch(container -> quantityMapMatches(container.getResources().getRequests(), requests)
+                        && quantityMapMatches(container.getResources().getLimits(), limits));
+    }
+
+    private boolean quantityMapMatches(Map<String, ?> actual, Map<String, String> requested) {
+        if (actual == null) return false;
+        return quantityEquals(actual.get("cpu"), requested.get("cpu"), true)
+                && quantityEquals(actual.get("memory"), requested.get("memory"), false);
+    }
+
+    private boolean quantityEquals(Object actual, String requested, boolean cpu) {
+        if (actual == null || requested == null) return false;
+        String actualValue = actual instanceof Quantity quantity
+                ? quantity.toSuffixedString() : String.valueOf(actual);
+        try {
+            return cpu ? cpuMillis(actualValue) == cpuMillis(requested)
+                    : memoryBytes(actualValue) == memoryBytes(requested);
+        } catch (IllegalArgumentException ignored) {
+            return actualValue.equals(requested);
+        }
+    }
+
+    private long cpuMillis(String value) {
+        String normalized = value.trim();
+        if (normalized.endsWith("m")) return Long.parseLong(normalized.substring(0, normalized.length() - 1));
+        return Math.round(Double.parseDouble(normalized) * 1000D);
+    }
+
+    private long memoryBytes(String value) {
+        String normalized = value.trim();
+        Matcher matcher = Pattern.compile("^([0-9]+)(Ki|Mi|Gi|Ti)$").matcher(normalized);
+        if (!matcher.matches()) throw new IllegalArgumentException("Unsupported memory quantity " + value);
+        long multiplier = switch (matcher.group(2)) {
+            case "Ki" -> 1024L;
+            case "Mi" -> 1024L * 1024L;
+            case "Gi" -> 1024L * 1024L * 1024L;
+            case "Ti" -> 1024L * 1024L * 1024L * 1024L;
+            default -> throw new IllegalArgumentException("Unsupported memory quantity " + value);
+        };
+        return Math.multiplyExact(Long.parseLong(matcher.group(1)), multiplier);
     }
 
     private int countBoundVolumes(String namespace, String databaseId) {
@@ -973,8 +1144,23 @@ public class KubeBlocksClient {
             String phase,
             String progress,
             String message,
+            String reason,
             Instant startedAt,
             Instant completedAt
+    ) {
+        /** Backward-compatible constructor for callers that do not supply a condition reason. */
+        public OpsRequestInfo(String phase, String progress, String message,
+                              Instant startedAt, Instant completedAt) {
+            this(phase, progress, message, null, startedAt, completedAt);
+        }
+    }
+
+    public record VerticalScalingObservation(
+            boolean complete,
+            int expectedPods,
+            int observedPods,
+            int matchingReadyPods,
+            String message
     ) {}
 
     public record ClusterObservation(
