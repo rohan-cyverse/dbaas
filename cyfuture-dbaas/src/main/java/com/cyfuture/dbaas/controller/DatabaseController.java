@@ -61,7 +61,7 @@ public class DatabaseController {
     @PostMapping
     @Operation(
             summary = "Provision a database",
-            description = "Starts asynchronous provisioning with automatic public access."
+            description = "Starts asynchronous provisioning with automatic public access. Omit name to receive a unique, engine-prefixed display handle."
     )
     public ResponseEntity<CreateDatabaseResponse> create(
             @PathVariable String project,
@@ -82,8 +82,11 @@ public class DatabaseController {
 
         return ResponseEntity
                 .status(HttpStatus.ACCEPTED)
-                .header("Location", response.statusUrl())
-                .header("Operation-Location", response.operationUrl())
+                .header("Location", "/api/v1/projects/" + project + "/databases/"
+                        + response.databaseId())
+                .header("Operation-Location", "/api/v1/projects/" + project
+                        + "/databases/" + response.databaseId() + "/operations/"
+                        + response.operationId())
                 .header("Retry-After", "5")
                 .body(response);
     }
@@ -97,7 +100,7 @@ public class DatabaseController {
     @GetMapping("/{databaseId}")
     @Operation(
             summary = "Get database deployment status",
-            description = "Returns database health and endpoints without credentials."
+            description = "Returns database lifecycle state and public endpoint details without credentials."
     )
     public DatabaseResponse get(
             @PathVariable String project,
@@ -215,7 +218,7 @@ public class DatabaseController {
     @GetMapping("/{databaseId}/connection")
     @Operation(
             summary = "Get database connection details",
-            description = "Returns managed credentials and connection URIs."
+            description = "Returns managed credentials and a public connection URI."
     )
     public ResponseEntity<ConnectionResponse> connection(
             @PathVariable String project,

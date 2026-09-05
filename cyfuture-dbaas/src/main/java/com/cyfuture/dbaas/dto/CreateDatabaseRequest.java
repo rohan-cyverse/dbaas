@@ -15,7 +15,7 @@ import java.util.List;
 import java.util.Map;
 
 public record CreateDatabaseRequest(
-        @Schema(example = "orders-postgres", description = "Optional friendly display name; generated when omitted")
+        @Schema(example = "orders-postgres", description = "Optional display name. When omitted, DBaaS allocates a unique handle such as pg-silver-orchid-k7f9. A duplicate requested name receives a short suffix.")
         @Size(max = 32)
         @Pattern(regexp = "^[a-z][a-z0-9-]*[a-z0-9]$",
                 message = "must contain lowercase letters, numbers and hyphens, and start with a letter")

@@ -20,11 +20,13 @@ import lombok.Setter;
 import java.time.Instant;
 
 @Entity
-// `databases` is a reserved word in MySQL 8; retain the existing table name and
-// make Hibernate quote it in SELECT/INSERT/UPDATE statements.
-@Table(name = "database_instances", uniqueConstraints = @UniqueConstraint(
-        name = "uk_database_project_idempotency",
-        columnNames = {"project_name", "idempotency_key"}))
+// `database_instances` avoids MySQL's reserved `databases` identifier.
+@Table(name = "database_instances", uniqueConstraints = {
+        @UniqueConstraint(name = "uk_database_project_idempotency",
+                columnNames = {"project_name", "idempotency_key"}),
+        @UniqueConstraint(name = "uk_database_project_display_name",
+                columnNames = {"project_name", "display_name"})
+})
 @Getter
 @Setter
 @NoArgsConstructor
@@ -53,11 +55,8 @@ public class DatabaseMetadata {
     @Enumerated(EnumType.STRING) @Column(length = 32) private SizePlan sizePlan;
     private int storageGi;
     private boolean deletionProtection;
-    @Enumerated(EnumType.STRING) @Column(length = 32) private DatabaseStatus desiredStatus;
     @Enumerated(EnumType.STRING) @Column(name = "desired_state", length = 16) private DesiredState desiredState;
     @Enumerated(EnumType.STRING) @Column(length = 32) private DatabaseStatus status;
-    @Column(length = 32)
-    private String kubeblocksPhase;
     private int expectedReplicas;
     private int observedReadyReplicas;
     private boolean observedServiceReady;
@@ -77,8 +76,6 @@ public class DatabaseMetadata {
     private String tags;
     @Column(length = 4000)
     private String message;
-    @Column(length = 4000)
-    private String syncMessage;
     private Instant createdAt;
     private Instant updatedAt;
     private Instant lastObservedAt;

@@ -1,8 +1,8 @@
 package com.cyfuture.dbaas.service;
 
 import com.cyfuture.dbaas.client.KubeBlocksClient;
+import com.cyfuture.dbaas.client.DatabaseObservation;
 import com.cyfuture.dbaas.config.DatabaseProperties;
-import com.cyfuture.dbaas.dto.DatabaseResponse;
 import com.cyfuture.dbaas.dto.PublicEndpointResponse;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
@@ -191,9 +191,9 @@ public class SharedGatewayService {
             List<String> allowed = cidrs(database.getAllowedCidrs());
             if (allowed.isEmpty()) continue;
             try {
-                DatabaseResponse live = kubeBlocksClient.get(
+                DatabaseObservation live = kubeBlocksClient.get(
                         database.getNamespaceName(), database.getDatabaseId());
-                if (live.privateEndpoint() != null && live.privateEndpoint().ready()) {
+                if (live.serviceReady()) {
                     DatabaseBackendResolver.DatabaseBackendEndpoint endpoint = backendResolver.resolve(database);
                     routes.add(new Route(database.getDatabaseId(), database.getPublicPort(),
                             endpoint.host(), endpoint.port(), allowed));
@@ -234,7 +234,7 @@ public class SharedGatewayService {
                     || database.getStatus() == DatabaseStatus.ORPHANED
                     || database.getStatus() == DatabaseStatus.FAILED) continue;
             try {
-                DatabaseResponse live = kubeBlocksClient.get(
+                DatabaseObservation live = kubeBlocksClient.get(
                         database.getNamespaceName(), database.getDatabaseId());
                 if (live.status() == DatabaseStatus.FAILED) continue;
                 database.setPublicPort(portAllocator.allocate());

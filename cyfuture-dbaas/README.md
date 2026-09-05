@@ -14,6 +14,8 @@ Backend-managed Organization
 
 The organization is a backend-managed logical tenant boundary, not a Kubernetes namespace. DBaaS creates the default organization with an immutable `org-xxxx` ID and a friendly display name such as `amber-river`. Clients cannot create, select, or delete organizations; they may update only its display name and description. Kubernetes resource identity never depends on either field.
 
+`GET /api/v1/organization` returns the immutable `organizationId`. Every project response includes that same `organizationId`, so a UI can always render the ownership path: **Organization → Project → Database**. The server assigns the organization; callers must not submit or trust a client-chosen organization ID.
+
 Each project receives one Kubernetes namespace. New projects use `dbaas-p-<projectId>`. Namespaces belonging to projects created by an older release are retained, so existing databases are not moved or recreated.
 
 ## Included features
@@ -23,12 +25,12 @@ Each project receives one Kubernetes namespace. New projects use `dbaas-p-<proje
 - MySQL standalone and replication
 - MongoDB standalone, replica set and sharding
 - Asynchronous provisioning with idempotency keys
-- Persistent MySQL control-plane metadata managed by JPA/Hibernate
+- Persistent MySQL control-plane metadata managed by Flyway migrations and Hibernate validation
 - Status, progress and operation polling
 - Automatic least-privilege database and user creation
 - Unique per-database password stored in a dedicated Kubernetes Secret
 - Credential rotation
-- Private Kubernetes endpoint and public endpoint
+- Public connection endpoint only; Kubernetes service and pod details remain internal
 - Permanent shared HAProxy/OpenStack LoadBalancer gateway
 - Automatic caller-IP CIDR selection in local development
 - Deletion protection
@@ -53,6 +55,10 @@ GET    /api/v1/projects/{project}
 PUT    /api/v1/projects/{project}
 DELETE /api/v1/projects/{project}
 ```
+
+Deleting a project immediately clears DB-level deletion protection and requests deletion of its
+KubeBlocks Clusters. Once their finalizers have completed, DBaaS automatically requests deletion
+of its DBaaS-owned Kubernetes namespace. Empty projects request namespace deletion immediately.
 
 Create request:
 
@@ -82,7 +88,6 @@ Database creation requires an `Idempotency-Key` header. Example:
 
 ```json
 {
-  "name": "orders-postgres",
   "remark": "Orders database",
   "engine": "POSTGRESQL",
   "mode": "STANDALONE",
@@ -99,7 +104,25 @@ Database creation requires an `Idempotency-Key` header. Example:
 }
 ```
 
+`name` is optional. When omitted, DBaaS returns a memorable, unique, engine-prefixed
+display handle such as `pg-silver-orchid-k7f9`. If a caller supplies a name already used
+inside that project, DBaaS keeps the requested base and appends a short suffix instead.
+The create response includes the final `name` alongside `databaseId` and `operationId`, so
+the UI can show the selected handle immediately.
+
 Public access is automatic. `allowedCidrs` may be omitted. In local development the API can discover the caller's public egress address. Behind Cyfuture.ai, disable that fallback and forward trusted proxy headers.
+
+### Response boundary
+
+Public responses contain only client-useful IDs, configuration, lifecycle state,
+public endpoint details, and short status messages. They never expose Kubernetes
+namespace names, service/pod names, ClusterIP addresses, or `.svc.cluster.local`
+hosts. Create requests return `202 Accepted` with concise JSON plus `Location`
+and `Operation-Location` headers for polling. Project responses expose `organizationId`;
+they still never expose namespace identity.
+
+Connection details are generated when requested and are never persisted in the
+metadata database. The connection endpoint is always the public gateway route.
 
 ## Run locally
 
@@ -125,6 +148,13 @@ ALTER USER 'dbaas'@'localhost' IDENTIFIED BY 'change-me';
 GRANT ALL PRIVILEGES ON dbaas_metadata.* TO 'dbaas'@'localhost';
 FLUSH PRIVILEGES;
 ```
+
+Flyway owns the metadata schema and Hibernate only validates it. A fresh
+database runs migrations `V1` through `V7` automatically. An existing
+installation already on the current pre-Flyway schema is safely baselined at
+`V6`, then receives the targeted `V7` cleanup. For a one-time upgrade
+from the older pre-lifecycle table layout, back up the metadata database and
+set `FLYWAY_BASELINE_VERSION=2` for that migration run.
 
 Swagger UI:
 

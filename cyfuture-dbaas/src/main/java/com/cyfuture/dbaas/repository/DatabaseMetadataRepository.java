@@ -15,6 +15,7 @@ import java.util.Optional;
 public interface DatabaseMetadataRepository extends JpaRepository<DatabaseMetadata, String> {
     List<DatabaseMetadata> findByProjectNameOrderByCreatedAtDesc(String projectName);
     Optional<DatabaseMetadata> findByDatabaseIdAndProjectName(String databaseId, String projectName);
+    boolean existsByProjectNameAndDisplayName(String projectName, String displayName);
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select database from DatabaseMetadata database where database.databaseId = :databaseId and database.projectName = :projectName")
     Optional<DatabaseMetadata> findByDatabaseIdAndProjectNameForUpdate(

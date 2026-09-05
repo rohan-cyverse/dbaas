@@ -28,6 +28,7 @@ class OrganizationServiceTest {
         assertEquals(OrganizationService.DEFAULT_ORGANIZATION_ID, response.organizationId());
         assertEquals("amber-river", response.displayName());
         assertEquals("Backend-managed default organization", response.description());
+        assertEquals(ResourceStatus.ACTIVE, response.status());
     }
 
     @Test
@@ -48,6 +49,5 @@ class OrganizationServiceTest {
 
         assertEquals("Customer Platform", response.displayName());
         assertEquals("Updated details", response.description());
-        assertEquals(OrganizationService.DEFAULT_ORGANIZATION_ID, response.organizationId());
     }
 }

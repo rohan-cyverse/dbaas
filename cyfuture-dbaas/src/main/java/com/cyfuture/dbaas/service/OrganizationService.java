@@ -72,7 +72,6 @@ public class OrganizationService {
 
     private OrganizationResponse response(OrganizationMetadata organization) {
         return new OrganizationResponse(organization.getOrganizationId(), organization.getDisplayName(),
-                organization.getDescription(), organization.getStatus(), organization.getCreatedAt(),
-                organization.getUpdatedAt());
+                organization.getDescription(), organization.getStatus());
     }
 }

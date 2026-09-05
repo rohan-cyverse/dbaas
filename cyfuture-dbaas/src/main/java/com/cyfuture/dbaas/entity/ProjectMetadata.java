@@ -7,7 +7,6 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import jakarta.persistence.UniqueConstraint;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -15,9 +14,7 @@ import lombok.Setter;
 import java.time.Instant;
 
 @Entity
-@Table(name = "projects", uniqueConstraints = @UniqueConstraint(
-        name = "uk_project_name",
-        columnNames = {"project_name"}))
+@Table(name = "projects")
 @Getter
 @Setter
 @NoArgsConstructor
@@ -28,9 +25,6 @@ public class ProjectMetadata {
 
     @Column(nullable = false, length = 32)
     private String organizationId;
-
-    @Column(nullable = false, length = 30)
-    private String projectName;
 
     @Column(nullable = false, length = 64)
     private String displayName;

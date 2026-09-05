@@ -8,24 +8,19 @@ import com.cyfuture.dbaas.model.ProvisioningStage;
 
 public record DatabaseResponse(
         String databaseId,
-        String project,
-        String namespace,
         String name,
         DatabaseEngine engine,
         DatabaseMode mode,
         String version,
         SizePlan size,
         int storageGi,
+        int replicas,
+        int shards,
         boolean deletionProtection,
         DatabaseStatus status,
         ProvisioningStage stage,
         int progress,
-        int replicas,
-        int readyReplicas,
-        int readyVolumes,
-        boolean serviceReady,
-        PrivateEndpointResponse privateEndpoint,
-        PublicEndpointResponse publicEndpoint,
+        PublicEndpointResponse endpoint,
         String message
 ) {
 }

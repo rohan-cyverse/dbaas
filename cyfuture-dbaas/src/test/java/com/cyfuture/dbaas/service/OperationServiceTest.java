@@ -37,8 +37,8 @@ class OperationServiceTest {
                 .thenReturn(Optional.of(operation()));
 
         var response = service.getForDatabase("orders", "db-orders0001", "op-create0001");
-        assertEquals("orders", response.project());
-        assertEquals("db-orders0001", response.databaseId());
+        assertEquals("op-create0001", response.operationId());
+        assertEquals(OperationType.CREATE, response.type());
     }
 
     @Test

@@ -93,7 +93,7 @@ public class DatabaseStateReconciler {
             KubeBlocksClient.ClusterObservation observed = kubeBlocksClient.observeCluster(
                     database.getNamespaceName(), database.getDatabaseId());
             if (!observed.exists()) {
-                handleMissing(database, observed.message());
+                handleMissing(database);
                 return;
             }
             syncObserved(database, observed);
@@ -104,8 +104,6 @@ public class DatabaseStateReconciler {
             }
             saveIfChanged(database);
         } catch (Exception exception) {
-            update(database::setSyncMessage, safeMessage(exception));
-            saveIfChanged(database);
             log.debug("Database state reconciliation for {} will retry: {}",
                     database.getDatabaseId(), exception.getMessage());
         }
@@ -122,57 +120,47 @@ public class DatabaseStateReconciler {
             update(database::setProgress, 100);
             update(database::setMessage, "Database recovered and is ready");
         }
-        update(database::setSyncMessage, observed.message());
     }
 
     private void handleUnhealthy(DatabaseMetadata database,
                                  KubeBlocksClient.ClusterObservation observed) {
         if (database.getStatus() == DatabaseStatus.PROVISIONING) {
-            update(database::setSyncMessage, observed.message());
             return;
         }
         if (hasActiveLifecycleOperation(database)) {
-            update(database::setSyncMessage,
-                    "KubeBlocks operation is running; observed state: " + observed.message());
             return;
         }
         Instant now = Instant.now();
         if (database.getDegradedSince() == null) {
             update(database::setDegradedSince, now);
-            update(database::setSyncMessage,
-                    "Waiting for database recovery before marking DEGRADED: " + observed.message());
             return;
         }
         if (elapsed(database.getDegradedSince(), now, degradedGraceMs)
                 && database.getStatus() == DatabaseStatus.RUNNING) {
             update(database::setStatus, DatabaseStatus.DEGRADED);
-            update(database::setMessage, observed.message());
-            update(database::setSyncMessage, observed.message());
+            update(database::setMessage, "Database health is degraded");
         }
     }
 
-    private void handleMissing(DatabaseMetadata database, String message) {
+    private void handleMissing(DatabaseMetadata database) {
         Instant now = Instant.now();
-        update(database::setKubeblocksPhase, "Missing");
         update(database::setObservedReadyReplicas, 0);
         update(database::setObservedServiceReady, false);
         update(database::setLastObservedAt, now);
         if (database.getMissingSince() == null) {
             update(database::setMissingSince, now);
-            update(database::setSyncMessage,
-                    "KubeBlocks Cluster is missing; waiting before changing metadata state");
             saveIfChanged(database);
             return;
         }
         if (elapsed(database.getMissingSince(), now, missingGraceMs)
                 && database.getStatus() != DatabaseStatus.MISSING) {
             update(database::setStatus, DatabaseStatus.MISSING);
-            update(database::setMessage, message);
-            update(database::setSyncMessage, message);
+            update(database::setMessage, "Database resource is unavailable");
             try {
                 sharedGatewayService.removeRoute(database);
             } catch (Exception exception) {
-                update(database::setSyncMessage, safeMessage(exception));
+                log.debug("Public-route removal for missing database {} will retry: {}",
+                        database.getDatabaseId(), exception.getMessage());
             }
         }
         saveIfChanged(database);
@@ -180,7 +168,6 @@ public class DatabaseStateReconciler {
 
     private void reconcileDeletion(DatabaseMetadata database) {
         try {
-            update(database::setDesiredStatus, DatabaseStatus.DELETED);
             if (database.getDeleteRequestedAt() == null) {
                 update(database::setDeleteRequestedAt, Instant.now());
             }
@@ -195,7 +182,6 @@ public class DatabaseStateReconciler {
                     update(database::setMessage,
                             "Database Cluster is absent; waiting for credential helper cleanup: "
                                     + credentialCleanup.message());
-                    update(database::setSyncMessage, credentialCleanup.message());
                     finishDeleteOperation(database, OperationStatus.RUNNING, credentialCleanup.message());
                     saveIfChanged(database);
                     return;
@@ -204,19 +190,16 @@ public class DatabaseStateReconciler {
                 update(database::setStatus, DatabaseStatus.DELETED);
                 update(database::setDeletedAt, Instant.now());
                 update(database::setMessage, "Database Cluster and credential helper resources are absent; metadata is preserved");
-                update(database::setSyncMessage, "Deletion confirmed by Kubernetes and credential cleanup");
                 finishDeleteOperation(database, OperationStatus.SUCCEEDED,
                         "Deletion confirmed by Kubernetes");
             } else {
                 syncObserved(database, observed);
                 update(database::setMessage, "KubeBlocks deletion is running");
-                update(database::setSyncMessage, observed.message());
                 finishDeleteOperation(database, OperationStatus.RUNNING,
                         "KubeBlocks deletion is running");
             }
             saveIfChanged(database);
         } catch (Exception exception) {
-            update(database::setSyncMessage, safeMessage(exception));
             update(database::setMessage, "Database deletion is waiting for synchronization retry");
             saveIfChanged(database);
             log.debug("Deletion reconciliation for {} will retry: {}",
@@ -226,12 +209,10 @@ public class DatabaseStateReconciler {
 
     private void syncObserved(DatabaseMetadata database,
                               KubeBlocksClient.ClusterObservation observed) {
-        update(database::setKubeblocksPhase, observed.phase());
         update(database::setExpectedReplicas, observed.expectedReplicas());
         update(database::setObservedReadyReplicas, observed.readyReplicas());
         update(database::setObservedServiceReady, observed.serviceReady());
         update(database::setLastObservedAt, Instant.now());
-        update(database::setSyncMessage, observed.message());
     }
 
     private boolean hasActiveLifecycleOperation(DatabaseMetadata database) {
@@ -309,17 +290,10 @@ public class DatabaseStateReconciler {
         DirtyFlag.CHANGED.set(true);
     }
 
-    private String safeMessage(Exception exception) {
-        String message = exception.getMessage();
-        if (message == null || message.isBlank()) return "Synchronization failed and will retry";
-        return message.replaceAll("(?i)(password|passwd|pwd|token|secret)\\s*[:=]\\s*[^\\s,;\"']+", "$1=******");
-    }
-
     private String fingerprint(DatabaseMetadata database) {
         return String.join("|",
-                String.valueOf(database.getDesiredStatus()),
+                String.valueOf(database.getDesiredState()),
                 String.valueOf(database.getStatus()),
-                String.valueOf(database.getKubeblocksPhase()),
                 String.valueOf(database.getExpectedReplicas()),
                 String.valueOf(database.getObservedReadyReplicas()),
                 String.valueOf(database.isObservedServiceReady()),
@@ -329,7 +303,6 @@ public class DatabaseStateReconciler {
                 String.valueOf(database.getDeleteRequestedAt()),
                 String.valueOf(database.getDeletedAt()),
                 String.valueOf(database.getMessage()),
-                String.valueOf(database.getSyncMessage()),
                 String.valueOf(database.getPublicPort()));
     }
 

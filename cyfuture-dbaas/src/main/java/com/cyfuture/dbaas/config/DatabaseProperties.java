@@ -14,7 +14,7 @@ import java.util.Map;
 @Setter
 public class DatabaseProperties {
     private String kubeconfig;
-    private String namespacePrefix = "dbaas-";
+    private String namespacePrefix = "dbaas-p-";
     private String storageClass = "cinder-sc";
     private GatewaySettings gateway = new GatewaySettings();
     private EngineSettings postgresql = new EngineSettings();

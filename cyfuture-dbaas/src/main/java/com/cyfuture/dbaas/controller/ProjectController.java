@@ -29,7 +29,7 @@ public class ProjectController {
     private final ProjectService projectService;
 
     @PostMapping
-    @Operation(summary = "Create a project in the backend-managed organization")
+    @Operation(summary = "Create a project bound to the backend-managed organization")
     public ResponseEntity<ProjectResponse> create(
             @Valid @RequestBody CreateProjectRequest request) {
         return ResponseEntity.status(HttpStatus.CREATED)
@@ -57,7 +57,7 @@ public class ProjectController {
     }
 
     @DeleteMapping("/{project}")
-    @Operation(summary = "Delete an empty project")
+    @Operation(summary = "Delete a project and immediately request deletion of its namespace")
     public ResponseEntity<Void> delete(@PathVariable String project) {
         projectService.delete(project);
         return ResponseEntity.noContent().build();

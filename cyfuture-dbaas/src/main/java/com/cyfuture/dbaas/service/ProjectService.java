@@ -1,9 +1,11 @@
 package com.cyfuture.dbaas.service;
 
 import com.cyfuture.dbaas.config.DatabaseProperties;
+import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.dto.CreateProjectRequest;
 import com.cyfuture.dbaas.dto.ProjectResponse;
 import com.cyfuture.dbaas.dto.UpdateProjectRequest;
+import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.ProjectMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.ResourceStatus;
@@ -32,6 +34,7 @@ public class ProjectService {
     private final OrganizationService organizationService;
     private final FriendlyNameGenerator friendlyNameGenerator;
     private final DatabaseProperties properties;
+    private final KubeBlocksClient kubeBlocksClient;
 
     public ProjectResponse create(CreateProjectRequest request) {
         String organizationId = organizationService.requireDefaultOrganization().getOrganizationId();
@@ -39,8 +42,6 @@ public class ProjectService {
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-" + shortId());
         project.setOrganizationId(organizationId);
-        // projectName is retained as the legacy lookup column, but is now the immutable ID.
-        project.setProjectName(project.getProjectId());
         project.setDisplayName(blank(request.displayName()) ? friendlyNameGenerator.next() : request.displayName().trim());
         project.setDescription(request.description());
         project.setNamespaceName(namespaceFor(project.getProjectId()));
@@ -49,7 +50,7 @@ public class ProjectService {
         project.setUpdatedAt(now);
 
         try {
-            return toResponse(projectRepository.save(project));
+            return toResponse(activateNamespace(projectRepository.save(project)));
         } catch (DataIntegrityViolationException exception) {
             throw new ApiException(HttpStatus.CONFLICT,
                     "Project already exists");
@@ -74,27 +75,74 @@ public class ProjectService {
     }
 
     public void delete(String project) {
-        ProjectMetadata metadata = requireActiveProject(project);
+        ProjectMetadata metadata = requireOwnedProject(project);
+        if (metadata.getStatus() == ResourceStatus.DELETED) return;
         // Mark every child before infrastructure cleanup. The metadata rows stay
-        // authoritative while the asynchronous reconciler drains Kubernetes.
-        databaseRepository.findByProjectNameOrderByCreatedAtDesc(project).forEach(database -> {
+        // authoritative while Kubernetes removes the project namespace.
+        List<DatabaseMetadata> databases = databaseRepository
+                .findByProjectNameOrderByCreatedAtDesc(project);
+        databases.forEach(database -> {
             database.setDesiredState(DesiredState.DELETED);
-            database.setDesiredStatus(DatabaseStatus.DELETED);
             database.setStatus(DatabaseStatus.DELETING);
+            // Project deletion is an explicit cascade request, so per-database
+            // deletion protection must not keep the namespace finalizer alive.
+            database.setDeletionProtection(false);
             database.setUpdatedAt(Instant.now());
             databaseRepository.save(database);
         });
-        // Keep desired metadata until namespace cleanup has been confirmed by the
-        // project reconciler; deleting this row would make the namespace orphaned.
+        // Persist the desired state before the Kubernetes request. If that request
+        // is temporarily unavailable, a repeated DELETE retries the same namespace.
         metadata.setStatus(ResourceStatus.DELETING);
         metadata.setUpdatedAt(Instant.now());
         projectRepository.save(metadata);
+        advanceDeletion(metadata, databases);
+    }
+
+    /** Continues an asynchronous project deletion without revalidating user input. */
+    void reconcileDeletion(ProjectMetadata metadata) {
+        if (metadata.getStatus() != ResourceStatus.DELETING) return;
+        advanceDeletion(metadata, databaseRepository
+                .findByProjectNameOrderByCreatedAtDesc(metadata.getProjectId()));
+    }
+
+    private void advanceDeletion(ProjectMetadata metadata, List<DatabaseMetadata> databases) {
+        for (DatabaseMetadata database : databases) {
+            kubeBlocksClient.prepareProjectDatabaseDeletion(
+                    database.getNamespaceName(), database.getDatabaseId());
+        }
+        boolean clustersGone = databases.stream().allMatch(database -> !kubeBlocksClient
+                .observeCluster(database.getNamespaceName(), database.getDatabaseId()).exists());
+        if (!clustersGone) return;
+
+        kubeBlocksClient.deleteProjectNamespace(metadata.getNamespaceName(), metadata.getProjectId());
+        if (!kubeBlocksClient.projectNamespaceExists(
+                metadata.getNamespaceName(), metadata.getProjectId())) {
+            metadata.setStatus(ResourceStatus.DELETED);
+            metadata.setUpdatedAt(Instant.now());
+            projectRepository.save(metadata);
+        }
     }
 
     public ProjectMetadata requireActiveProject(String project) {
+        ProjectMetadata metadata = requireOwnedProject(project);
+        if (metadata.getStatus() == ResourceStatus.PROVISIONING) {
+            metadata = activateNamespace(metadata);
+        }
+        if (metadata.getStatus() != ResourceStatus.ACTIVE) {
+            if (metadata.getStatus() == ResourceStatus.DELETING) {
+                throw new ApiException(HttpStatus.CONFLICT, "PROJECT_DELETION_IN_PROGRESS", false,
+                        "Project " + project + " is being deleted");
+            }
+            throw new ApiException(HttpStatus.CONFLICT,
+                    "Project " + project + " is not active");
+        }
+        return metadata;
+    }
+
+    private ProjectMetadata requireOwnedProject(String project) {
         String organizationId = currentOrganizationId();
         ProjectMetadata metadata = projectRepository
-                .findByProjectName(project)
+                .findById(project)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND,
                         "Project " + project + " was not found"));
         if (!organizationId.equals(metadata.getOrganizationId())) {
@@ -102,11 +150,14 @@ public class ProjectService {
             throw new ApiException(HttpStatus.NOT_FOUND,
                     "Project " + project + " was not found");
         }
-        if (metadata.getStatus() != ResourceStatus.ACTIVE) {
-            throw new ApiException(HttpStatus.CONFLICT,
-                    "Project " + project + " is not active");
-        }
         return metadata;
+    }
+
+    private ProjectMetadata activateNamespace(ProjectMetadata project) {
+        kubeBlocksClient.ensureProjectNamespace(project.getNamespaceName(), project.getProjectId());
+        project.setStatus(ResourceStatus.ACTIVE);
+        project.setUpdatedAt(Instant.now());
+        return projectRepository.save(project);
     }
 
     private String currentOrganizationId() {
@@ -114,7 +165,10 @@ public class ProjectService {
     }
 
     private String namespaceFor(String project) {
-        String namespace = "dbaas-p-" + project;
+        String prefix = properties.getNamespacePrefix();
+        if (prefix == null || prefix.isBlank()) prefix = "dbaas-p-";
+        if (!prefix.endsWith("-")) prefix += "-";
+        String namespace = prefix + project;
         if (namespace.length() <= 63) return namespace;
         String suffix = sha256(project).substring(0, 8);
         return namespace.substring(0, 54).replaceAll("-$", "") + "-" + suffix;
@@ -141,10 +195,8 @@ public class ProjectService {
         return new ProjectResponse(
                 metadata.getProjectId(),
                 metadata.getOrganizationId(),
-                metadata.getProjectName(),
                 metadata.getDisplayName(),
                 metadata.getDescription(),
-                metadata.getNamespaceName(),
                 metadata.getStatus(),
                 metadata.getCreatedAt(),
                 metadata.getUpdatedAt()

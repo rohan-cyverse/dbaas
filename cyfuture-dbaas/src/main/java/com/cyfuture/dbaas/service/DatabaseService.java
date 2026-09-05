@@ -1,13 +1,13 @@
 package com.cyfuture.dbaas.service;
 
 import com.cyfuture.dbaas.client.KubeBlocksClient;
+import com.cyfuture.dbaas.client.DatabaseObservation;
 import com.cyfuture.dbaas.config.DatabaseProperties;
 import com.cyfuture.dbaas.dto.ConnectionResponse;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
 import com.cyfuture.dbaas.dto.CreateDatabaseResponse;
 import com.cyfuture.dbaas.dto.DatabaseResponse;
 import com.cyfuture.dbaas.dto.DeleteDatabaseResponse;
-import com.cyfuture.dbaas.dto.PrivateEndpointResponse;
 import com.cyfuture.dbaas.dto.PublicEndpointResponse;
 import com.cyfuture.dbaas.dto.OperationResponse;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
@@ -24,9 +24,11 @@ import com.cyfuture.dbaas.model.DesiredState;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.nio.charset.StandardCharsets;
@@ -41,10 +43,13 @@ import java.util.regex.Pattern;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class DatabaseService {
     private static final Pattern CIDR = Pattern.compile(
             "^((25[0-5]|2[0-4]\\d|1?\\d?\\d)\\.){3}(25[0-5]|2[0-4]\\d|1?\\d?\\d)/(3[0-2]|[12]?\\d)$");
     private static final Pattern IDEMPOTENCY_KEY = Pattern.compile("^[A-Za-z0-9._:-]{8,128}$");
+    private static final int MAX_DISPLAY_NAME_LENGTH = 32;
+    private static final int NAME_ALLOCATION_ATTEMPTS = 12;
 
     private final KubeBlocksClient kubeBlocksClient;
     private final DatabaseProperties properties;
@@ -74,7 +79,7 @@ public class DatabaseService {
                 .orElse(null);
         if (existing != null) return duplicateResponse(existing, requestHash);
 
-        request = withFriendlyName(request);
+        request = withAllocatedName(project, request);
 
         validateVersion(request);
         validateMode(request);
@@ -100,7 +105,6 @@ public class DatabaseService {
         database.setStorageGi(request.storageGi());
         database.setDeletionProtection(request.deletionProtection());
         database.setDesiredState(DesiredState.RUNNING);
-        database.setDesiredStatus(DatabaseStatus.RUNNING); // legacy compatibility
         database.setStatus(DatabaseStatus.PROVISIONING);
         database.setExpectedReplicas(request.mode() == DatabaseMode.SHARDING
                 ? request.shards() * request.replicas() + 5
@@ -132,7 +136,7 @@ public class DatabaseService {
 
         provisioningService.provision(operationId, databaseId, project,
                 namespace, request);
-        return createResponse(database, "Database provisioning request queued");
+        return createResponse(database, "Provisioning request accepted.");
     }
 
     private OperationMetadata operationFor(String operationId, String databaseId,
@@ -151,23 +155,10 @@ public class DatabaseService {
     }
 
     private CreateDatabaseResponse createResponse(DatabaseMetadata database, String message) {
-        return new CreateDatabaseResponse(database.getDatabaseId(), database.getOperationId(),
-                database.getProjectName(),
-                database.getNamespaceName(), database.getDisplayName(),
-                database.getEngine(), database.getStatus(), database.getProvisioningStage(),
-                database.getProgress(), statusUrl(database), operationUrl(database), message);
-    }
-
-    private String statusUrl(DatabaseMetadata database) {
-        return databaseBaseUrl(database) + "/" + database.getDatabaseId();
-    }
-
-    private String operationUrl(DatabaseMetadata database) {
-        return statusUrl(database) + "/operations/" + database.getOperationId();
-    }
-
-    private String databaseBaseUrl(DatabaseMetadata database) {
-        return "/api/v1/projects/" + database.getProjectName() + "/databases";
+        return new CreateDatabaseResponse(database.getDatabaseId(), database.getDisplayName(),
+                database.getOperationId(),
+                database.getStatus(), database.getProvisioningStage(),
+                database.getProgress(), message);
     }
 
     private CreateDatabaseResponse duplicateResponse(DatabaseMetadata database, String requestHash) {
@@ -176,7 +167,7 @@ public class DatabaseService {
                     "This Idempotency-Key was already used with a different request body");
         }
         return createResponse(database,
-                "Duplicate request detected; returning the existing database operation");
+                "Returning the existing provisioning request.");
     }
 
     private String requestHash(CreateDatabaseRequest request) {
@@ -205,7 +196,7 @@ public class DatabaseService {
             return fromMetadata(metadata);
         }
         try {
-            DatabaseResponse live = kubeBlocksClient.get(metadata.getNamespaceName(), databaseId);
+            DatabaseObservation live = kubeBlocksClient.get(metadata.getNamespaceName(), databaseId);
             syncLiveStatus(metadata, live);
             return withPublicAccess(metadata, live);
         } catch (ApiException exception) {
@@ -224,6 +215,7 @@ public class DatabaseService {
                 .toList();
     }
 
+    @Transactional
     public ConnectionResponse connection(String project,
                                          String databaseId, String clientIp) {
         DatabaseMetadata database = databaseRepository
@@ -239,24 +231,22 @@ public class DatabaseService {
                     "Database connection is not ready; current stage is " + stage(database));
         }
         authorizeCaller(database, clientIp);
-        DatabaseResponse live = kubeBlocksClient.get(database.getNamespaceName(), databaseId);
-        if (live.status() != DatabaseStatus.RUNNING || live.privateEndpoint() == null
-                || !live.privateEndpoint().ready()) {
+        DatabaseObservation live = kubeBlocksClient.get(database.getNamespaceName(), databaseId);
+        if (live.status() != DatabaseStatus.RUNNING || !live.serviceReady()) {
             throw new ApiException(HttpStatus.CONFLICT, "DATABASE_NOT_READY", true,
                     "Database is not ready for connections");
         }
         ManagedCredential credential = credentialLifecycleService.credentials(database);
         PublicEndpointResponse publicEndpoint = publicEndpoint(database);
-        return new ConnectionResponse(databaseId, database.getEngine(),
-                credential.database(), credential.username(), credential.password(),
-                connectionUri(database.getEngine(), database.getMode(), false,
-                        credential.username(), credential.password(),
-                        live.privateEndpoint().host(), live.privateEndpoint().port(),
-                        credential.database()),
-                publicEndpoint.ready() ? connectionUri(database.getEngine(), database.getMode(),
-                        true, credential.username(), credential.password(), publicEndpoint.host(),
-                        publicEndpoint.port(), credential.database()) : null,
-                live.privateEndpoint(), publicEndpoint);
+        if (!publicEndpoint.ready() || publicEndpoint.host() == null
+                || publicEndpoint.host().isBlank()) {
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "PUBLIC_ENDPOINT_NOT_READY", true,
+                    "The public endpoint is not ready");
+        }
+        return new ConnectionResponse(credential.username(), credential.password(),
+                connectionUri(database.getEngine(), database.getMode(), true,
+                        credential.username(), credential.password(), publicEndpoint.host(),
+                        publicEndpoint.port(), credential.database()), publicEndpoint);
     }
 
     public OperationResponse rotateCredentials(String project,
@@ -268,12 +258,11 @@ public class DatabaseService {
     public DeleteDatabaseResponse delete(String project, String databaseId) {
         DatabaseMetadata database = requireDatabase(project, databaseId);
         if (database.getStatus() == DatabaseStatus.DELETED) {
-            return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETED,
-                    "Database was already deleted; metadata is preserved");
+            return new DeleteDatabaseResponse(DatabaseStatus.DELETED,
+                    ClientMessages.database(DatabaseStatus.DELETED, stage(database)));
         }
         if (database.getStatus() == DatabaseStatus.DELETING) {
-            return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETING,
-                    database.getMessage() == null ? "Database deletion is already running" : database.getMessage());
+            return deletionResponse(database);
         }
         if (database.isDeletionProtection()) {
             throw new ApiException(HttpStatus.CONFLICT,
@@ -292,7 +281,6 @@ public class DatabaseService {
 
         OperationMetadata operation = deleteOperation(database);
         database.setDesiredState(DesiredState.DELETED);
-        database.setDesiredStatus(DatabaseStatus.DELETED); // legacy compatibility
         database.setStatus(DatabaseStatus.DELETING);
         database.setDeleteRequestedAt(Instant.now());
         database.setMessage("Database deletion requested; removing public route");
@@ -302,11 +290,11 @@ public class DatabaseService {
         try {
             sharedGatewayService.removeRoute(database);
         } catch (Exception exception) {
-            database.setSyncMessage(safeMessage(exception));
+            log.warn("Database {} public-route removal will retry", databaseId, exception);
             database.setMessage("Database deletion is waiting for public route removal");
             database.setUpdatedAt(Instant.now());
             databaseRepository.save(database);
-            return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETING, database.getMessage());
+            return deletionResponse(database);
         }
 
         try {
@@ -317,8 +305,7 @@ public class DatabaseService {
                         + credentialCleanup.message());
                 database.setUpdatedAt(Instant.now());
                 databaseRepository.save(database);
-                return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETING,
-                        database.getMessage());
+                return deletionResponse(database);
             }
             kubeBlocksClient.requestDelete(database.getNamespaceName(), databaseId);
             KubeBlocksClient.ClusterObservation observation = kubeBlocksClient.observeCluster(
@@ -334,31 +321,30 @@ public class DatabaseService {
                     database.setUpdatedAt(Instant.now());
                     databaseRepository.save(database);
                     finishDeleteOperation(operation, OperationStatus.SUCCEEDED, database.getMessage());
-                    return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETED, database.getMessage());
+                    return deletionResponse(database);
                 }
                 database.setMessage("Database Cluster is absent; waiting for credential helper cleanup: "
                         + remaining.message());
                 database.setUpdatedAt(Instant.now());
                 databaseRepository.save(database);
-                return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETING, database.getMessage());
+                return deletionResponse(database);
             }
             database.setMessage("KubeBlocks deletion is running");
             database.setUpdatedAt(Instant.now());
             databaseRepository.save(database);
         } catch (Exception exception) {
-            database.setSyncMessage(safeMessage(exception));
+            log.warn("Database {} deletion confirmation will retry", databaseId, exception);
             database.setMessage("Database deletion is waiting for Kubernetes confirmation");
             database.setUpdatedAt(Instant.now());
             databaseRepository.save(database);
         }
-        return new DeleteDatabaseResponse(databaseId, DatabaseStatus.DELETING,
-                database.getMessage());
+        return deletionResponse(database);
     }
 
     public DatabaseResponse setDeletionProtection(String project,
                                                   String databaseId, boolean enabled) {
         DatabaseMetadata metadata = requireDatabase(project, databaseId);
-        DatabaseResponse response = kubeBlocksClient.setDeletionProtection(
+        DatabaseObservation response = kubeBlocksClient.setDeletionProtection(
                 metadata.getNamespaceName(), databaseId, enabled);
         metadata.setDeletionProtection(enabled);
         metadata.setUpdatedAt(Instant.now());
@@ -379,8 +365,7 @@ public class DatabaseService {
                         DatabaseEngine.MONGODB, List.of(DatabaseMode.STANDALONE, DatabaseMode.REPLICA_SET, DatabaseMode.SHARDING)),
                 "sizes", SizePlan.values(),
                 "replicas", List.of(1, 2, 3),
-                "storageOptionsGi", List.of(10, 20, 50, 100),
-                "storageClass", properties.getStorageClass());
+                "storageOptionsGi", List.of(10, 20, 50, 100));
     }
 
     private DatabaseMetadata requireDatabase(String project, String databaseId) {
@@ -391,27 +376,21 @@ public class DatabaseService {
     }
 
     private DatabaseResponse fromMetadata(DatabaseMetadata database) {
-        int port = kubeBlocksClient.defaultPort(database.getEngine());
-        return new DatabaseResponse(database.getDatabaseId(), database.getProjectName(),
-                database.getNamespaceName(), database.getDisplayName(), database.getEngine(),
+        return new DatabaseResponse(database.getDatabaseId(), database.getDisplayName(), database.getEngine(),
                 database.getMode(), database.getDatabaseVersion(), database.getSizePlan(),
-                database.getStorageGi(), database.isDeletionProtection(),
+                database.getStorageGi(), database.getReplicas(), database.getShards(), database.isDeletionProtection(),
                 database.getStatus(), stage(database), database.getProgress(),
-                database.getReplicas(), 0, 0, false,
-                new PrivateEndpointResponse(null, port, false),
                 publicEndpoint(database),
-                database.getMessage());
+                ClientMessages.database(database.getStatus(), stage(database)));
     }
 
-    private DatabaseResponse withPublicAccess(DatabaseMetadata metadata, DatabaseResponse live) {
+    private DatabaseResponse withPublicAccess(DatabaseMetadata metadata, DatabaseObservation live) {
         PublicEndpointResponse publicEndpoint = publicEndpoint(metadata);
-        return new DatabaseResponse(live.databaseId(), metadata.getProjectName(),
-                metadata.getNamespaceName(), live.name(),
+        return new DatabaseResponse(live.databaseId(), metadata.getDisplayName(),
                 live.engine(), live.mode(), live.version(), live.size(), live.storageGi(),
-                live.deletionProtection(), metadata.getStatus(), stage(metadata),
-                metadata.getProgress(), live.replicas(),
-                live.readyReplicas(), live.readyVolumes(), live.serviceReady(),
-                live.privateEndpoint(), publicEndpoint, metadata.getMessage());
+                live.replicas(), metadata.getShards(), live.deletionProtection(),
+                metadata.getStatus(), stage(metadata), metadata.getProgress(), publicEndpoint,
+                ClientMessages.database(metadata.getStatus(), stage(metadata)));
     }
 
     private PublicEndpointResponse publicEndpoint(DatabaseMetadata metadata) {
@@ -430,16 +409,14 @@ public class DatabaseService {
                 .map(String::trim).filter(value -> !value.isBlank()).toList();
     }
 
-    private void syncLiveStatus(DatabaseMetadata metadata, DatabaseResponse live) {
-        metadata.setKubeblocksPhase(live.status().name());
+    private void syncLiveStatus(DatabaseMetadata metadata, DatabaseObservation live) {
         metadata.setExpectedReplicas(live.replicas());
         metadata.setObservedReadyReplicas(live.readyReplicas());
         metadata.setObservedServiceReady(live.serviceReady());
         metadata.setLastObservedAt(Instant.now());
-        metadata.setSyncMessage(live.message());
         if (live.status() == DatabaseStatus.FAILED) {
             if (hasActiveLifecycleOperation(metadata)) return;
-            metadata.setMessage(live.message());
+            metadata.setMessage("Database health requires attention");
         }
         metadata.setDeletionProtection(live.deletionProtection());
         metadata.setUpdatedAt(Instant.now());
@@ -503,12 +480,6 @@ public class DatabaseService {
         operationRepository.save(operation);
     }
 
-    private String safeMessage(Exception exception) {
-        String message = exception.getMessage();
-        if (message == null || message.isBlank()) return "Synchronization failed and will retry";
-        return message.replaceAll("(?i)(password|passwd|pwd|token|secret)\\s*[:=]\\s*[^\\s,;\"']+", "$1=******");
-    }
-
     private void validateIdempotencyKey(String idempotencyKey) {
         if (idempotencyKey == null || !IDEMPOTENCY_KEY.matcher(idempotencyKey).matches()) {
             throw new ApiException(HttpStatus.BAD_REQUEST,
@@ -554,12 +525,45 @@ public class DatabaseService {
                 request.deletionProtection(), request.tags());
     }
 
-    private CreateDatabaseRequest withFriendlyName(CreateDatabaseRequest request) {
-        if (request.name() != null && !request.name().isBlank()) return request;
-        return new CreateDatabaseRequest(friendlyNameGenerator.next(), request.remark(), request.engine(),
+    private CreateDatabaseRequest withAllocatedName(String project, CreateDatabaseRequest request) {
+        String requestedName = request.name() == null ? null : request.name().trim();
+        String displayName = requestedName == null || requestedName.isBlank()
+                ? allocateGeneratedName(project, request.engine())
+                : allocateRequestedName(project, requestedName);
+        return new CreateDatabaseRequest(displayName, request.remark(), request.engine(),
                 request.mode(), request.version(), request.size(), request.storageGi(),
                 request.replicas(), request.shards(), request.timezone(), request.allowedCidrs(),
                 request.deletionProtection(), request.tags());
+    }
+
+    private String allocateGeneratedName(String project, DatabaseEngine engine) {
+        for (int attempt = 0; attempt < NAME_ALLOCATION_ATTEMPTS; attempt++) {
+            String candidate = friendlyNameGenerator.nextDatabaseName(engine);
+            if (!databaseRepository.existsByProjectNameAndDisplayName(project, candidate)) {
+                return candidate;
+            }
+        }
+        throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "DATABASE_NAME_ALLOCATION_FAILED", true,
+                "Unable to allocate a unique database name; retry the request");
+    }
+
+    private String allocateRequestedName(String project, String requestedName) {
+        if (!databaseRepository.existsByProjectNameAndDisplayName(project, requestedName)) {
+            return requestedName;
+        }
+        for (int attempt = 0; attempt < NAME_ALLOCATION_ATTEMPTS; attempt++) {
+            String candidate = appendSuffix(requestedName, friendlyNameGenerator.nextShortSuffix());
+            if (!databaseRepository.existsByProjectNameAndDisplayName(project, candidate)) {
+                return candidate;
+            }
+        }
+        throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "DATABASE_NAME_ALLOCATION_FAILED", true,
+                "Unable to allocate a unique database name; retry the request");
+    }
+
+    private String appendSuffix(String name, String suffix) {
+        int baseLength = MAX_DISPLAY_NAME_LENGTH - suffix.length() - 1;
+        return name.substring(0, Math.min(name.length(), baseLength)) + "-" + suffix;
     }
 
     private void authorizeCaller(DatabaseMetadata database, String clientIp) {
@@ -634,41 +638,12 @@ public class DatabaseService {
     private DatabaseResponse metadataOnlyResponse(
             DatabaseMetadata database
     ) {
-        int port = kubeBlocksClient.defaultPort(
-                database.getEngine()
-        );
+        return fromMetadata(database);
+    }
 
-        return new DatabaseResponse(
-                database.getDatabaseId(),
-                database.getProjectName(),
-                database.getNamespaceName(),
-                database.getDisplayName(),
-                database.getEngine(),
-                database.getMode(),
-                database.getDatabaseVersion(),
-                database.getSizePlan(),
-                database.getStorageGi(),
-                database.isDeletionProtection(),
-                database.getStatus(),
-                stage(database),
-                database.getProgress(),
-                database.getReplicas(),
-                0,
-                0,
-                false,
-                new PrivateEndpointResponse(
-                        null,
-                        port,
-                        false
-                ),
-                new PublicEndpointResponse(
-                        null,
-                        port,
-                        false,
-                        metadataCidrs(database)
-                ),
-                "Kubernetes resource was not found; showing last known metadata"
-        );
+    private DeleteDatabaseResponse deletionResponse(DatabaseMetadata database) {
+        return new DeleteDatabaseResponse(database.getStatus(),
+                ClientMessages.database(database.getStatus(), stage(database)));
     }
 
 }

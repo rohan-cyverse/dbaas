@@ -1,8 +1,8 @@
 package com.cyfuture.dbaas.service;
 
 import com.cyfuture.dbaas.client.KubeBlocksClient;
+import com.cyfuture.dbaas.client.DatabaseObservation;
 import com.cyfuture.dbaas.config.DatabaseProperties;
-import com.cyfuture.dbaas.dto.DatabaseResponse;
 import com.cyfuture.dbaas.dto.OperationResponse;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.OperationMetadata;
@@ -30,6 +30,7 @@ import io.kubernetes.client.openapi.models.V1PodTemplateSpec;
 import io.kubernetes.client.openapi.models.V1Secret;
 import io.kubernetes.client.openapi.models.V1SecretKeySelector;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
@@ -65,6 +66,7 @@ public class CredentialLifecycleService {
     private final BatchV1Api batchV1Api;
     private final SecureRandom secureRandom = new SecureRandom();
 
+    @Autowired
     public CredentialLifecycleService(KubeBlocksClient kubeBlocksClient,
                                       DatabaseProperties properties,
                                       OperationMetadataRepository operationRepository,
@@ -95,18 +97,17 @@ public class CredentialLifecycleService {
                     || metadata.getStatus() == DatabaseStatus.DELETED) {
                 return;
             }
-            DatabaseResponse database = kubeBlocksClient.get(
+            DatabaseObservation database = kubeBlocksClient.get(
                     metadata.getNamespaceName(), metadata.getDatabaseId());
             if (database.status() != DatabaseStatus.RUNNING
-                    || database.privateEndpoint() == null
-                    || !database.privateEndpoint().ready()) {
+                    || !database.serviceReady()) {
                 return;
             }
 
             V1Secret secret = readOrCreateSecret(metadata);
             Map<String, String> annotations = annotations(secret);
             if (READY.equals(annotations.get(STATUS))) {
-                deleteFinishedCredentialJobs(metadata);
+                deleteFinishedCredentialResources(metadata);
                 return;
             }
 
@@ -132,6 +133,7 @@ public class CredentialLifecycleService {
                 markOperation(operationId, OperationStatus.SUCCEEDED,
                         "Managed database credentials are ready", true);
                 deleteJob(metadata.getNamespaceName(), jobName);
+                deleteFinishedCredentialResources(metadata);
             } else if (failed(job)) {
                 String operationId = annotations.get(OPERATION_ID);
                 byte[] previousPassword = secret.getData() == null
@@ -146,6 +148,8 @@ public class CredentialLifecycleService {
                 replaceSecret(metadata.getNamespaceName(), secret);
                 markOperation(operationId, OperationStatus.FAILED,
                         "Credential update failed; the previous password remains active", true);
+                deleteJob(metadata.getNamespaceName(), jobName);
+                deleteFinishedCredentialResources(metadata);
             }
         } catch (Exception exception) {
             // Provisioning is eventually consistent. The scheduled reconciler retries.
@@ -201,7 +205,11 @@ public class CredentialLifecycleService {
         try {
             V1Secret secret = coreV1Api.readNamespacedSecret(
                     secretName(metadata.getDatabaseId()), metadata.getNamespaceName()).execute();
-            if (!READY.equals(annotations(secret).get(STATUS))) {
+            Map<String, String> annotations = annotations(secret);
+            if (!READY.equals(annotations.get(STATUS))) {
+                if (PENDING.equals(annotations.get(STATUS))) {
+                    return inProgressRotation(annotations);
+                }
                 throw new ApiException(HttpStatus.CONFLICT,
                         "Credentials are not ready for rotation");
             }
@@ -210,7 +218,6 @@ public class CredentialLifecycleService {
             OperationMetadata operation = operation(metadata, operationId);
             operationRepository.save(operation);
 
-            Map<String, String> annotations = annotations(secret);
             int generation = Integer.parseInt(annotations.getOrDefault(GENERATION, "1")) + 1;
             annotations.put(GENERATION, String.valueOf(generation));
             annotations.put(STATUS, PENDING);
@@ -265,7 +272,7 @@ public class CredentialLifecycleService {
         }
     }
 
-    private void createJob(DatabaseMetadata metadata, DatabaseResponse database,
+    private void createJob(DatabaseMetadata metadata, DatabaseObservation database,
                            String managedSecret, String adminSecret, int generation)
             throws io.kubernetes.client.openapi.ApiException {
         DatabaseProperties.EngineSettings settings = properties.engine(metadata.getEngine());
@@ -281,7 +288,7 @@ public class CredentialLifecycleService {
                 .command(List.of("sh", "-ec"))
                 .args(List.of(script(metadata.getEngine())))
                 .env(List.of(
-                        value("DB_HOST", database.privateEndpoint().host()),
+                        value("DB_HOST", database.privateHost()),
                         secret("ADMIN_USERNAME", adminSecret, "username"),
                         secret("ADMIN_PASSWORD", adminSecret, "password"),
                         secret("MANAGED_USERNAME", managedSecret, "username"),
@@ -340,6 +347,18 @@ public class CredentialLifecycleService {
             throw new ApiException(HttpStatus.BAD_GATEWAY,
                     "Could not clean database credential helper resources: " + exception.getMessage());
         }
+    }
+
+    private OperationResponse inProgressRotation(Map<String, String> annotations) {
+        String operationId = annotations.get(OPERATION_ID);
+        if (operationId == null || operationId.isBlank()) {
+            throw new ApiException(HttpStatus.CONFLICT,
+                    "Credentials are still being prepared");
+        }
+        return operationRepository.findById(operationId)
+                .map(this::response)
+                .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT,
+                        "Credential rotation is already in progress"));
     }
 
     /** Verifies helper Jobs, Pods and managed credential Secrets have actually disappeared. */
@@ -424,7 +443,7 @@ public class CredentialLifecycleService {
                 || resource.getName().startsWith(metadata.getDatabaseId() + "-credentials-");
     }
 
-    private void deleteFinishedCredentialJobs(DatabaseMetadata metadata) {
+    private void deleteFinishedCredentialResources(DatabaseMetadata metadata) {
         try {
             for (V1Job job : batchV1Api.listNamespacedJob(metadata.getNamespaceName()).execute().getItems()) {
                 if (isCredentialHelper(job.getMetadata(), metadata)
@@ -432,12 +451,24 @@ public class CredentialLifecycleService {
                     deleteJob(metadata.getNamespaceName(), job.getMetadata().getName());
                 }
             }
+            for (io.kubernetes.client.openapi.models.V1Pod pod : coreV1Api
+                    .listNamespacedPod(metadata.getNamespaceName()).execute().getItems()) {
+                if (isCredentialHelper(pod.getMetadata(), metadata) && terminal(pod)) {
+                    deletePod(metadata.getNamespaceName(), pod.getMetadata().getName());
+                }
+            }
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             if (exception.getCode() != 404) {
-                log.debug("Credential Job cleanup for {} will retry: {}", metadata.getDatabaseId(),
+                log.debug("Credential helper cleanup for {} will retry: {}", metadata.getDatabaseId(),
                         exception.getMessage());
             }
         }
+    }
+
+    private boolean terminal(io.kubernetes.client.openapi.models.V1Pod pod) {
+        if (pod.getStatus() == null || pod.getStatus().getPhase() == null) return false;
+        return "Succeeded".equalsIgnoreCase(pod.getStatus().getPhase())
+                || "Failed".equalsIgnoreCase(pod.getStatus().getPhase());
     }
 
     private void deleteJob(String namespace, String name) throws io.kubernetes.client.openapi.ApiException {

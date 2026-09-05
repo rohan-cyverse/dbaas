@@ -21,7 +21,7 @@ public class OrganizationController {
     private final OrganizationService organizationService;
 
     @GetMapping
-    @Operation(summary = "Get the backend-managed organization")
+    @Operation(summary = "Get the backend-managed organization and its immutable ID")
     public OrganizationResponse get() {
         return organizationService.getDefault();
     }

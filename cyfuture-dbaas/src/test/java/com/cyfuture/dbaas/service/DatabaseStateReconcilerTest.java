@@ -7,6 +7,7 @@ import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.DatabaseEngine;
 import com.cyfuture.dbaas.model.DatabaseMode;
 import com.cyfuture.dbaas.model.DatabaseStatus;
+import com.cyfuture.dbaas.model.DesiredState;
 import com.cyfuture.dbaas.model.OperationStatus;
 import com.cyfuture.dbaas.model.OperationType;
 import com.cyfuture.dbaas.model.ProvisioningStage;
@@ -177,7 +178,7 @@ class DatabaseStateReconcilerTest {
         database.setNamespaceName("dbaas-orders");
         database.setEngine(DatabaseEngine.POSTGRESQL);
         database.setMode(DatabaseMode.REPLICATION);
-        database.setDesiredStatus(DatabaseStatus.RUNNING);
+        database.setDesiredState(DesiredState.RUNNING);
         database.setStatus(status);
         database.setProvisioningStage(ProvisioningStage.READY);
         database.setExpectedReplicas(2);

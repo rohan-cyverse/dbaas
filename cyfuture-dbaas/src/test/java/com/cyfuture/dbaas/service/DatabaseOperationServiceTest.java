@@ -56,7 +56,7 @@ class DatabaseOperationServiceTest {
                 operationRepository, projectService, new OperationMapper(), submitter);
 
         ProjectMetadata project = new ProjectMetadata();
-        project.setProjectName("orders");
+        project.setProjectId("prj-orders0001");
         project.setNamespaceName("dbaas-orders");
         when(projectService.requireActiveProject("orders")).thenReturn(project);
 

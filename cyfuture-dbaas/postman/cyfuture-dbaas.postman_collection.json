@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "2b9fb3b4-4dd5-4b58-8df7-f8793713c0b2",
     "name": "Cyfuture DBaaS - Organizations, Projects and Databases",
-    "description": "DBaaS creates and manages the default organization in the backend. Users can view or update only its displayName and description, then create projects directly. Immutable IDs (org-xxxx, prj-xxxx, db-xxxx) identify resources; friendly display names are safe to change and never rename Kubernetes resources. Keep an Idempotency-Key unchanged only when retrying the exact same infrastructure request.",
+    "description": "DBaaS creates and manages the default organization in the backend. Project responses expose organizationId, and every project is server-bound to that organization. Immutable IDs (org-xxxx, prj-xxxx, db-xxxx) identify resources; database names are human-facing handles. Omit a database name to receive a unique engine-prefixed handle. Keep an Idempotency-Key unchanged only when retrying the exact same infrastructure request.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -15,19 +15,15 @@
       "value": ""
     },
     {
+      "key": "organizationId",
+      "value": ""
+    },
+    {
       "key": "databaseId",
       "value": ""
     },
     {
       "key": "operationId",
-      "value": ""
-    },
-    {
-      "key": "statusUrl",
-      "value": ""
-    },
-    {
-      "key": "operationUrl",
       "value": ""
     },
     {
@@ -46,7 +42,7 @@
   "item": [
     {
       "name": "1. Organization Settings and Project Creation",
-      "description": "The organization is created and selected by the backend. There is no user-facing create, list, or organization-selection request. Users may only update its display name and description, then create projects directly.",
+      "description": "The organization is created and selected by the backend. There is no user-facing create, list, or organization-selection request. Users may only update its display name and description; projects are always bound to its immutable organizationId.",
       "item": [
         {
           "name": "Get Backend-Managed Organization",
@@ -60,6 +56,7 @@
                   "  const body = pm.response.json();",
                   "  pm.expect(body.organizationId).to.match(/^org-/);",
                   "  pm.expect(body.displayName).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('organizationId', body.organizationId);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -122,7 +119,7 @@
                   "if (pm.response.code === 201) {",
                   "  const body = pm.response.json();",
                   "  pm.expect(body.projectId).to.match(/^prj-/);",
-                  "  pm.expect(body.namespace).to.equal('dbaas-p-' + body.projectId);",
+                  "  pm.expect(body.organizationId).to.equal(pm.collectionVariables.get('organizationId'));",
                   "  pm.collectionVariables.set('projectId', body.projectId);",
                   "}"
                 ],
@@ -244,7 +241,7 @@
     },
     {
       "name": "Database Provisioning - All Engines and Modes",
-      "description": "Create examples for all engine/mode combinations supported by the backend. Each successful request stores databaseId and operationId for the lifecycle requests below.",
+      "description": "Create examples for all engine/mode combinations supported by the backend. Name is optional: omitted names receive a unique engine-prefixed handle. Each successful request stores databaseId and operationId for the lifecycle requests below.",
       "item": [
         {
           "name": "Create PostgreSQL - Standalone",
@@ -255,18 +252,17 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Smooth-flow links returned', function () {",
+                  "pm.test('Provisioning response is usable', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
+                  "  pm.expect(body.name).to.match(/^pg-/);",
                   "  pm.expect(body.operationId).to.be.a('string');",
-                  "  pm.expect(body.statusUrl).to.be.a('string');",
-                  "  pm.expect(body.operationUrl).to.be.a('string');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "  pm.expect(pm.response.headers.get('Location')).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.headers.get('Operation-Location')).to.be.a('string').and.not.empty;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -287,7 +283,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"pg-standalone-{{$randomInt}}\",\"remark\":\"Create PostgreSQL - Standalone created from Postman\",\"engine\":\"POSTGRESQL\",\"mode\":\"STANDALONE\",\"version\":\"17.5.0\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":1,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
+              "raw": "{\"remark\":\"Create PostgreSQL - Standalone created from Postman\",\"engine\":\"POSTGRESQL\",\"mode\":\"STANDALONE\",\"version\":\"17.5.0\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":1,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
@@ -314,18 +310,16 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Smooth-flow links returned', function () {",
+                  "pm.test('Provisioning response is usable', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
-                  "  pm.expect(body.statusUrl).to.be.a('string');",
-                  "  pm.expect(body.operationUrl).to.be.a('string');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "  pm.expect(pm.response.headers.get('Location')).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.headers.get('Operation-Location')).to.be.a('string').and.not.empty;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -373,18 +367,16 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Smooth-flow links returned', function () {",
+                  "pm.test('Provisioning response is usable', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
-                  "  pm.expect(body.statusUrl).to.be.a('string');",
-                  "  pm.expect(body.operationUrl).to.be.a('string');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "  pm.expect(pm.response.headers.get('Location')).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.headers.get('Operation-Location')).to.be.a('string').and.not.empty;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -432,18 +424,16 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Smooth-flow links returned', function () {",
+                  "pm.test('Provisioning response is usable', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
-                  "  pm.expect(body.statusUrl).to.be.a('string');",
-                  "  pm.expect(body.operationUrl).to.be.a('string');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "  pm.expect(pm.response.headers.get('Location')).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.headers.get('Operation-Location')).to.be.a('string').and.not.empty;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -491,18 +481,16 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Smooth-flow links returned', function () {",
+                  "pm.test('Provisioning response is usable', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
-                  "  pm.expect(body.statusUrl).to.be.a('string');",
-                  "  pm.expect(body.operationUrl).to.be.a('string');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "  pm.expect(pm.response.headers.get('Location')).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.headers.get('Operation-Location')).to.be.a('string').and.not.empty;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -550,18 +538,16 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Smooth-flow links returned', function () {",
+                  "pm.test('Provisioning response is usable', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
-                  "  pm.expect(body.statusUrl).to.be.a('string');",
-                  "  pm.expect(body.operationUrl).to.be.a('string');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "  pm.expect(pm.response.headers.get('Location')).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.headers.get('Operation-Location')).to.be.a('string').and.not.empty;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -609,18 +595,16 @@
                 "exec": [
                   "pm.test('Provisioning accepted', function () { pm.response.to.have.status(202); });",
                   "const body = pm.response.json();",
-                  "pm.test('Smooth-flow links returned', function () {",
+                  "pm.test('Provisioning response is usable', function () {",
                   "  pm.expect(body.databaseId).to.be.a('string');",
                   "  pm.expect(body.operationId).to.be.a('string');",
-                  "  pm.expect(body.statusUrl).to.be.a('string');",
-                  "  pm.expect(body.operationUrl).to.be.a('string');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "  pm.expect(pm.response.headers.get('Location')).to.be.a('string').and.not.empty;",
+                  "  pm.expect(pm.response.headers.get('Operation-Location')).to.be.a('string').and.not.empty;",
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "  pm.collectionVariables.set('statusUrl', body.statusUrl);",
-                  "  pm.collectionVariables.set('operationUrl', body.operationUrl);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -1013,26 +997,6 @@
           }
         }
       ]
-    },
-    {
-      "name": "Reconciliation - Orphans",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "url": {
-          "raw": "{{baseUrl}}/api/v1/reconciliation/orphans",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "v1",
-            "reconciliation",
-            "orphans"
-          ]
-        },
-        "description": "Lists DBaaS-managed KubeBlocks clusters that are absent from MySQL metadata. The API never adopts or deletes these clusters automatically."
-      }
     },
     {
       "name": "List Database Operations",

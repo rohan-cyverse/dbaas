@@ -1,8 +1,7 @@
 package com.cyfuture.dbaas.service;
 
 import com.cyfuture.dbaas.client.KubeBlocksClient;
-import com.cyfuture.dbaas.dto.DatabaseResponse;
-import com.cyfuture.dbaas.dto.PrivateEndpointResponse;
+import com.cyfuture.dbaas.client.DatabaseObservation;
 import com.cyfuture.dbaas.dto.PublicEndpointResponse;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.model.DatabaseEngine;
@@ -72,17 +71,12 @@ class ProvisioningReconcilerTest {
         return database;
     }
 
-    private DatabaseResponse live(DatabaseMetadata database, DatabaseStatus status) {
+    private DatabaseObservation live(DatabaseMetadata database, DatabaseStatus status) {
         boolean ready = status == DatabaseStatus.RUNNING;
-        return new DatabaseResponse(database.getDatabaseId(), database.getProjectName(),
-                database.getNamespaceName(), "orders-db",
+        return new DatabaseObservation(database.getDatabaseId(), "orders-db",
                 database.getEngine(), database.getMode(), "17.5.0", SizePlan.C1G2,
-                20, true, status,
-                ready ? ProvisioningStage.READY : ProvisioningStage.WAITING_FOR_REPLICAS,
-                ready ? 100 : 45, 1, ready ? 1 : 0, ready ? 1 : 0, ready,
-                new PrivateEndpointResponse(
-                        ready ? "postgres.internal" : null, 5432, ready),
-                new PublicEndpointResponse(null, 5432, false, List.of()),
+                20, true, status, 1, ready ? 1 : 0, ready ? 1 : 0, ready,
+                ready ? "postgres.internal" : null, 5432,
                 ready ? "Database is ready" : "Waiting for database Pods: 0/1");
     }
 }

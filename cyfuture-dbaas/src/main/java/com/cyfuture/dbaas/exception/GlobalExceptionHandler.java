@@ -1,52 +1,66 @@
 package com.cyfuture.dbaas.exception;
 
+import com.cyfuture.dbaas.dto.ApiErrorResponse;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
-
-import java.time.Instant;
-import java.util.Map;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
     @ExceptionHandler(ApiException.class)
-    ResponseEntity<Map<String, Object>> handleApiException(ApiException exception) {
-        return ResponseEntity.status(exception.getStatus()).body(error(
-                exception.getStatus().value(), exception.getCode(),
-                exception.isRetryable(), exception.getMessage()));
+    ResponseEntity<ApiErrorResponse> handleApiException(ApiException exception) {
+        return ResponseEntity.status(exception.getStatus()).body(new ApiErrorResponse(
+                exception.getCode(), messageFor(exception), exception.isRetryable()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
-    ResponseEntity<Map<String, Object>> handleValidation(MethodArgumentNotValidException exception) {
-        String message = exception.getBindingResult().getFieldErrors().stream()
+    ResponseEntity<ApiErrorResponse> handleValidation(MethodArgumentNotValidException exception) {
+        String field = exception.getBindingResult().getFieldErrors().stream()
                 .findFirst()
-                .map(error -> error.getField() + ": " + error.getDefaultMessage())
-                .orElse("Invalid request");
-        return ResponseEntity.badRequest().body(error(
-                400, "VALIDATION_FAILED", false, message));
+                .map(error -> error.getField())
+                .orElse(null);
+        String message = field == null ? "The request is invalid."
+                : "Invalid value for " + field + ".";
+        return ResponseEntity.badRequest().body(new ApiErrorResponse(
+                "VALIDATION_FAILED", message, false));
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
-    ResponseEntity<Map<String, Object>> handleUnreadableBody(HttpMessageNotReadableException exception) {
-        return ResponseEntity.badRequest().body(error(400, "INVALID_REQUEST_BODY", false,
-                "Invalid JSON or unsupported enum value. Check /api/v1/databases/options"));
+    ResponseEntity<ApiErrorResponse> handleUnreadableBody(HttpMessageNotReadableException exception) {
+        return ResponseEntity.badRequest().body(new ApiErrorResponse(
+                "INVALID_REQUEST_BODY", "Request body is invalid.", false));
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    ResponseEntity<ApiErrorResponse> handleResourceNotFound(NoResourceFoundException exception) {
+        return ResponseEntity.status(404).body(new ApiErrorResponse(
+                "RESOURCE_NOT_FOUND", "The requested resource was not found.", false));
     }
 
     @ExceptionHandler(Exception.class)
-    ResponseEntity<Map<String, Object>> handleUnexpected(Exception exception) {
-        return ResponseEntity.internalServerError().body(error(
-                500, "INTERNAL_ERROR", true,
-                exception.getMessage() == null ? "Unexpected internal error" : exception.getMessage()));
+    ResponseEntity<ApiErrorResponse> handleUnexpected(Exception exception) {
+        return ResponseEntity.internalServerError().body(new ApiErrorResponse(
+                "INTERNAL_ERROR", "An unexpected error occurred. Please try again.", true));
     }
 
-    private Map<String, Object> error(int status, String code,
-                                      boolean retryable, String message) {
-        String safeMessage = message == null || message.isBlank()
-                ? "Request failed" : message;
-        return Map.of("timestamp", Instant.now().toString(),
-                "status", status, "code", code,
-                "retryable", retryable, "message", safeMessage);
+    private String messageFor(ApiException exception) {
+        return switch (exception.getCode()) {
+            case "DATABASE_NOT_READY" -> "Database is not ready.";
+            case "PUBLIC_ENDPOINT_NOT_READY" -> "Public endpoint is not ready.";
+            case "PROJECT_DELETION_IN_PROGRESS" -> "Project deletion is in progress.";
+            case "VALIDATION_FAILED", "INVALID_REQUEST_BODY" -> "The request is invalid.";
+            default -> switch (exception.getStatus().value()) {
+                case 400 -> "The request is invalid.";
+                case 401 -> "Authentication is required.";
+                case 403 -> "You do not have permission to perform this action.";
+                case 404 -> "The requested resource was not found.";
+                case 409 -> "The request cannot be completed in the current state.";
+                case 502, 503, 504 -> "The service is temporarily unavailable. Please retry.";
+                default -> "The request could not be completed.";
+            };
+        };
     }
 }

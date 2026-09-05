@@ -15,7 +15,9 @@ import io.kubernetes.client.openapi.models.V1PodCondition;
 import io.kubernetes.client.openapi.models.V1PodList;
 import io.kubernetes.client.openapi.models.V1PodSpec;
 import io.kubernetes.client.openapi.models.V1PodStatus;
+import io.kubernetes.client.openapi.models.V1PersistentVolumeClaimList;
 import io.kubernetes.client.openapi.models.V1ResourceRequirements;
+import io.kubernetes.client.openapi.models.V1Namespace;
 import io.kubernetes.client.custom.Quantity;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -192,6 +194,62 @@ class KubeBlocksClientTest {
         assertTrue(observation.complete());
     }
 
+    @Test
+    void updatesOnlyDeletionProtectionFields() throws Exception {
+        when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
+                "dbaas-orders", "clusters", "db-orders0001").execute())
+                .thenReturn(observableCluster());
+        when(coreV1Api.listNamespacedPod("dbaas-orders")
+                .labelSelector("app.kubernetes.io/instance=db-orders0001").execute())
+                .thenReturn(new V1PodList().items(List.of()));
+        when(coreV1Api.listNamespacedPersistentVolumeClaim("dbaas-orders")
+                .labelSelector("app.kubernetes.io/instance=db-orders0001").execute())
+                .thenReturn(new V1PersistentVolumeClaimList().items(List.of()));
+
+        client.setDeletionProtection("dbaas-orders", "db-orders0001", true);
+
+        ArgumentCaptor<Object> replacement = ArgumentCaptor.forClass(Object.class);
+        verify(customObjectsApi).replaceNamespacedCustomObject(eq("apps.kubeblocks.io"), eq("v1"),
+                eq("dbaas-orders"), eq("clusters"), eq("db-orders0001"), replacement.capture());
+        Map<?, ?> body = (Map<?, ?>) replacement.getValue();
+        assertEquals("DoNotTerminate", ((Map<?, ?>) body.get("spec")).get("terminationPolicy"));
+        Map<?, ?> metadata = (Map<?, ?>) body.get("metadata");
+        Map<?, ?> annotations = (Map<?, ?>) metadata.get("annotations");
+        assertEquals("true", annotations.get("dbaas.cyfuture.com/deletion-protection"));
+    }
+
+    @Test
+    void deletesOnlyANamespaceOwnedByTheProject() throws Exception {
+        when(coreV1Api.readNamespace("dbaas-p-prj-orders0001").execute()).thenReturn(
+                new V1Namespace().metadata(new V1ObjectMeta().labels(Map.of(
+                        "app.kubernetes.io/managed-by", "cyfuture-dbaas",
+                        "dbaas.cyfuture.com/project", "prj-orders0001"))));
+
+        client.deleteProjectNamespace("dbaas-p-prj-orders0001", "prj-orders0001");
+
+        verify(coreV1Api).deleteNamespace("dbaas-p-prj-orders0001");
+    }
+
+    @Test
+    void projectDeletionClearsProtectionBeforeDeletingTheCluster() throws Exception {
+        when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
+                "dbaas-orders", "clusters", "db-orders0001").execute())
+                .thenReturn(observableCluster());
+
+        client.prepareProjectDatabaseDeletion("dbaas-orders", "db-orders0001");
+
+        ArgumentCaptor<Object> replacement = ArgumentCaptor.forClass(Object.class);
+        verify(customObjectsApi).replaceNamespacedCustomObject(eq("apps.kubeblocks.io"), eq("v1"),
+                eq("dbaas-orders"), eq("clusters"), eq("db-orders0001"), replacement.capture());
+        Map<?, ?> body = (Map<?, ?>) replacement.getValue();
+        assertEquals("Delete", ((Map<?, ?>) body.get("spec")).get("terminationPolicy"));
+        Map<?, ?> annotations = (Map<?, ?>) ((Map<?, ?>) body.get("metadata"))
+                .get("annotations");
+        assertEquals("false", annotations.get("dbaas.cyfuture.com/deletion-protection"));
+        verify(customObjectsApi).deleteNamespacedCustomObject(
+                "apps.kubeblocks.io", "v1", "dbaas-orders", "clusters", "db-orders0001");
+    }
+
     private CreateDatabaseRequest request(DatabaseEngine engine, DatabaseMode mode) {
         return new CreateDatabaseRequest("orders-db", null, engine, mode, "test-version",
                 SizePlan.C1G1, 10, 2, 0, null, List.of(), false, Map.of());
@@ -232,6 +290,19 @@ class KubeBlocksClientTest {
         Map<String, Object> cluster = new java.util.LinkedHashMap<>();
         cluster.put("spec", spec);
         return cluster;
+    }
+
+    private Map<String, Object> observableCluster() {
+        return Map.of(
+                "metadata", Map.of("name", "db-orders0001", "annotations", Map.of(
+                        "dbaas.cyfuture.com/engine", "POSTGRESQL",
+                        "dbaas.cyfuture.com/mode", "STANDALONE",
+                        "dbaas.cyfuture.com/version", "17.5.0",
+                        "dbaas.cyfuture.com/size", "C1G1",
+                        "dbaas.cyfuture.com/storage-gi", "10")),
+                "spec", Map.of("componentSpecs", List.of(Map.of(
+                        "name", "postgresql", "replicas", 1))),
+                "status", Map.of("phase", "Running"));
     }
 
     private Map<String, Object> component(String name, int replicas, Map<String, String> volumes) {

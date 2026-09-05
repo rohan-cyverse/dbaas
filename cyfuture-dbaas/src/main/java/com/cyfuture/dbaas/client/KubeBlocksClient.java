@@ -2,15 +2,11 @@ package com.cyfuture.dbaas.client;
 
 import com.cyfuture.dbaas.config.DatabaseProperties;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
-import com.cyfuture.dbaas.dto.DatabaseResponse;
-import com.cyfuture.dbaas.dto.PrivateEndpointResponse;
-import com.cyfuture.dbaas.dto.PublicEndpointResponse;
 import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.DatabaseEngine;
 import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.DatabaseMode;
 import com.cyfuture.dbaas.model.SizePlan;
-import com.cyfuture.dbaas.model.ProvisioningStage;
 import io.kubernetes.client.openapi.ApiClient;
 import io.kubernetes.client.custom.Quantity;
 import io.kubernetes.client.openapi.apis.CoreV1Api;
@@ -106,11 +102,11 @@ public class KubeBlocksClient {
         }
     }
 
-    public DatabaseResponse get(String namespace, String databaseId) {
+    public DatabaseObservation get(String namespace, String databaseId) {
         try {
             Object object = customObjectsApi.getNamespacedCustomObject(
                     GROUP, VERSION, namespace, CLUSTERS, databaseId).execute();
-            return toResponse(namespace, asMap(object));
+            return toObservation(namespace, asMap(object));
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             if (exception.getCode() == 404) {
                 throw new ApiException(HttpStatus.NOT_FOUND, "Database " + databaseId + " was not found");
@@ -214,16 +210,9 @@ public class KubeBlocksClient {
         }
     }
 
-    public DatabaseResponse setDeletionProtection(String namespace, String databaseId, boolean enabled) {
+    public DatabaseObservation setDeletionProtection(String namespace, String databaseId, boolean enabled) {
         try {
-            Map<String, Object> cluster = asMap(customObjectsApi.getNamespacedCustomObject(
-                    GROUP, VERSION, namespace, CLUSTERS, databaseId).execute());
-            asMap(cluster.get("spec")).put("terminationPolicy", enabled ? "DoNotTerminate" : "Delete");
-            Map<String, Object> metadata = asMap(cluster.get("metadata"));
-            asMap(metadata.get("annotations")).put(
-                    "dbaas.cyfuture.com/deletion-protection", String.valueOf(enabled));
-            customObjectsApi.replaceNamespacedCustomObject(
-                    GROUP, VERSION, namespace, CLUSTERS, databaseId, cluster).execute();
+            updateDeletionProtection(namespace, databaseId, enabled);
             return get(namespace, databaseId);
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             if (exception.getCode() == 404) {
@@ -290,6 +279,59 @@ public class KubeBlocksClient {
             }
             throw new ApiException(HttpStatus.BAD_GATEWAY,
                     "Could not set PreferInPlace vertical scaling policy: " + kubernetesMessage(exception));
+        }
+    }
+
+    /**
+     * A project delete is an explicit request to destroy every database in its
+     * namespace. Clear a database-level protection first so the KubeBlocks
+     * finalizer can remove the Cluster instead of holding namespace deletion.
+     */
+    public void prepareProjectDatabaseDeletion(String namespace, String databaseId) {
+        try {
+            updateDeletionProtection(namespace, databaseId, false);
+            requestDelete(namespace, databaseId);
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 404) return;
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not prepare database for project deletion: " + kubernetesMessage(exception));
+        }
+    }
+
+    /** Ensures the namespace for a DBaaS project exists and is owned by that project. */
+    public void ensureProjectNamespace(String namespace, String project) {
+        try {
+            ensureNamespace(namespace, project);
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not create or verify project namespace: " + kubernetesMessage(exception));
+        }
+    }
+
+    /** Deletes only a namespace proven to belong to the requested DBaaS project. */
+    public void deleteProjectNamespace(String namespace, String project) {
+        try {
+            V1Namespace existing = coreV1Api.readNamespace(namespace).execute();
+            validateNamespaceOwnership(existing, project);
+            coreV1Api.deleteNamespace(namespace).execute();
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            // A repeated project delete is safe after Kubernetes has already
+            // removed the namespace.
+            if (exception.getCode() == 404) return;
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not delete project namespace: " + kubernetesMessage(exception));
+        }
+    }
+
+    /** Returns false only after Kubernetes has fully removed the owned namespace. */
+    public boolean projectNamespaceExists(String namespace, String project) {
+        try {
+            validateNamespaceOwnership(coreV1Api.readNamespace(namespace).execute(), project);
+            return true;
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 404) return false;
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not verify project namespace: " + kubernetesMessage(exception));
         }
     }
 
@@ -779,7 +821,7 @@ public class KubeBlocksClient {
         }
     }
 
-    private DatabaseResponse toResponse(String namespace, Map<String, Object> cluster) {
+    private DatabaseObservation toObservation(String namespace, Map<String, Object> cluster) {
         Map<String, Object> metadata = asMap(cluster.get("metadata"));
         Map<String, Object> annotations = asMap(metadata.get("annotations"));
         Map<String, Object> spec = asMap(cluster.get("spec"));
@@ -806,21 +848,14 @@ public class KubeBlocksClient {
                 ? "mongos" : String.valueOf(component.get("name")));
         boolean serviceReady = privateHost != null;
         int port = defaultPort(engine);
-        PrivateEndpointResponse privateEndpoint = new PrivateEndpointResponse(
-                privateHost, port, serviceReady);
-        PublicEndpointResponse publicEndpoint = new PublicEndpointResponse(
-                null, port, false, allowedCidrs(annotations));
-
         if (databaseStatus == DatabaseStatus.RUNNING
                 && (readyReplicas < expectedPods || readyVolumes < expectedVolumes
                 || !serviceReady)) {
             databaseStatus = DatabaseStatus.PROVISIONING;
         }
 
-        return new DatabaseResponse(
+        return new DatabaseObservation(
                 id,
-                String.valueOf(annotations.getOrDefault("dbaas.cyfuture.com/project", "unknown")),
-                namespace,
                 String.valueOf(annotations.getOrDefault("dbaas.cyfuture.com/display-name", id)),
                 engine,
                 mode,
@@ -830,15 +865,12 @@ public class KubeBlocksClient {
                 Boolean.parseBoolean(String.valueOf(annotations.getOrDefault(
                         "dbaas.cyfuture.com/deletion-protection", "false"))),
                 databaseStatus,
-                databaseStatus == DatabaseStatus.RUNNING
-                        ? ProvisioningStage.READY : ProvisioningStage.WAITING_FOR_REPLICAS,
-                databaseStatus == DatabaseStatus.RUNNING ? 100 : 45,
                 replicas,
                 readyReplicas,
                 readyVolumes,
                 serviceReady,
-                privateEndpoint,
-                publicEndpoint,
+                privateHost,
+                port,
                 readinessMessage(phase, databaseStatus, readyReplicas, expectedPods,
                         readyVolumes, expectedVolumes, serviceReady));
     }
@@ -1071,6 +1103,37 @@ public class KubeBlocksClient {
             throw new ApiException(HttpStatus.CONFLICT,
                     "Namespace already exists but is not owned by DBaaS project " + project);
         }
+    }
+
+    /**
+     * The generated Kubernetes Java client sends CustomObject PATCH requests as
+     * application/json, which some API servers reject for CRDs. Use a fresh
+     * full-resource replace instead, retrying only resource-version conflicts.
+     */
+    private void updateDeletionProtection(String namespace, String databaseId, boolean enabled)
+            throws io.kubernetes.client.openapi.ApiException {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            Map<String, Object> cluster = new LinkedHashMap<>(asMap(
+                    customObjectsApi.getNamespacedCustomObject(
+                            GROUP, VERSION, namespace, CLUSTERS, databaseId).execute()));
+            mutableChildMap(cluster, "spec").put(
+                    "terminationPolicy", enabled ? "DoNotTerminate" : "Delete");
+            mutableChildMap(mutableChildMap(cluster, "metadata"), "annotations").put(
+                    "dbaas.cyfuture.com/deletion-protection", String.valueOf(enabled));
+            try {
+                customObjectsApi.replaceNamespacedCustomObject(
+                        GROUP, VERSION, namespace, CLUSTERS, databaseId, cluster).execute();
+                return;
+            } catch (io.kubernetes.client.openapi.ApiException exception) {
+                if (exception.getCode() != 409 || attempt == 2) throw exception;
+            }
+        }
+    }
+
+    private Map<String, Object> mutableChildMap(Map<String, Object> parent, String key) {
+        Map<String, Object> copy = new LinkedHashMap<>(asMap(parent.get(key)));
+        parent.put(key, copy);
+        return copy;
     }
 
     private DatabaseStatus mapStatus(String phase) {

@@ -10,8 +10,6 @@ import java.time.Instant;
 @Builder
 public record OperationResponse(
         String operationId,
-        String databaseId,
-        String project,
         OperationType type,
         OperationStatus status,
         ProvisioningStage stage,
