@@ -90,6 +90,22 @@ class DatabaseServiceTest {
         assertEquals("quiet-mango", database.getValue().getDisplayName());
     }
 
+    @Test
+    void mongoConnectionUriAuthenticatesAgainstManagedDatabase() throws Exception {
+        var connectionUri = DatabaseService.class.getDeclaredMethod("connectionUri",
+                DatabaseEngine.class, DatabaseMode.class, boolean.class,
+                String.class, String.class, String.class, int.class, String.class);
+        connectionUri.setAccessible(true);
+
+        String uri = (String) connectionUri.invoke(service,
+                DatabaseEngine.MONGODB, DatabaseMode.STANDALONE, true,
+                "user", "pass", "mongo.example.com", 27017, "appdb_xxx");
+
+        assertEquals("mongodb://user:pass@mongo.example.com:27017/appdb_xxx"
+                        + "?authSource=appdb_xxx&directConnection=true",
+                uri);
+    }
+
     private CreateDatabaseRequest request() {
         return new CreateDatabaseRequest("orders-db", "Orders", DatabaseEngine.POSTGRESQL,
                 DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2, 10, 1, 0,
