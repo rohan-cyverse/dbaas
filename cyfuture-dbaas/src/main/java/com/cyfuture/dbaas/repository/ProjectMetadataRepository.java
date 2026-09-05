@@ -9,4 +9,5 @@ import java.util.Optional;
 public interface ProjectMetadataRepository extends JpaRepository<ProjectMetadata, String> {
     Optional<ProjectMetadata> findByProjectName(String projectName);
     List<ProjectMetadata> findAllByOrderByCreatedAtDesc();
+    List<ProjectMetadata> findByOrganizationIdOrderByCreatedAtDesc(String organizationId);
 }

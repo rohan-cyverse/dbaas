@@ -24,25 +24,28 @@ import static org.mockito.Mockito.when;
 class ProjectServiceTest {
     private ProjectMetadataRepository projectRepository;
     private DatabaseMetadataRepository databaseRepository;
+    private OrganizationService organizationService;
     private ProjectService service;
 
     @BeforeEach
     void setUp() {
         projectRepository = mock(ProjectMetadataRepository.class);
         databaseRepository = mock(DatabaseMetadataRepository.class);
-        service = new ProjectService(projectRepository, databaseRepository,
+        organizationService = mock(OrganizationService.class);
+        service = new ProjectService(projectRepository, databaseRepository, organizationService,
                 new DatabaseProperties());
         when(projectRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
     }
 
     @Test
-    void createsMultipleProjectsWithoutOrganizationScope() {
-        var orders = service.create(new CreateProjectRequest("orders", "Orders", null));
-        var billing = service.create(new CreateProjectRequest("billing", "Billing", null));
+    void createsProjectsWithinAnOrganizationUsingImmutableNamespaceIdentity() {
+        var orders = service.create("org-amber001", new CreateProjectRequest("orders", "Orders", null));
+        var billing = service.create("org-amber001", new CreateProjectRequest("billing", "Billing", null));
 
         assertTrue(orders.namespace().matches("dbaas-p-prj-[a-f0-9]{12}"));
         assertTrue(billing.namespace().matches("dbaas-p-prj-[a-f0-9]{12}"));
         assertNotEquals(orders.namespace(), billing.namespace());
+        assertEquals("org-amber001", orders.organizationId());
     }
 
     @Test

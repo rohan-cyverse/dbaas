@@ -27,14 +27,22 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 public class ProjectService {
+    public static final String LEGACY_ORGANIZATION_ID = "org-legacy";
     private final ProjectMetadataRepository projectRepository;
     private final DatabaseMetadataRepository databaseRepository;
+    private final OrganizationService organizationService;
     private final DatabaseProperties properties;
 
     public ProjectResponse create(CreateProjectRequest request) {
+        return create(LEGACY_ORGANIZATION_ID, request);
+    }
+
+    public ProjectResponse create(String organizationId, CreateProjectRequest request) {
+        organizationService.requireActive(organizationId);
         Instant now = Instant.now();
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-" + shortId());
+        project.setOrganizationId(organizationId);
         // projectName is retained as the legacy lookup column, but is now the immutable ID.
         project.setProjectName(project.getProjectId());
         project.setDisplayName(request.displayName());
@@ -54,6 +62,12 @@ public class ProjectService {
 
     public List<ProjectResponse> list() {
         return projectRepository.findAllByOrderByCreatedAtDesc()
+                .stream().map(this::toResponse).toList();
+    }
+
+    public List<ProjectResponse> list(String organizationId) {
+        organizationService.requireActive(organizationId);
+        return projectRepository.findByOrganizationIdOrderByCreatedAtDesc(organizationId)
                 .stream().map(this::toResponse).toList();
     }
 
@@ -122,6 +136,7 @@ public class ProjectService {
     private ProjectResponse toResponse(ProjectMetadata metadata) {
         return new ProjectResponse(
                 metadata.getProjectId(),
+                metadata.getOrganizationId(),
                 metadata.getProjectName(),
                 metadata.getDisplayName(),
                 metadata.getDescription(),
