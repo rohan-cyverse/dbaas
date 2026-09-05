@@ -20,6 +20,7 @@ import com.cyfuture.dbaas.model.OperationStatus;
 import com.cyfuture.dbaas.model.OperationType;
 import com.cyfuture.dbaas.model.SizePlan;
 import com.cyfuture.dbaas.model.ProvisioningStage;
+import com.cyfuture.dbaas.model.DesiredState;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import lombok.RequiredArgsConstructor;
@@ -95,7 +96,8 @@ public class DatabaseService {
         database.setSizePlan(request.size());
         database.setStorageGi(request.storageGi());
         database.setDeletionProtection(request.deletionProtection());
-        database.setDesiredStatus(DatabaseStatus.RUNNING);
+        database.setDesiredState(DesiredState.RUNNING);
+        database.setDesiredStatus(DatabaseStatus.RUNNING); // legacy compatibility
         database.setStatus(DatabaseStatus.PROVISIONING);
         database.setExpectedReplicas(request.mode() == DatabaseMode.SHARDING
                 ? request.shards() * request.replicas() + 5
@@ -221,7 +223,10 @@ public class DatabaseService {
 
     public ConnectionResponse connection(String project,
                                          String databaseId, String clientIp) {
-        DatabaseMetadata database = requireDatabase(project, databaseId);
+        DatabaseMetadata database = databaseRepository
+                .findByDatabaseIdAndProjectNameForUpdate(databaseId, project)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND,
+                        "Database " + databaseId + " was not found"));
         if (database.getStatus() == DatabaseStatus.FAILED) {
             throw new ApiException(HttpStatus.CONFLICT, "Failed database has no credentials");
         }
@@ -283,7 +288,8 @@ public class DatabaseService {
                 });
 
         OperationMetadata operation = deleteOperation(database);
-        database.setDesiredStatus(DatabaseStatus.DELETED);
+        database.setDesiredState(DesiredState.DELETED);
+        database.setDesiredStatus(DatabaseStatus.DELETED); // legacy compatibility
         database.setStatus(DatabaseStatus.DELETING);
         database.setDeleteRequestedAt(Instant.now());
         database.setMessage("Database deletion requested; removing public route");

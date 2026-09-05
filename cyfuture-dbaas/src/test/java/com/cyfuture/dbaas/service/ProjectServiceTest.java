@@ -14,6 +14,8 @@ import org.springframework.http.HttpStatus;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -38,20 +40,21 @@ class ProjectServiceTest {
         var orders = service.create(new CreateProjectRequest("orders", "Orders", null));
         var billing = service.create(new CreateProjectRequest("billing", "Billing", null));
 
-        assertEquals("dbaas-orders", orders.namespace());
-        assertEquals("dbaas-billing", billing.namespace());
+        assertTrue(orders.namespace().matches("dbaas-p-prj-[a-f0-9]{12}"));
+        assertTrue(billing.namespace().matches("dbaas-p-prj-[a-f0-9]{12}"));
+        assertNotEquals(orders.namespace(), billing.namespace());
     }
 
     @Test
-    void projectDeletionIsBlockedWhileDatabasesExist() {
+    void projectDeletionMarksProjectAndChildrenForCascade() {
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectName("orders");
         project.setStatus(ResourceStatus.ACTIVE);
         when(projectRepository.findByProjectName("orders")).thenReturn(Optional.of(project));
-        when(databaseRepository.existsByProjectName("orders")).thenReturn(true);
+        when(databaseRepository.findByProjectNameOrderByCreatedAtDesc("orders"))
+                .thenReturn(java.util.List.of());
 
-        ApiException exception = assertThrows(ApiException.class,
-                () -> service.delete("orders"));
-        assertEquals(HttpStatus.CONFLICT, exception.getStatus());
+        service.delete("orders");
+        assertEquals(ResourceStatus.DELETING, project.getStatus());
     }
 }

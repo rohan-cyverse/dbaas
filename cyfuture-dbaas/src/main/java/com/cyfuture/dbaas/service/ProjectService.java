@@ -7,6 +7,8 @@ import com.cyfuture.dbaas.dto.UpdateProjectRequest;
 import com.cyfuture.dbaas.entity.ProjectMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.ResourceStatus;
+import com.cyfuture.dbaas.model.DatabaseStatus;
+import com.cyfuture.dbaas.model.DesiredState;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.ProjectMetadataRepository;
 import lombok.RequiredArgsConstructor;
@@ -30,19 +32,15 @@ public class ProjectService {
     private final DatabaseProperties properties;
 
     public ProjectResponse create(CreateProjectRequest request) {
-        if (projectRepository.findByProjectName(request.name()).isPresent()) {
-            throw new ApiException(HttpStatus.CONFLICT,
-                    "Project " + request.name() + " already exists");
-        }
-
         Instant now = Instant.now();
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-" + shortId());
-        project.setProjectName(request.name());
+        // projectName is retained as the legacy lookup column, but is now the immutable ID.
+        project.setProjectName(project.getProjectId());
         project.setDisplayName(request.displayName());
         project.setDescription(request.description());
-        project.setNamespaceName(namespaceFor(request.name()));
-        project.setStatus(ResourceStatus.ACTIVE);
+        project.setNamespaceName(namespaceFor(project.getProjectId()));
+        project.setStatus(ResourceStatus.PROVISIONING);
         project.setCreatedAt(now);
         project.setUpdatedAt(now);
 
@@ -50,7 +48,7 @@ public class ProjectService {
             return toResponse(projectRepository.save(project));
         } catch (DataIntegrityViolationException exception) {
             throw new ApiException(HttpStatus.CONFLICT,
-                    "Project " + request.name() + " already exists");
+                    "Project already exists");
         }
     }
 
@@ -73,11 +71,20 @@ public class ProjectService {
 
     public void delete(String project) {
         ProjectMetadata metadata = requireActiveProject(project);
-        if (databaseRepository.existsByProjectName(project)) {
-            throw new ApiException(HttpStatus.CONFLICT,
-                    "Project cannot be deleted while it contains databases");
-        }
-        projectRepository.delete(metadata);
+        // Mark every child before infrastructure cleanup. The metadata rows stay
+        // authoritative while the asynchronous reconciler drains Kubernetes.
+        databaseRepository.findByProjectNameOrderByCreatedAtDesc(project).forEach(database -> {
+            database.setDesiredState(DesiredState.DELETED);
+            database.setDesiredStatus(DatabaseStatus.DELETED);
+            database.setStatus(DatabaseStatus.DELETING);
+            database.setUpdatedAt(Instant.now());
+            databaseRepository.save(database);
+        });
+        // Keep desired metadata until namespace cleanup has been confirmed by the
+        // project reconciler; deleting this row would make the namespace orphaned.
+        metadata.setStatus(ResourceStatus.DELETING);
+        metadata.setUpdatedAt(Instant.now());
+        projectRepository.save(metadata);
     }
 
     public ProjectMetadata requireActiveProject(String project) {
@@ -93,7 +100,7 @@ public class ProjectService {
     }
 
     private String namespaceFor(String project) {
-        String namespace = properties.getNamespacePrefix() + project;
+        String namespace = "dbaas-p-" + project;
         if (namespace.length() <= 63) return namespace;
         String suffix = sha256(project).substring(0, 8);
         return namespace.substring(0, 54).replaceAll("-$", "") + "-" + suffix;

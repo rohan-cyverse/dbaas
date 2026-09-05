@@ -1,5 +1,5 @@
 package com.cyfuture.dbaas.model;
 
 public enum ResourceStatus {
-    ACTIVE
+    PROVISIONING, ACTIVE, DELETING, DELETED, DEGRADED, MISSING, UNKNOWN
 }

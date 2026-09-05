@@ -5,6 +5,7 @@ import com.cyfuture.dbaas.model.DatabaseMode;
 import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.SizePlan;
 import com.cyfuture.dbaas.model.ProvisioningStage;
+import com.cyfuture.dbaas.model.DesiredState;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Column;
 import jakarta.persistence.EnumType;
@@ -21,7 +22,7 @@ import java.time.Instant;
 @Entity
 // `databases` is a reserved word in MySQL 8; retain the existing table name and
 // make Hibernate quote it in SELECT/INSERT/UPDATE statements.
-@Table(name = "`databases`", uniqueConstraints = @UniqueConstraint(
+@Table(name = "database_instances", uniqueConstraints = @UniqueConstraint(
         name = "uk_database_project_idempotency",
         columnNames = {"project_name", "idempotency_key"}))
 @Getter
@@ -53,6 +54,7 @@ public class DatabaseMetadata {
     private int storageGi;
     private boolean deletionProtection;
     @Enumerated(EnumType.STRING) @Column(length = 32) private DatabaseStatus desiredStatus;
+    @Enumerated(EnumType.STRING) @Column(name = "desired_state", length = 16) private DesiredState desiredState;
     @Enumerated(EnumType.STRING) @Column(length = 32) private DatabaseStatus status;
     @Column(length = 32)
     private String kubeblocksPhase;

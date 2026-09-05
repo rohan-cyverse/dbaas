@@ -7,6 +7,7 @@ import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.ProvisioningStage;
+import com.cyfuture.dbaas.model.DesiredState;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -33,6 +34,9 @@ public class ProvisioningReconciler {
     }
 
     void reconcile(DatabaseMetadata database) {
+        if (database.getDesiredState() == DesiredState.DELETED
+                || database.getStatus() == DatabaseStatus.DELETING
+                || database.getStatus() == DatabaseStatus.DELETED) return;
         try {
             DatabaseResponse live = kubeBlocksClient.get(
                     database.getNamespaceName(), database.getDatabaseId());

@@ -4,6 +4,8 @@ import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.model.ProvisioningStage;
+import com.cyfuture.dbaas.model.DesiredState;
+import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Async;
@@ -24,6 +26,13 @@ public class AsyncProvisioningService {
                 .orElseThrow();
 
         try {
+            // Re-check after the transaction boundary: delete may have won the race.
+            DatabaseMetadata current = databaseRepository
+                    .findByDatabaseIdAndProjectName(databaseId, project).orElse(null);
+            if (current == null || current.getDesiredState() == DesiredState.DELETED
+                    || current.getStatus() == DatabaseStatus.DELETING
+                    || current.getStatus() == DatabaseStatus.DELETED) return;
+            database = current;
             progressService.update(database, ProvisioningStage.VALIDATING, 10,
                     "Validating Kubernetes capacity and KubeBlocks configuration");
             kubeBlocksClient.preflight(namespace, project, request);
