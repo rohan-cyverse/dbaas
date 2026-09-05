@@ -15,8 +15,8 @@ import java.util.List;
 import java.util.Map;
 
 public record CreateDatabaseRequest(
-        @Schema(example = "orders-postgres")
-        @NotBlank @Size(min = 4, max = 32)
+        @Schema(example = "orders-postgres", description = "Optional friendly display name; generated when omitted")
+        @Size(max = 32)
         @Pattern(regexp = "^[a-z][a-z0-9-]*[a-z0-9]$",
                 message = "must contain lowercase letters, numbers and hyphens, and start with a letter")
         String name,

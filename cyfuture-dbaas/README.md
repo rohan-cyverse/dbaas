@@ -11,9 +11,9 @@ Project
 └── Databases
 ```
 
-There is no organization resource or organization segment in API URLs. Project names are globally unique in this control-plane deployment. Authentication and ownership are expected to be supplied later by the parent Cyfuture.ai platform.
+Organizations are logical tenant boundaries, not Kubernetes namespaces. Each organization has an immutable `org-xxxx` ID and a user-facing friendly display name such as `amber-river`. When omitted, a friendly name is generated automatically; Kubernetes resource identity never depends on it.
 
-Each project receives one Kubernetes namespace. New projects use `dbaas-{project}`. Namespaces belonging to projects created by an older release are retained, so existing databases are not moved or recreated.
+Each project receives one Kubernetes namespace. New projects use `dbaas-p-<projectId>`. Namespaces belonging to projects created by an older release are retained, so existing databases are not moved or recreated.
 
 ## Included features
 
@@ -38,6 +38,13 @@ Each project receives one Kubernetes namespace. New projects use `dbaas-{project
 ### Projects
 
 ```text
+POST   /api/v1/organizations
+GET    /api/v1/organizations
+GET    /api/v1/organizations/{organizationId}
+PUT    /api/v1/organizations/{organizationId}
+POST   /api/v1/organizations/{organizationId}/projects
+GET    /api/v1/organizations/{organizationId}/projects
+
 POST   /api/v1/projects
 GET    /api/v1/projects
 GET    /api/v1/projects/{project}
@@ -49,7 +56,6 @@ Create request:
 
 ```json
 {
-  "name": "test-project",
   "displayName": "Test Project",
   "description": "Development databases"
 }

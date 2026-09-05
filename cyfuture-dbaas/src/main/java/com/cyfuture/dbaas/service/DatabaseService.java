@@ -55,6 +55,7 @@ public class DatabaseService {
     private final ProjectService projectService;
     private final SharedGatewayService sharedGatewayService;
     private final OperationMetadataRepository operationRepository;
+    private final FriendlyNameGenerator friendlyNameGenerator;
 
     public CreateDatabaseResponse create(String project, String idempotencyKey,
                                          CreateDatabaseRequest request) {
@@ -72,6 +73,8 @@ public class DatabaseService {
                 .findByProjectNameAndIdempotencyKey(project, idempotencyKey)
                 .orElse(null);
         if (existing != null) return duplicateResponse(existing, requestHash);
+
+        request = withFriendlyName(request);
 
         validateVersion(request);
         validateMode(request);
@@ -548,6 +551,14 @@ public class DatabaseService {
         return new CreateDatabaseRequest(request.name(), request.remark(), request.engine(),
                 request.mode(), request.version(), request.size(), request.storageGi(),
                 request.replicas(), request.shards(), request.timezone(), cidrs,
+                request.deletionProtection(), request.tags());
+    }
+
+    private CreateDatabaseRequest withFriendlyName(CreateDatabaseRequest request) {
+        if (request.name() != null && !request.name().isBlank()) return request;
+        return new CreateDatabaseRequest(friendlyNameGenerator.next(), request.remark(), request.engine(),
+                request.mode(), request.version(), request.size(), request.storageGi(),
+                request.replicas(), request.shards(), request.timezone(), request.allowedCidrs(),
                 request.deletionProtection(), request.tags());
     }
 

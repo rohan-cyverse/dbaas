@@ -16,7 +16,7 @@ class OrganizationServiceTest {
     void generatesFriendlyRandomNameWhenDisplayNameIsOmitted() {
         OrganizationMetadataRepository repository = mock(OrganizationMetadataRepository.class);
         when(repository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
-        OrganizationService service = new OrganizationService(repository);
+        OrganizationService service = new OrganizationService(repository, new FriendlyNameGenerator());
 
         var response = service.create(new CreateOrganizationRequest(null, "Development tenant"));
 
@@ -29,7 +29,7 @@ class OrganizationServiceTest {
     void preservesExplicitFriendlyDisplayName() {
         OrganizationMetadataRepository repository = mock(OrganizationMetadataRepository.class);
         when(repository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
-        OrganizationService service = new OrganizationService(repository);
+        OrganizationService service = new OrganizationService(repository, new FriendlyNameGenerator());
 
         var response = service.create(new CreateOrganizationRequest("Cyfuture Noida", null));
 

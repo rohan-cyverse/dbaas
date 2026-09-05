@@ -33,6 +33,7 @@ class DatabaseServiceTest {
     private AsyncProvisioningService provisioning;
     private MetadataCreationService metadataCreation;
     private ProjectService projects;
+    private FriendlyNameGenerator friendlyNames;
     private DatabaseService service;
 
     @BeforeEach
@@ -41,6 +42,7 @@ class DatabaseServiceTest {
         provisioning = mock(AsyncProvisioningService.class);
         metadataCreation = mock(MetadataCreationService.class);
         projects = mock(ProjectService.class);
+        friendlyNames = mock(FriendlyNameGenerator.class);
         DatabaseProperties properties = new DatabaseProperties();
         properties.getPostgresql().setVersions(List.of("17.5.0"));
         ProjectMetadata project = new ProjectMetadata();
@@ -51,7 +53,7 @@ class DatabaseServiceTest {
                 .thenReturn(Optional.empty());
         service = new DatabaseService(mock(KubeBlocksClient.class), properties, repository,
                 provisioning, metadataCreation, mock(CredentialLifecycleService.class),
-                projects, mock(SharedGatewayService.class), mock(OperationMetadataRepository.class));
+                projects, mock(SharedGatewayService.class), mock(OperationMetadataRepository.class), friendlyNames);
     }
 
     @Test
@@ -72,6 +74,20 @@ class DatabaseServiceTest {
     void createRequiresDetectableCallerIp() {
         assertThrows(ApiException.class,
                 () -> service.create("orders", "create-orders-002", request(), null));
+    }
+
+    @Test
+    void createsFriendlyDatabaseNameWhenNameIsOmitted() {
+        when(friendlyNames.next()).thenReturn("quiet-mango");
+        CreateDatabaseRequest unnamed = new CreateDatabaseRequest(null, "Orders", DatabaseEngine.POSTGRESQL,
+                DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2, 10, 1, 0,
+                "Asia/Kolkata", null, true, Map.of("env", "test"));
+
+        service.create("orders", "create-orders-003", unnamed, "157.37.137.185");
+
+        ArgumentCaptor<DatabaseMetadata> database = ArgumentCaptor.forClass(DatabaseMetadata.class);
+        verify(metadataCreation).save(database.capture(), any());
+        assertEquals("quiet-mango", database.getValue().getDisplayName());
     }
 
     private CreateDatabaseRequest request() {

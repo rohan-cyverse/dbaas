@@ -11,7 +11,6 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
-import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -19,23 +18,14 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 public class OrganizationService {
-    private static final String[] ADJECTIVES = {
-            "amber", "bright", "calm", "cobalt", "coral", "golden", "indigo", "jade",
-            "lunar", "misty", "north", "quiet", "silver", "solar", "swift", "velvet"
-    };
-    private static final String[] NOUNS = {
-            "birch", "comet", "harbor", "mango", "meadow", "orchid", "otter", "river",
-            "summit", "tiger", "valley", "willow", "zephyr", "cedar", "lagoon", "maple"
-    };
-
     private final OrganizationMetadataRepository organizationRepository;
-    private final SecureRandom random = new SecureRandom();
+    private final FriendlyNameGenerator friendlyNameGenerator;
 
     public OrganizationResponse create(CreateOrganizationRequest request) {
         Instant now = Instant.now();
         OrganizationMetadata organization = new OrganizationMetadata();
         organization.setOrganizationId("org-" + shortId());
-        organization.setDisplayName(blank(request.displayName()) ? friendlyName() : request.displayName().trim());
+        organization.setDisplayName(blank(request.displayName()) ? friendlyNameGenerator.next() : request.displayName().trim());
         organization.setDescription(request.description());
         organization.setStatus(ResourceStatus.ACTIVE);
         organization.setCreatedAt(now);
@@ -69,11 +59,6 @@ public class OrganizationService {
                     "Organization " + organizationId + " is not active");
         }
         return organization;
-    }
-
-    private String friendlyName() {
-        return ADJECTIVES[random.nextInt(ADJECTIVES.length)] + "-"
-                + NOUNS[random.nextInt(NOUNS.length)];
     }
 
     private boolean blank(String value) {

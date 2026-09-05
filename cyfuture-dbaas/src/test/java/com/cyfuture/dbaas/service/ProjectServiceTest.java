@@ -25,6 +25,7 @@ class ProjectServiceTest {
     private ProjectMetadataRepository projectRepository;
     private DatabaseMetadataRepository databaseRepository;
     private OrganizationService organizationService;
+    private FriendlyNameGenerator friendlyNames;
     private ProjectService service;
 
     @BeforeEach
@@ -32,7 +33,8 @@ class ProjectServiceTest {
         projectRepository = mock(ProjectMetadataRepository.class);
         databaseRepository = mock(DatabaseMetadataRepository.class);
         organizationService = mock(OrganizationService.class);
-        service = new ProjectService(projectRepository, databaseRepository, organizationService,
+        friendlyNames = mock(FriendlyNameGenerator.class);
+        service = new ProjectService(projectRepository, databaseRepository, organizationService, friendlyNames,
                 new DatabaseProperties());
         when(projectRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
     }
@@ -59,5 +61,14 @@ class ProjectServiceTest {
 
         service.delete("orders");
         assertEquals(ResourceStatus.DELETING, project.getStatus());
+    }
+
+    @Test
+    void generatesFriendlyProjectDisplayNameWhenOmitted() {
+        when(friendlyNames.next()).thenReturn("amber-river");
+
+        var project = service.create("org-amber001", new CreateProjectRequest(null, "Development project"));
+
+        assertEquals("amber-river", project.displayName());
     }
 }

@@ -31,6 +31,7 @@ public class ProjectService {
     private final ProjectMetadataRepository projectRepository;
     private final DatabaseMetadataRepository databaseRepository;
     private final OrganizationService organizationService;
+    private final FriendlyNameGenerator friendlyNameGenerator;
     private final DatabaseProperties properties;
 
     public ProjectResponse create(CreateProjectRequest request) {
@@ -45,7 +46,7 @@ public class ProjectService {
         project.setOrganizationId(organizationId);
         // projectName is retained as the legacy lookup column, but is now the immutable ID.
         project.setProjectName(project.getProjectId());
-        project.setDisplayName(request.displayName());
+        project.setDisplayName(blank(request.displayName()) ? friendlyNameGenerator.next() : request.displayName().trim());
         project.setDescription(request.description());
         project.setNamespaceName(namespaceFor(project.getProjectId()));
         project.setStatus(ResourceStatus.PROVISIONING);
@@ -122,6 +123,10 @@ public class ProjectService {
 
     private String shortId() {
         return UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+    }
+
+    private boolean blank(String value) {
+        return value == null || value.isBlank();
     }
 
     private String sha256(String value) {
