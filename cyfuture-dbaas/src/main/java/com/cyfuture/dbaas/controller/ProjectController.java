@@ -1,8 +1,10 @@
 package com.cyfuture.dbaas.controller;
 
 import com.cyfuture.dbaas.dto.CreateProjectRequest;
+import com.cyfuture.dbaas.dto.DeleteProjectResponse;
 import com.cyfuture.dbaas.dto.ProjectResponse;
 import com.cyfuture.dbaas.dto.UpdateProjectRequest;
+import com.cyfuture.dbaas.model.ResourceStatus;
 import com.cyfuture.dbaas.service.ProjectService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -57,9 +59,14 @@ public class ProjectController {
     }
 
     @DeleteMapping("/{project}")
-    @Operation(summary = "Delete a project and immediately request deletion of its namespace")
-    public ResponseEntity<Void> delete(@PathVariable String project) {
-        projectService.delete(project);
-        return ResponseEntity.noContent().build();
+    @Operation(
+            summary = "Delete a project and immediately request deletion of its namespace",
+            description = "Returns the project deletion state. Database cleanup and namespace removal continue asynchronously."
+    )
+    public ResponseEntity<DeleteProjectResponse> delete(@PathVariable String project) {
+        DeleteProjectResponse response = projectService.delete(project);
+        HttpStatus status = response.status() == ResourceStatus.DELETED
+                ? HttpStatus.OK : HttpStatus.ACCEPTED;
+        return ResponseEntity.status(status).body(response);
     }
 }

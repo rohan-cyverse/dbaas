@@ -50,6 +50,10 @@ public class GlobalExceptionHandler {
         return switch (exception.getCode()) {
             case "DATABASE_NOT_READY" -> "Database is not ready.";
             case "PUBLIC_ENDPOINT_NOT_READY" -> "Public endpoint is not ready.";
+            case "DELETION_PROTECTION_ENABLED" ->
+                    "Deletion protection is enabled for this database. Disable it before deleting.";
+            case "RESTART_REQUEST_BODY_NOT_ALLOWED" ->
+                    "Restart requests do not accept a request body. Retry without a body to restart the full database.";
             case "PROJECT_DELETION_IN_PROGRESS" -> "Project deletion is in progress.";
             case "VALIDATION_FAILED", "INVALID_REQUEST_BODY" -> "The request is invalid.";
             default -> switch (exception.getStatus().value()) {

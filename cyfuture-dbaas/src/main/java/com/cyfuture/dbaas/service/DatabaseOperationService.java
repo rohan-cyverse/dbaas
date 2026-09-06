@@ -3,7 +3,6 @@ package com.cyfuture.dbaas.service;
 import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.dto.HorizontalScalingRequest;
 import com.cyfuture.dbaas.dto.OperationResponse;
-import com.cyfuture.dbaas.dto.RestartRequest;
 import com.cyfuture.dbaas.dto.StorageExpansionRequest;
 import com.cyfuture.dbaas.dto.VerticalScalingRequest;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
@@ -122,24 +121,17 @@ public class DatabaseOperationService {
 
     @Transactional
     public OperationResponse restart(String project, String databaseId,
-                                     String idempotencyKey,
-                                     RestartRequest request) {
-        String componentName = request == null ? null : request.componentName();
-        String hash = requestHash("restart", componentName == null ? "" : componentName);
+                                     String idempotencyKey) {
+        // Preserve the legacy full-restart hash so a retry with an existing
+        // Idempotency-Key still returns its original operation after upgrade.
+        String hash = requestHash("restart", "");
         OperationMetadata operation = prepare(project, databaseId, idempotencyKey,
                 hash, OperationType.RESTART);
         if (operation.getRequestHash() != null) return operationMapper.toResponse(operation);
 
         DatabaseMetadata database = operationDatabase(project, databaseId);
-        if (componentName == null || componentName.isBlank()) {
-            kubeBlocksClient.componentNames(database.getNamespaceName(), databaseId);
-        } else {
-            operation.setComponentName(kubeBlocksClient.requireComponent(
-                    database.getNamespaceName(), databaseId, componentName).name());
-        }
-        return queue(operation, hash, componentName == null || componentName.isBlank()
-                ? "Database restart request queued"
-                : "Component restart request queued");
+        kubeBlocksClient.componentNames(database.getNamespaceName(), databaseId);
+        return queue(operation, hash, "Database restart request queued");
     }
 
     private OperationMetadata prepare(String project, String databaseId,

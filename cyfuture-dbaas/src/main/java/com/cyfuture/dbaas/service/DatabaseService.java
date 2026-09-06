@@ -265,8 +265,9 @@ public class DatabaseService {
             return deletionResponse(database);
         }
         if (database.isDeletionProtection()) {
-            throw new ApiException(HttpStatus.CONFLICT,
-                    "Deletion protection is enabled for " + databaseId);
+            throw new ApiException(HttpStatus.CONFLICT, "DELETION_PROTECTION_ENABLED", false,
+                    "Deletion protection is enabled for " + databaseId
+                            + ". Disable it before deleting.");
         }
         operationRepository.findByDatabaseIdAndProjectNameAndStatusIn(databaseId, project,
                         List.of(OperationStatus.PENDING, OperationStatus.RUNNING))

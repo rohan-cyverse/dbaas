@@ -2,7 +2,6 @@ package com.cyfuture.dbaas.service;
 
 import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.dto.HorizontalScalingRequest;
-import com.cyfuture.dbaas.dto.RestartRequest;
 import com.cyfuture.dbaas.dto.StorageExpansionRequest;
 import com.cyfuture.dbaas.dto.VerticalScalingRequest;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
@@ -29,6 +28,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -109,11 +109,23 @@ class DatabaseOperationServiceTest {
                 "db-orders0001", "orders", "restart-orders-001"))
                 .thenReturn(Optional.of(existing));
 
-        var response = service.restart("orders", "db-orders0001",
-                "restart-orders-001", new RestartRequest(null));
+        var response = service.restart("orders", "db-orders0001", "restart-orders-001");
 
         assertEquals(existing.getOperationId(), response.operationId());
         verify(submitter, never()).submit(anyString());
+    }
+
+    @Test
+    void restartAlwaysQueuesTheWholeDatabase() {
+        var response = service.restart("orders", "db-orders0001", "restart-orders-002");
+
+        ArgumentCaptor<OperationMetadata> saved = ArgumentCaptor.forClass(OperationMetadata.class);
+        verify(operationRepository).save(saved.capture());
+        assertEquals(OperationType.RESTART, saved.getValue().getType());
+        assertNull(saved.getValue().getComponentName());
+        assertEquals(OperationStatus.PENDING, response.status());
+        verify(kubeBlocksClient).componentNames("dbaas-orders", "db-orders0001");
+        verify(submitter).submit(saved.getValue().getOperationId());
     }
 
     @Test

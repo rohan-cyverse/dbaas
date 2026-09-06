@@ -91,8 +91,12 @@ class ProjectServiceTest {
         when(kubeBlocksClient.projectNamespaceExists(
                 "dbaas-p-prj-orders0001", "prj-orders0001")).thenReturn(true);
 
-        service.delete("prj-orders0001");
+        var response = service.delete("prj-orders0001");
         assertEquals(ResourceStatus.DELETING, project.getStatus());
+        assertEquals("prj-orders0001", response.projectId());
+        assertEquals(ResourceStatus.DELETING, response.status());
+        assertEquals("Project deletion has been requested. Database cleanup and namespace removal are in progress.",
+                response.message());
         verify(kubeBlocksClient).deleteProjectNamespace(
                 "dbaas-p-prj-orders0001", "prj-orders0001");
         assertFalse(database.isDeletionProtection());

@@ -897,56 +897,6 @@
           }
         },
         {
-          "name": "Restart Component",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "pm.test('Operation accepted', function () { pm.response.to.have.status(202); });",
-                  "if (pm.response.code === 202) {",
-                  "  const body = pm.response.json();",
-                  "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "}"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Idempotency-Key",
-                "value": "restart-component-{{$timestamp}}-{{$randomInt}}"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"componentName\": \"{{componentName}}\"\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restart",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "projects",
-                "{{projectId}}",
-                "databases",
-                "{{databaseId}}",
-                "restart"
-              ]
-            }
-          }
-        },
-        {
           "name": "Restart Database",
           "event": [
             {
@@ -969,16 +919,8 @@
               {
                 "key": "Idempotency-Key",
                 "value": "restart-database-{{$timestamp}}-{{$randomInt}}"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
               }
             ],
-            "body": {
-              "mode": "raw",
-              "raw": "{}"
-            },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restart",
               "host": [
@@ -993,7 +935,8 @@
                 "{{databaseId}}",
                 "restart"
               ]
-            }
+            },
+            "description": "Restarts every component in the database. Do not send a request body."
           }
         }
       ]
@@ -1169,7 +1112,24 @@
       }
     },
     {
-      "name": "Delete Project (only when empty)",
+      "name": "Delete Project",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Project deletion returns a status', function () { pm.expect([200, 202]).to.include(pm.response.code); });",
+              "if ([200, 202].includes(pm.response.code)) {",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.projectId).to.equal(pm.collectionVariables.get('projectId'));",
+              "  pm.expect(body.status).to.be.oneOf(['DELETING', 'DELETED']);",
+              "  pm.expect(body.message).to.be.a('string').and.not.empty;",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
       "request": {
         "method": "DELETE",
         "header": [],
@@ -1184,7 +1144,8 @@
             "projects",
             "{{projectId}}"
           ]
-        }
+        },
+        "description": "Returns a status body immediately. DBaaS deletes project databases and removes the namespace after database cleanup is complete."
       }
     }
   ]

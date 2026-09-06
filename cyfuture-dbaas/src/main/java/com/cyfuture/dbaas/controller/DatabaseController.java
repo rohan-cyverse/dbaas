@@ -7,9 +7,9 @@ import com.cyfuture.dbaas.dto.DatabaseResponse;
 import com.cyfuture.dbaas.dto.DeleteDatabaseResponse;
 import com.cyfuture.dbaas.dto.HorizontalScalingRequest;
 import com.cyfuture.dbaas.dto.OperationResponse;
-import com.cyfuture.dbaas.dto.RestartRequest;
 import com.cyfuture.dbaas.dto.StorageExpansionRequest;
 import com.cyfuture.dbaas.dto.VerticalScalingRequest;
+import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.service.ClientIpResolver;
 import com.cyfuture.dbaas.service.DatabaseOperationService;
 import com.cyfuture.dbaas.service.DatabaseService;
@@ -194,25 +194,23 @@ public class DatabaseController {
 
     @PostMapping("/{databaseId}/restart")
     @Operation(
-            summary = "Restart database components",
-            description = "Creates a KubeBlocks OpsRequest of type Restart. Omit componentName to restart the whole database."
+            summary = "Restart a database",
+            description = "Creates a KubeBlocks Restart OpsRequest for every component in the database. This endpoint does not accept a request body."
     )
     public ResponseEntity<OperationResponse> restart(
             @PathVariable String project,
             @PathVariable String databaseId,
             @Parameter(description = "Unique retry-safe key", example = "restart-orders-001")
             @RequestHeader("Idempotency-Key") String idempotencyKey,
-            @io.swagger.v3.oas.annotations.parameters.RequestBody(
-                    required = false,
-                    content = @io.swagger.v3.oas.annotations.media.Content(
-                            mediaType = "application/json",
-                            examples = @io.swagger.v3.oas.annotations.media.ExampleObject(
-                                    value = "{\"componentName\":\"postgresql\"}")))
-            @RequestBody(required = false) RestartRequest request
+            @RequestBody(required = false) Map<String, Object> requestBody
     ) {
+        if (requestBody != null && !requestBody.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "RESTART_REQUEST_BODY_NOT_ALLOWED", false,
+                    "Restart requests do not accept component selections.");
+        }
         return ResponseEntity.status(HttpStatus.ACCEPTED)
                 .body(databaseOperationService.restart(project, databaseId,
-                        idempotencyKey, request == null ? new RestartRequest(null) : request));
+                        idempotencyKey));
     }
 
     @GetMapping("/{databaseId}/connection")
@@ -273,7 +271,7 @@ public class DatabaseController {
     @DeleteMapping("/{databaseId}")
     @Operation(
             summary = "Delete a database",
-            description = "Deletion is rejected while deletion protection is enabled."
+            description = "Deletion is rejected with DELETION_PROTECTION_ENABLED while deletion protection is enabled."
     )
     public ResponseEntity<DeleteDatabaseResponse> delete(
             @PathVariable String project,

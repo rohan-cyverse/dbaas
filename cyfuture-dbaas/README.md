@@ -59,6 +59,8 @@ DELETE /api/v1/projects/{project}
 Deleting a project immediately clears DB-level deletion protection and requests deletion of its
 KubeBlocks Clusters. Once their finalizers have completed, DBaaS automatically requests deletion
 of its DBaaS-owned Kubernetes namespace. Empty projects request namespace deletion immediately.
+The delete endpoint returns `202 Accepted` with `projectId`, `status`, and a user-facing message
+while cleanup is in progress; it returns `200 OK` with `status: DELETED` once cleanup is complete.
 
 Create request:
 
@@ -111,6 +113,12 @@ The create response includes the final `name` alongside `databaseId` and `operat
 the UI can show the selected handle immediately.
 
 Public access is automatic. `allowedCidrs` may be omitted. In local development the API can discover the caller's public egress address. Behind Cyfuture.ai, disable that fallback and forward trusted proxy headers.
+
+If deletion protection is enabled, deleting the database returns `409 Conflict` with
+`code: DELETION_PROTECTION_ENABLED` and tells the caller to disable deletion protection first.
+
+The restart endpoint always restarts the full database and its KubeBlocks components. It accepts
+no request body; component-level restarts are not exposed by this API.
 
 ### Response boundary
 

@@ -49,10 +49,15 @@ class PublicResponseContractTest {
                 "op-123456789012", OperationType.CREATE, OperationStatus.RUNNING,
                 ProvisioningStage.CREATING_DATABASE, 25, "Operation is in progress.",
                 Instant.EPOCH, null, null));
+        String projectDeletionJson = objectMapper.writeValueAsString(new DeleteProjectResponse(
+                "prj-123456789012", ResourceStatus.DELETING, "Project deletion is in progress."));
 
         assertTrue(projectJson.contains("organizationId"));
         assertFalse(projectJson.contains("namespace"));
         assertFalse(operationJson.contains("databaseId"));
         assertFalse(operationJson.contains("project"));
+        assertTrue(projectDeletionJson.contains("projectId"));
+        assertTrue(projectDeletionJson.contains("DELETING"));
+        assertFalse(projectDeletionJson.contains("namespace"));
     }
 }

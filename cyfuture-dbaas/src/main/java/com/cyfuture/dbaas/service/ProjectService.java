@@ -3,6 +3,7 @@ package com.cyfuture.dbaas.service;
 import com.cyfuture.dbaas.config.DatabaseProperties;
 import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.dto.CreateProjectRequest;
+import com.cyfuture.dbaas.dto.DeleteProjectResponse;
 import com.cyfuture.dbaas.dto.ProjectResponse;
 import com.cyfuture.dbaas.dto.UpdateProjectRequest;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
@@ -74,9 +75,9 @@ public class ProjectService {
         return toResponse(projectRepository.save(metadata));
     }
 
-    public void delete(String project) {
+    public DeleteProjectResponse delete(String project) {
         ProjectMetadata metadata = requireOwnedProject(project);
-        if (metadata.getStatus() == ResourceStatus.DELETED) return;
+        if (metadata.getStatus() == ResourceStatus.DELETED) return deletionResponse(metadata);
         // Mark every child before infrastructure cleanup. The metadata rows stay
         // authoritative while Kubernetes removes the project namespace.
         List<DatabaseMetadata> databases = databaseRepository
@@ -96,6 +97,7 @@ public class ProjectService {
         metadata.setUpdatedAt(Instant.now());
         projectRepository.save(metadata);
         advanceDeletion(metadata, databases);
+        return deletionResponse(metadata);
     }
 
     /** Continues an asynchronous project deletion without revalidating user input. */
@@ -121,6 +123,15 @@ public class ProjectService {
             metadata.setUpdatedAt(Instant.now());
             projectRepository.save(metadata);
         }
+    }
+
+    private DeleteProjectResponse deletionResponse(ProjectMetadata metadata) {
+        if (metadata.getStatus() == ResourceStatus.DELETED) {
+            return new DeleteProjectResponse(metadata.getProjectId(), ResourceStatus.DELETED,
+                    "Project deletion is complete.");
+        }
+        return new DeleteProjectResponse(metadata.getProjectId(), ResourceStatus.DELETING,
+                "Project deletion has been requested. Database cleanup and namespace removal are in progress.");
     }
 
     public ProjectMetadata requireActiveProject(String project) {

@@ -160,6 +160,26 @@ class DatabaseServiceTest {
         verify(repository).save(database);
     }
 
+    @Test
+    void explainsWhenDatabaseDeletionIsBlockedByDeletionProtection() {
+        DatabaseMetadata database = new DatabaseMetadata();
+        database.setDatabaseId("db-orders0001");
+        database.setProjectName("orders");
+        database.setStatus(DatabaseStatus.RUNNING);
+        database.setProvisioningStage(ProvisioningStage.READY);
+        database.setDeletionProtection(true);
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.delete("orders", "db-orders0001"));
+
+        assertEquals(org.springframework.http.HttpStatus.CONFLICT, exception.getStatus());
+        assertEquals("DELETION_PROTECTION_ENABLED", exception.getCode());
+        assertEquals("Deletion protection is enabled for db-orders0001. Disable it before deleting.",
+                exception.getMessage());
+    }
+
     private CreateDatabaseRequest request() {
         return new CreateDatabaseRequest("orders-db", "Orders", DatabaseEngine.POSTGRESQL,
                 DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2, 10, 1, 0,

@@ -37,4 +37,34 @@ class GlobalExceptionHandlerTest {
         assertEquals("The requested resource was not found.", body.message());
         assertFalse(body.retryable());
     }
+
+    @Test
+    void deletionProtectionErrorExplainsHowToProceed() {
+        GlobalExceptionHandler handler = new GlobalExceptionHandler();
+
+        var response = handler.handleApiException(new ApiException(HttpStatus.CONFLICT,
+                "DELETION_PROTECTION_ENABLED", false, "internal detail"));
+        ApiErrorResponse body = response.getBody();
+
+        assertEquals(HttpStatus.CONFLICT, response.getStatusCode());
+        assertEquals("DELETION_PROTECTION_ENABLED", body.code());
+        assertEquals("Deletion protection is enabled for this database. Disable it before deleting.",
+                body.message());
+        assertFalse(body.retryable());
+    }
+
+    @Test
+    void componentRestartRequestsAreRejectedWithClearGuidance() {
+        GlobalExceptionHandler handler = new GlobalExceptionHandler();
+
+        var response = handler.handleApiException(new ApiException(HttpStatus.BAD_REQUEST,
+                "RESTART_REQUEST_BODY_NOT_ALLOWED", false, "internal detail"));
+        ApiErrorResponse body = response.getBody();
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+        assertEquals("RESTART_REQUEST_BODY_NOT_ALLOWED", body.code());
+        assertEquals("Restart requests do not accept a request body. Retry without a body to restart the full database.",
+                body.message());
+        assertFalse(body.retryable());
+    }
 }

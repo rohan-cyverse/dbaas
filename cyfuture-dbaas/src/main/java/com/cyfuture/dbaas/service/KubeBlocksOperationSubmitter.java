@@ -44,7 +44,7 @@ public class KubeBlocksOperationSubmitter {
                 case STORAGE_EXPANSION -> submitStorage(database, operation);
                 case RESTART -> kubeBlocksClient.createRestartOpsRequest(
                         database.getNamespaceName(), database.getDatabaseId(), operation.getOpsRequestName(),
-                        restartComponents(database, operation));
+                        restartComponents(database));
                 default -> throw new IllegalStateException("Unsupported KubeBlocks operation " + operation.getType());
             }
 
@@ -100,12 +100,8 @@ public class KubeBlocksOperationSubmitter {
                 operation.getVolumeName(), operation.getTargetStorageSize());
     }
 
-    private List<String> restartComponents(DatabaseMetadata database, OperationMetadata operation) {
-        if (operation.getComponentName() == null || operation.getComponentName().isBlank()) {
-            return kubeBlocksClient.componentNames(database.getNamespaceName(), database.getDatabaseId());
-        }
-        return List.of(kubeBlocksClient.requireComponent(database.getNamespaceName(),
-                database.getDatabaseId(), operation.getComponentName()).name());
+    private List<String> restartComponents(DatabaseMetadata database) {
+        return kubeBlocksClient.componentNames(database.getNamespaceName(), database.getDatabaseId());
     }
 
     private String safeMessage(Exception exception) {
