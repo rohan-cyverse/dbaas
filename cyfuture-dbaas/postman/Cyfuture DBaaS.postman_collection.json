@@ -1,51 +1,18 @@
 {
   "info": {
-    "_postman_id": "2b9fb3b4-4dd5-4b58-8df7-f8793713c0b2",
-    "name": "Cyfuture DBaaS - Organizations, Projects and Databases",
+    "_postman_id": "321fcd7f-040f-4080-86b7-8c66abbfad9f",
+    "name": "Cyfuture DBaaS",
     "description": "DBaaS creates and manages the default organization in the backend. Project responses expose organizationId, and every project is server-bound to that organization. Immutable IDs (org-xxxx, prj-xxxx, db-xxxx) identify resources; database names are human-facing handles. Omit a database name to receive a unique engine-prefixed handle. Keep an Idempotency-Key unchanged only when retrying the exact same infrastructure request.",
-    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "56329818",
+    "_collection_link": "https://go.postman.co/collection/56329818-321fcd7f-040f-4080-86b7-8c66abbfad9f?source=collection_link"
   },
-  "variable": [
-    {
-      "key": "baseUrl",
-      "value": "http://localhost:8080"
-    },
-    {
-      "key": "projectId",
-      "value": ""
-    },
-    {
-      "key": "organizationId",
-      "value": ""
-    },
-    {
-      "key": "databaseId",
-      "value": ""
-    },
-    {
-      "key": "operationId",
-      "value": ""
-    },
-    {
-      "key": "componentName",
-      "value": "postgresql"
-    },
-    {
-      "key": "volumeName",
-      "value": "data"
-    },
-    {
-      "key": "newStorageSize",
-      "value": "30Gi"
-    }
-  ],
   "item": [
     {
-      "name": "1. Organization Settings and Project Creation",
-      "description": "The organization is created and selected by the backend. There is no user-facing create, list, or organization-selection request. Users may only update its display name and description; projects are always bound to its immutable organizationId.",
+      "name": "Organization and Project",
       "item": [
         {
-          "name": "Get Backend-Managed Organization",
+          "name": "Get Organization",
           "event": [
             {
               "listen": "test",
@@ -78,10 +45,11 @@
               ]
             },
             "description": "Returns the backend-managed default organization. If the seed has not yet run, the backend creates it with an immutable ID and a friendly display name."
-          }
+          },
+          "response": []
         },
         {
-          "name": "Update Organization Name and Description",
+          "name": "Update Organization",
           "request": {
             "method": "PUT",
             "header": [
@@ -106,7 +74,8 @@
               ]
             },
             "description": "Only displayName and description are accepted. The backend-managed organization ID, status, and project ownership cannot be changed by this API."
-          }
+          },
+          "response": []
         },
         {
           "name": "Create Project",
@@ -151,97 +120,120 @@
               ]
             },
             "description": "Only displayName and description are accepted. The backend assigns the default organization, projectId, and namespace internally. Omit displayName if you want a generated friendly name."
-          }
-        }
-      ]
-    },
-    {
-      "name": "2. List Projects",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "url": {
-          "raw": "{{baseUrl}}/api/v1/projects",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "v1",
-            "projects"
-          ]
-        }
-      }
-    },
-    {
-      "name": "Get Project",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "v1",
-            "projects",
-            "{{projectId}}"
-          ]
-        }
-      }
-    },
-    {
-      "name": "Update Project",
-      "request": {
-        "method": "PUT",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"displayName\": \"Updated Test Project\",\n  \"description\": \"Updated project details\"\n}"
+          },
+          "response": []
         },
-        "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}",
-          "host": [
-            "{{baseUrl}}"
+        {
+          "name": "Get Project",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List Projects",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Update Project",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"displayName\": \"Updated Test Project\",\n  \"description\": \"Updated project details\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Project",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Project deletion returns a status', function () { pm.expect([200, 202]).to.include(pm.response.code); });",
+                  "if ([200, 202].includes(pm.response.code)) {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.projectId).to.equal(pm.collectionVariables.get('projectId'));",
+                  "  pm.expect(body.status).to.be.oneOf(['DELETING', 'DELETED']);",
+                  "  pm.expect(body.message).to.be.a('string').and.not.empty;",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
           ],
-          "path": [
-            "api",
-            "v1",
-            "projects",
-            "{{projectId}}"
-          ]
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}"
+              ]
+            },
+            "description": "Returns a status body immediately. DBaaS deletes project databases and removes the namespace after database cleanup is complete."
+          },
+          "response": []
         }
-      }
+      ],
+      "description": "The organization is created and selected by the backend. There is no user-facing create, list, or organization-selection request. Users may only update its display name and description; projects are always bound to its immutable organizationId."
     },
     {
-      "name": "Database Options",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "url": {
-          "raw": "{{baseUrl}}/api/v1/databases/options",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "v1",
-            "databases",
-            "options"
-          ]
-        }
-      }
-    },
-    {
-      "name": "Database Provisioning - All Engines and Modes",
-      "description": "Create examples for all engine/mode combinations supported by the backend. Name is optional: omitted names receive a unique engine-prefixed handle. Each successful request stores databaseId and operationId for the lifecycle requests below.",
+      "name": "Database Provisioning",
       "item": [
         {
           "name": "Create PostgreSQL - Standalone",
@@ -299,7 +291,8 @@
               ]
             },
             "description": "Deploys POSTGRESQL in STANDALONE mode. Run Database Options first to verify the versions installed on the target cluster."
-          }
+          },
+          "response": []
         },
         {
           "name": "Create PostgreSQL - Replication",
@@ -356,7 +349,8 @@
               ]
             },
             "description": "Deploys POSTGRESQL in REPLICATION mode. Run Database Options first to verify the versions installed on the target cluster."
-          }
+          },
+          "response": []
         },
         {
           "name": "Create MySQL - Standalone",
@@ -413,7 +407,8 @@
               ]
             },
             "description": "Deploys MYSQL in STANDALONE mode. Run Database Options first to verify the versions installed on the target cluster."
-          }
+          },
+          "response": []
         },
         {
           "name": "Create MySQL - Replication",
@@ -470,7 +465,8 @@
               ]
             },
             "description": "Deploys MYSQL in REPLICATION mode. Run Database Options first to verify the versions installed on the target cluster."
-          }
+          },
+          "response": []
         },
         {
           "name": "Create MongoDB - Standalone",
@@ -527,7 +523,8 @@
               ]
             },
             "description": "Deploys MONGODB in STANDALONE mode. Run Database Options first to verify the versions installed on the target cluster."
-          }
+          },
+          "response": []
         },
         {
           "name": "Create MongoDB - Replica Set",
@@ -584,7 +581,8 @@
               ]
             },
             "description": "Deploys MONGODB in REPLICA_SET mode. Run Database Options first to verify the versions installed on the target cluster."
-          }
+          },
+          "response": []
         },
         {
           "name": "Create MongoDB - Sharding",
@@ -641,109 +639,14 @@
               ]
             },
             "description": "Deploys MONGODB in SHARDING mode. Run Database Options first to verify the versions installed on the target cluster."
-          }
+          },
+          "response": []
         }
-      ]
+      ],
+      "description": "Create examples for all engine/mode combinations supported by the backend. Name is optional: omitted names receive a unique engine-prefixed handle. Each successful request stores databaseId and operationId for the lifecycle requests below."
     },
     {
-      "name": "List Project Databases",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "v1",
-            "projects",
-            "{{projectId}}",
-            "databases"
-          ]
-        }
-      }
-    },
-    {
-      "name": "Get Database",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "v1",
-            "projects",
-            "{{projectId}}",
-            "databases",
-            "{{databaseId}}"
-          ]
-        }
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "exec": [
-              "pm.test('Database status returned', function () { pm.response.to.have.status(200); });",
-              "const body = pm.response.json();",
-              "pm.test('Progress contract is present', function () {",
-              "  pm.expect(body.stage).to.be.a('string');",
-              "  pm.expect(body.progress).to.be.within(0, 100);",
-              "});"
-            ],
-            "type": "text/javascript"
-          }
-        }
-      ]
-    },
-    {
-      "name": "Get Operation",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/operations/{{operationId}}",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "v1",
-            "projects",
-            "{{projectId}}",
-            "databases",
-            "{{databaseId}}",
-            "operations",
-            "{{operationId}}"
-          ]
-        }
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "exec": [
-              "pm.test('Operation status returned', function () { pm.response.to.have.status(200); });",
-              "const body = pm.response.json();",
-              "pm.test('Operation progress is present', function () {",
-              "  pm.expect(body.stage).to.be.a('string');",
-              "  pm.expect(body.progress).to.be.within(0, 100);",
-              "});"
-            ],
-            "type": "text/javascript"
-          }
-        }
-      ]
-    },
-    {
-      "name": "KubeBlocks Operations",
-      "description": "Project-scoped KubeBlocks OpsRequest examples. Set databaseId to a RUNNING database first. Vertical scaling uses PreferInPlace and safely falls back to a replication-aware pod recreation when required. For MongoDB sharding use componentName values such as mongos, config-server or shard.",
+      "name": "Scaling & Expansion",
       "item": [
         {
           "name": "Vertical Scaling",
@@ -794,7 +697,8 @@
               ]
             },
             "description": "KubeBlocks first prefers an in-place resize. If that is unsupported, DBaaS allows a replication-safe pod recreation. Poll Get Operation: it succeeds only after ready pods report the requested CPU and memory, and InstanceUpdateRestricted is surfaced instead of leaving the operation RUNNING indefinitely."
-          }
+          },
+          "response": []
         },
         {
           "name": "Horizontal Scaling",
@@ -844,7 +748,8 @@
                 "horizontal-scaling"
               ]
             }
-          }
+          },
+          "response": []
         },
         {
           "name": "Storage Expansion",
@@ -894,7 +799,93 @@
                 "storage-expansion"
               ]
             }
-          }
+          },
+          "response": []
+        }
+      ],
+      "description": "Project-scoped KubeBlocks OpsRequest examples. Set databaseId to a RUNNING database first. Vertical scaling uses PreferInPlace and safely falls back to a replication-aware pod recreation when required. For MongoDB sharding use componentName values such as mongos, config-server or shard."
+    },
+    {
+      "name": "Database Operations",
+      "item": [
+        {
+          "name": "Database Options",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/databases/options",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "databases",
+                "options"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Database",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Database status returned', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Progress contract is present', function () {",
+                  "  pm.expect(body.stage).to.be.a('string');",
+                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List Project Databases",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases"
+              ]
+            }
+          },
+          "response": []
         },
         {
           "name": "Restart Database",
@@ -937,216 +928,265 @@
               ]
             },
             "description": "Restarts every component in the database. Do not send a request body."
-          }
+          },
+          "response": []
+        },
+        {
+          "name": "Disable Deletion Protection",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/deletion-protection?enabled=false",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "deletion-protection"
+              ],
+              "query": [
+                {
+                  "key": "enabled",
+                  "value": "false"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Enable Deletion Protection",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/deletion-protection?enabled=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "deletion-protection"
+              ],
+              "query": [
+                {
+                  "key": "enabled",
+                  "value": "true"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Database",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Deletion accepted', function () { pm.response.to.have.status(202); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}"
+              ]
+            },
+            "description": "Disable deletion protection before calling this endpoint. DBaaS keeps the database in DELETING until the KubeBlocks Cluster and all database-specific credential/helper resources are gone; shared services and KubeBlocks child resources are not manually deleted."
+          },
+          "response": []
         }
       ]
     },
     {
-      "name": "List Database Operations",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/operations",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "v1",
-            "projects",
-            "{{projectId}}",
-            "databases",
-            "{{databaseId}}",
-            "operations"
-          ]
-        }
-      }
-    },
-    {
-      "name": "Get Connection",
-      "request": {
-        "method": "GET",
-        "header": [],
-        "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/connection",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "v1",
-            "projects",
-            "{{projectId}}",
-            "databases",
-            "{{databaseId}}",
-            "connection"
-          ]
-        }
-      }
-    },
-    {
-      "name": "Rotate Credentials",
-      "event": [
+      "name": "Credentials and Operations",
+      "item": [
         {
-          "listen": "test",
-          "script": {
-            "exec": [
-              "if (pm.response.code === 202) {",
-              "  const body = pm.response.json();",
-              "  pm.collectionVariables.set('operationId', body.operationId);",
-              "}"
-            ],
-            "type": "text/javascript"
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [],
-        "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/credentials/rotate",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "v1",
-            "projects",
-            "{{projectId}}",
-            "databases",
-            "{{databaseId}}",
-            "credentials",
-            "rotate"
-          ]
-        }
-      }
-    },
-    {
-      "name": "Disable Deletion Protection",
-      "request": {
-        "method": "PUT",
-        "header": [],
-        "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/deletion-protection?enabled=false",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "v1",
-            "projects",
-            "{{projectId}}",
-            "databases",
-            "{{databaseId}}",
-            "deletion-protection"
-          ],
-          "query": [
+          "name": "Get Operation",
+          "event": [
             {
-              "key": "enabled",
-              "value": "false"
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Operation status returned', function () { pm.response.to.have.status(200); });",
+                  "const body = pm.response.json();",
+                  "pm.test('Operation progress is present', function () {",
+                  "  pm.expect(body.stage).to.be.a('string');",
+                  "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
             }
-          ]
-        }
-      }
-    },
-    {
-      "name": "Enable Deletion Protection",
-      "request": {
-        "method": "PUT",
-        "header": [],
-        "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/deletion-protection?enabled=true",
-          "host": [
-            "{{baseUrl}}"
           ],
-          "path": [
-            "api",
-            "v1",
-            "projects",
-            "{{projectId}}",
-            "databases",
-            "{{databaseId}}",
-            "deletion-protection"
-          ],
-          "query": [
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/operations/{{operationId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "operations",
+                "{{operationId}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List Database Operations",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/operations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "operations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Credentials",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/connection",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "connection"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Rotate Credentials",
+          "event": [
             {
-              "key": "enabled",
-              "value": "true"
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
             }
-          ]
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/credentials/rotate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "credentials",
+                "rotate"
+              ]
+            }
+          },
+          "response": []
         }
-      }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
     },
     {
-      "name": "Delete Database",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "exec": [
-              "pm.test('Deletion accepted', function () { pm.response.to.have.status(202); });"
-            ],
-            "type": "text/javascript"
-          }
-        }
-      ],
-      "request": {
-        "method": "DELETE",
-        "header": [],
-        "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "v1",
-            "projects",
-            "{{projectId}}",
-            "databases",
-            "{{databaseId}}"
-          ]
-        },
-        "description": "Disable deletion protection before calling this endpoint. DBaaS keeps the database in DELETING until the KubeBlocks Cluster and all database-specific credential/helper resources are gone; shared services and KubeBlocks child resources are not manually deleted."
-      }
+      "key": "projectId",
+      "value": ""
     },
     {
-      "name": "Delete Project",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "exec": [
-              "pm.test('Project deletion returns a status', function () { pm.expect([200, 202]).to.include(pm.response.code); });",
-              "if ([200, 202].includes(pm.response.code)) {",
-              "  const body = pm.response.json();",
-              "  pm.expect(body.projectId).to.equal(pm.collectionVariables.get('projectId'));",
-              "  pm.expect(body.status).to.be.oneOf(['DELETING', 'DELETED']);",
-              "  pm.expect(body.message).to.be.a('string').and.not.empty;",
-              "}"
-            ],
-            "type": "text/javascript"
-          }
-        }
-      ],
-      "request": {
-        "method": "DELETE",
-        "header": [],
-        "url": {
-          "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "v1",
-            "projects",
-            "{{projectId}}"
-          ]
-        },
-        "description": "Returns a status body immediately. DBaaS deletes project databases and removes the namespace after database cleanup is complete."
-      }
+      "key": "organizationId",
+      "value": ""
+    },
+    {
+      "key": "databaseId",
+      "value": ""
+    },
+    {
+      "key": "operationId",
+      "value": ""
+    },
+    {
+      "key": "componentName",
+      "value": "postgresql"
+    },
+    {
+      "key": "volumeName",
+      "value": "data"
+    },
+    {
+      "key": "newStorageSize",
+      "value": "30Gi"
     }
   ]
 }
