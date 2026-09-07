@@ -103,24 +103,22 @@ public class SharedGatewayService {
                         settings().getConfigMapName(), settings().getNamespace(), configMap)
                         .execute();
 
-            }
-
-            V1Deployment deployment = infrastructure.deployment();
-            Map<String, String> existingAnnotations = deployment.getSpec().getTemplate()
-                    .getMetadata().getAnnotations();
-            String deployedChecksum = existingAnnotations == null
-                    ? null : existingAnnotations.get(CHECKSUM);
-            if (!checksum.equals(deployedChecksum)) {
-                Map<String, String> annotations = deployment.getSpec().getTemplate()
+                V1Deployment deployment = infrastructure.deployment();
+                Map<String, String> existingAnnotations = deployment.getSpec().getTemplate()
                         .getMetadata().getAnnotations();
-                annotations = annotations == null
-                        ? new LinkedHashMap<>() : new LinkedHashMap<>(annotations);
-                annotations.put(CHECKSUM, checksum);
-                annotations.put("dbaas.cyfuture.com/reconciled-at", Instant.now().toString());
-                deployment.getSpec().getTemplate().getMetadata().setAnnotations(annotations);
-                appsV1Api.replaceNamespacedDeployment(
-                        settings().getDeploymentName(), settings().getNamespace(), deployment)
-                        .execute();
+                String deployedChecksum = existingAnnotations == null
+                        ? null : existingAnnotations.get(CHECKSUM);
+                if (!checksum.equals(deployedChecksum)) {
+                    Map<String, String> annotations = deployment.getSpec().getTemplate()
+                            .getMetadata().getAnnotations();
+                    annotations = annotations == null
+                            ? new LinkedHashMap<>() : new LinkedHashMap<>(annotations);
+                    annotations.put(CHECKSUM, checksum);
+                    deployment.getSpec().getTemplate().getMetadata().setAnnotations(annotations);
+                    appsV1Api.replaceNamespacedDeployment(
+                            settings().getDeploymentName(), settings().getNamespace(), deployment)
+                            .execute();
+                }
             }
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             throw kubernetesError("Could not update shared public gateway", exception);
