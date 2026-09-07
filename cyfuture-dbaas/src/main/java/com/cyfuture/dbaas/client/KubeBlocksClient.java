@@ -525,9 +525,22 @@ public class KubeBlocksClient {
                                              CreateDatabaseRequest request) {
         DatabaseProperties.EngineSettings settings = properties.engine(request.engine());
 
+//        Map<String, Object> resources = Map.of(
+//                "requests", Map.of("cpu", request.size().cpu(), "memory", request.size().memory()),
+//                "limits", Map.of("cpu", request.size().cpu(), "memory", request.size().memory()));
+
+
         Map<String, Object> resources = Map.of(
-                "requests", Map.of("cpu", request.size().cpu(), "memory", request.size().memory()),
-                "limits", Map.of("cpu", request.size().cpu(), "memory", request.size().memory()));
+                "requests", Map.of(
+                        "cpu", request.size().getCpuRequest(),
+                        "memory", request.size().getMemoryRequest()
+                ),
+                "limits", Map.of(
+                        "cpu", request.size().getCpuLimit(),
+                        "memory", request.size().getMemoryLimit()
+                )
+        );
+
 
         Map<String, Object> volume = Map.of(
                 "name", "data",
