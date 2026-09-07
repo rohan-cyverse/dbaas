@@ -14,6 +14,10 @@ import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.DesiredState;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.ProjectMetadataRepository;
+import com.cyfuture.dbaas.repository.BackupMetadataRepository;
+import com.cyfuture.dbaas.repository.RestoreRequestMetadataRepository;
+import com.cyfuture.dbaas.model.BackupStatus;
+import com.cyfuture.dbaas.model.RestoreStatus;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
@@ -36,6 +40,8 @@ public class ProjectService {
     private final FriendlyNameGenerator friendlyNameGenerator;
     private final DatabaseProperties properties;
     private final KubeBlocksClient kubeBlocksClient;
+    private final BackupMetadataRepository backupRepository;
+    private final RestoreRequestMetadataRepository restoreRepository;
 
     public ProjectResponse create(CreateProjectRequest request) {
         String organizationId = organizationService.requireDefaultOrganization().getOrganizationId();
@@ -78,6 +84,17 @@ public class ProjectService {
     public DeleteProjectResponse delete(String project) {
         ProjectMetadata metadata = requireOwnedProject(project);
         if (metadata.getStatus() == ResourceStatus.DELETED) return deletionResponse(metadata);
+        if (backupRepository.existsByProjectNameAndStatusIn(project,
+                List.of(BackupStatus.PENDING, BackupStatus.RUNNING, BackupStatus.COMPLETED,
+                        BackupStatus.FAILED, BackupStatus.DELETING))) {
+            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_BACKUPS_RETAINED", false,
+                    "Project deletion is blocked while retained backups exist. Purge those backups first.");
+        }
+        if (restoreRepository.existsByProjectNameAndStatusIn(project,
+                List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))) {
+            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_RESTORE_IN_PROGRESS", false,
+                    "Project deletion is blocked while a restore is active.");
+        }
         // Mark every child before infrastructure cleanup. The metadata rows stay
         // authoritative while Kubernetes removes the project namespace.
         List<DatabaseMetadata> databases = databaseRepository

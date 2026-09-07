@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "321fcd7f-040f-4080-86b7-8c66abbfad9f",
     "name": "Cyfuture DBaaS",
-    "description": "DBaaS creates and manages the default organization in the backend. Project responses expose organizationId, and every project is server-bound to that organization. Immutable IDs (org-xxxx, prj-xxxx, db-xxxx) identify resources; database names are human-facing handles. Omit a database name to receive a unique engine-prefixed handle. Keep an Idempotency-Key unchanged only when retrying the exact same infrastructure request.",
+    "description": "DBaaS creates and manages the default organization in the backend. Project responses expose organizationId, and every project is server-bound to that organization. Immutable IDs (org-xxxx, prj-xxxx, db-xxxx) identify resources; database names are human-facing handles. Omit a database name to receive a unique engine-prefixed handle. Keep an Idempotency-Key unchanged only when retrying the exact same infrastructure request. The Backup and Restore folder supports manual FULL backups only; wait for a COMPLETED backup before restoring it to a new database.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "_exporter_id": "56329818",
     "_collection_link": "https://go.postman.co/collection/56329818-321fcd7f-040f-4080-86b7-8c66abbfad9f?source=collection_link"
@@ -1026,6 +1026,239 @@
       ]
     },
     {
+      "name": "Backup and Restore",
+      "description": "Manual full backup flow: create the backup, poll Get Backup Status until status is COMPLETED, submit Restore Completed Backup, then poll Get Restore Operation until it succeeds. The restored database receives a new databaseId and never overwrites the source. Change the two idempotency-key variables only for genuinely new requests; retain them for retries.",
+      "item": [
+        {
+          "name": "Create Full Backup",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('backupId', body.backupId);",
+                  "  pm.collectionVariables.set('backupOperationId', body.operationId);",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{backupIdempotencyKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"FULL\",\n  \"retention\": \"7d\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/backups",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "backups"
+              ]
+            },
+            "description": "Requires a RUNNING PostgreSQL, MySQL, or MongoDB database. Returns 202 and stores backupId plus operationId in collection variables. FULL is the only currently enabled type; retention accepts KubeBlocks durations such as 7d, 24h, or 1mo7d."
+          },
+          "response": []
+        },
+        {
+          "name": "List Backups",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/backups",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "backups"
+              ]
+            },
+            "description": "Lists safe backup metadata. Responses deliberately exclude object-storage credentials, encryption material, Kubernetes Secrets, and database passwords."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Backup Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/backups/{{backupId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "backups",
+                "{{backupId}}"
+              ]
+            },
+            "description": "Poll until status is COMPLETED or FAILED. DBaaS does not report COMPLETED until KubeBlocks reports the Backup resource successful."
+          },
+          "response": []
+        },
+        {
+          "name": "Restore Completed Backup",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('restoreId', body.restoreId);",
+                  "  pm.collectionVariables.set('restoreOperationId', body.operationId);",
+                  "  pm.collectionVariables.set('restoredDatabaseId', body.databaseId);",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{restoreIdempotencyKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"orders-restore\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/backups/{{backupId}}/restore",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "backups",
+                "{{backupId}}",
+                "restore"
+              ]
+            },
+            "description": "Requires a COMPLETED backup. It creates a new database and never overwrites the source. Do not include restoreTime: PITR is not enabled in this release. The response stores the new databaseId and global operation ID."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Restore Operation",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/operations/{{restoreOperationId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "operations",
+                "{{restoreOperationId}}"
+              ]
+            },
+            "description": "Poll until status is SUCCEEDED or FAILED. A successful restore means the KubeBlocks restore, restored Cluster, managed credentials, and shared public route are all ready."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Restored Database",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{restoredDatabaseId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{restoredDatabaseId}}"
+              ]
+            },
+            "description": "Use this new database ID for normal DBaaS lifecycle and connection requests after the restore operation succeeds."
+          },
+          "response": []
+        },
+        {
+          "name": "Purge Backup",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/backups/{{backupId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "backups",
+                "{{backupId}}"
+              ]
+            },
+            "description": "Explicit asynchronous purge. It removes only the known DBaaS-owned KubeBlocks Backup resource and its policy-managed backup data. It is blocked while a restore from this backup is active."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
       "name": "Credentials and Operations",
       "item": [
         {
@@ -1175,6 +1408,34 @@
     {
       "key": "operationId",
       "value": ""
+    },
+    {
+      "key": "backupId",
+      "value": ""
+    },
+    {
+      "key": "backupOperationId",
+      "value": ""
+    },
+    {
+      "key": "backupIdempotencyKey",
+      "value": "backup-manual-20260907-001"
+    },
+    {
+      "key": "restoreId",
+      "value": ""
+    },
+    {
+      "key": "restoreOperationId",
+      "value": ""
+    },
+    {
+      "key": "restoredDatabaseId",
+      "value": ""
+    },
+    {
+      "key": "restoreIdempotencyKey",
+      "value": "restore-manual-20260907-001"
     },
     {
       "key": "componentName",

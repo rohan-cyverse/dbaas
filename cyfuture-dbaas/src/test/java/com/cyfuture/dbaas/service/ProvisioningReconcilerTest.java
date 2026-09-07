@@ -10,6 +10,7 @@ import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.ProvisioningStage;
 import com.cyfuture.dbaas.model.SizePlan;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
+import com.cyfuture.dbaas.repository.RestoreRequestMetadataRepository;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -27,8 +28,9 @@ class ProvisioningReconcilerTest {
     private final ProvisioningProgressService progress =
             mock(ProvisioningProgressService.class);
     private final SharedGatewayService gateway = mock(SharedGatewayService.class);
+    private final RestoreRequestMetadataRepository restores = mock(RestoreRequestMetadataRepository.class);
     private final ProvisioningReconciler reconciler = new ProvisioningReconciler(
-            repository, client, credentials, progress, gateway);
+            repository, client, credentials, progress, gateway, restores);
 
     @Test
     void completesOnlyAfterDatabaseCredentialsAndPublicEndpointAreReady() {

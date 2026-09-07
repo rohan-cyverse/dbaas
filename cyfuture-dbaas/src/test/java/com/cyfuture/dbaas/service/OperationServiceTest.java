@@ -27,7 +27,7 @@ class OperationServiceTest {
     @BeforeEach
     void setUp() {
         repository = mock(OperationMetadataRepository.class);
-        service = new OperationService(repository, new OperationMapper());
+        service = new OperationService(repository, new OperationMapper(), mock(ProjectService.class));
     }
 
     @Test

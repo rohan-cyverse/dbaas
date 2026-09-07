@@ -15,6 +15,15 @@ import java.util.List;
 public class OperationService {
     private final OperationMetadataRepository operationRepository;
     private final OperationMapper operationMapper;
+    private final ProjectService projectService;
+
+    public OperationResponse get(String operationId) {
+        var operation = operationRepository.findById(operationId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND,
+                        "Operation " + operationId + " was not found"));
+        projectService.requireActiveProject(operation.getProjectName());
+        return operationMapper.toResponse(operation);
+    }
 
     public OperationResponse get(String project, String operationId) {
         return operationMapper.toResponse(operationRepository

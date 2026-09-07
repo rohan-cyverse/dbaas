@@ -23,6 +23,10 @@ import com.cyfuture.dbaas.model.ProvisioningStage;
 import com.cyfuture.dbaas.model.DesiredState;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.OperationMetadataRepository;
+import com.cyfuture.dbaas.repository.BackupMetadataRepository;
+import com.cyfuture.dbaas.repository.RestoreRequestMetadataRepository;
+import com.cyfuture.dbaas.model.BackupStatus;
+import com.cyfuture.dbaas.model.RestoreStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -61,6 +65,8 @@ public class DatabaseService {
     private final SharedGatewayService sharedGatewayService;
     private final OperationMetadataRepository operationRepository;
     private final FriendlyNameGenerator friendlyNameGenerator;
+    private final BackupMetadataRepository backupRepository;
+    private final RestoreRequestMetadataRepository restoreRepository;
 
     public CreateDatabaseResponse create(String project, String idempotencyKey,
                                          CreateDatabaseRequest request) {
@@ -268,6 +274,15 @@ public class DatabaseService {
             throw new ApiException(HttpStatus.CONFLICT, "DELETION_PROTECTION_ENABLED", false,
                     "Deletion protection is enabled for " + databaseId
                             + ". Disable it before deleting.");
+        }
+        if (backupRepository.existsByProjectNameAndDatabaseIdAndStatusIn(project, databaseId,
+                List.of(BackupStatus.PENDING, BackupStatus.RUNNING, BackupStatus.DELETING))
+                || restoreRepository.existsByProjectNameAndSourceDatabaseIdAndStatusIn(project, databaseId,
+                List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))
+                || restoreRepository.existsByRestoredDatabaseIdAndStatusIn(databaseId,
+                List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))) {
+            throw new ApiException(HttpStatus.CONFLICT, "BACKUP_OR_RESTORE_IN_PROGRESS", false,
+                    "Database deletion is blocked while a backup or restore is active.");
         }
         operationRepository.findByDatabaseIdAndProjectNameAndStatusIn(databaseId, project,
                         List.of(OperationStatus.PENDING, OperationStatus.RUNNING))

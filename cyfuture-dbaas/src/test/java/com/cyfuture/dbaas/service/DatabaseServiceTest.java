@@ -15,6 +15,8 @@ import com.cyfuture.dbaas.model.ProvisioningStage;
 import com.cyfuture.dbaas.model.SizePlan;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.OperationMetadataRepository;
+import com.cyfuture.dbaas.repository.BackupMetadataRepository;
+import com.cyfuture.dbaas.repository.RestoreRequestMetadataRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -60,7 +62,8 @@ class DatabaseServiceTest {
         kubeBlocksClient = mock(KubeBlocksClient.class);
         service = new DatabaseService(kubeBlocksClient, properties, repository,
                 provisioning, metadataCreation, mock(CredentialLifecycleService.class),
-                projects, mock(SharedGatewayService.class), mock(OperationMetadataRepository.class), friendlyNames);
+                projects, mock(SharedGatewayService.class), mock(OperationMetadataRepository.class), friendlyNames,
+                mock(BackupMetadataRepository.class), mock(RestoreRequestMetadataRepository.class));
     }
 
     @Test

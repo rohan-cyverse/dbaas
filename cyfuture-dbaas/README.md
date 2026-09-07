@@ -1,6 +1,6 @@
 # Cyfuture DBaaS control plane
 
-Spring Boot control-plane API for provisioning PostgreSQL, MySQL and MongoDB through KubeBlocks.
+Spring Boot control-plane API for provisioning PostgreSQL, MySQL and MongoDB through KubeBlocks, including asynchronous manual full backup and restore-to-a-new-database workflows.
 
 ## Resource model
 
@@ -34,6 +34,9 @@ Each project receives one Kubernetes namespace. New projects use `dbaas-p-<proje
 - Permanent shared HAProxy/OpenStack LoadBalancer gateway
 - Automatic caller-IP CIDR selection in local development
 - Deletion protection
+- Asynchronous, idempotent KubeBlocks full backups using the platform-owned BackupRepo
+- Restore of a completed backup into a new database and public gateway route
+- Restart-safe backup and restore reconciliation with operation polling
 - Swagger UI and an updated Postman collection
 
 ## API routes
@@ -87,6 +90,7 @@ GET    /api/v1/projects/{projectId}/databases/{databaseId}/connection
 POST   /api/v1/projects/{projectId}/databases/{databaseId}/credentials/rotate
 PUT    /api/v1/projects/{projectId}/databases/{databaseId}/deletion-protection?enabled=false
 DELETE /api/v1/projects/{projectId}/databases/{databaseId}
+GET    /api/v1/operations/{operationId}
 ```
 
 Database creation requires an `Idempotency-Key` header. Example:
@@ -122,6 +126,188 @@ If deletion protection is enabled, deleting the database returns `409 Conflict` 
 
 The restart endpoint always restarts the full database and its KubeBlocks components. It accepts
 no request body; component-level restarts are not exposed by this API.
+
+### Backups and restore
+
+```text
+POST   /api/v1/projects/{projectId}/databases/{databaseId}/backups
+GET    /api/v1/projects/{projectId}/databases/{databaseId}/backups
+GET    /api/v1/projects/{projectId}/databases/{databaseId}/backups/{backupId}
+DELETE /api/v1/projects/{projectId}/databases/{databaseId}/backups/{backupId}
+
+POST   /api/v1/projects/{projectId}/databases/{databaseId}/backups/{backupId}/restore
+GET    /api/v1/operations/{operationId}
+```
+
+The current release supports manual FULL backups only. Every create or restore
+request requires an Idempotency-Key header of 8-128 letters, numbers, period,
+underscore, colon, or hyphen. Keep the exact key when retrying the same
+request; use a new key for a new backup or restore. Reusing a key with a
+different request returns IDEMPOTENCY_KEY_REUSED.
+
+Create a PostgreSQL full backup:
+
+```http
+POST /api/v1/projects/prj-123/databases/db-456/backups
+Idempotency-Key: backup-orders-20260907-001
+Content-Type: application/json
+
+{
+  "type": "FULL",
+  "retention": "7d"
+}
+```
+
+Retention is optional and uses a KubeBlocks duration, for example 7d, 24h,
+or 1mo7d. Omitting the request body uses the configured default of 7d.
+The server returns 202 Accepted, Location, Operation-Location, and Retry-After
+headers before it submits the KubeBlocks Backup resource:
+
+```json
+{
+  "operationId": "op-7d4cba9f4bd2",
+  "backupId": "bkp-0eb83c49ab21",
+  "status": "PENDING",
+  "statusUrl": "/api/v1/projects/prj-123/databases/db-456/backups/bkp-0eb83c49ab21",
+  "pollAfterSeconds": 5
+}
+```
+
+Poll statusUrl until status is COMPLETED or FAILED. A normal backup status is
+safe to display in a UI:
+
+```json
+{
+  "backupId": "bkp-0eb83c49ab21",
+  "operationId": "op-7d4cba9f4bd2",
+  "databaseId": "db-456",
+  "engine": "POSTGRESQL",
+  "type": "FULL",
+  "parentBackupId": null,
+  "backupChainId": "bkp-0eb83c49ab21",
+  "status": "COMPLETED",
+  "retention": "7d",
+  "sizeBytes": 3707917,
+  "message": "Backup completed."
+}
+```
+
+Create a restore only after the backup is COMPLETED:
+
+```http
+POST /api/v1/projects/prj-123/databases/db-456/backups/bkp-0eb83c49ab21/restore
+Idempotency-Key: restore-orders-20260907-001
+Content-Type: application/json
+
+{
+  "name": "orders-restore"
+}
+```
+
+The restore never overwrites db-456; it allocates a new databaseId and returns:
+
+```json
+{
+  "restoreId": "rst-4059d1a1f560",
+  "operationId": "op-5340ccaa2f58",
+  "databaseId": "db-7a011c19ca1b",
+  "status": "PENDING",
+  "statusUrl": "/api/v1/operations/op-5340ccaa2f58",
+  "pollAfterSeconds": 5
+}
+```
+
+Poll the global operation route. A restore reaches SUCCEEDED only after the
+KubeBlocks restore operation succeeds, the restored Cluster is healthy, managed
+credentials are ready, and the shared public gateway route is ready. Fetch the
+new database through its normal database route and obtain connection details
+only through its existing /connection endpoint.
+
+restoreTime is reserved for a future point-in-time restore request. It is
+rejected with PITR_NOT_AVAILABLE unless continuous backups are enabled; this
+release does not claim PITR support.
+
+#### Backup infrastructure and lifecycle safety
+
+DBaaS treats MySQL metadata as desired state and KubeBlocks resources as the
+observed infrastructure state. Backup objects are stored in the existing
+S3-compatible repository; DBaaS uses the existing Ready
+cyfuture-dbaas-backuprepo and only reads its status. It never creates, patches,
+or replaces that BackupRepo or its encryption configuration.
+
+The generated KubeBlocks BackupPolicy must expose the manual method appropriate
+to the engine:
+
+| Engine | Available manual full method | Reserved future methods |
+| --- | --- | --- |
+| PostgreSQL | pg-basebackup | wal-g-incremental, archive-wal |
+| MySQL | xtrabackup | xtrabackup-inc, archive-binlog |
+| MongoDB | dump | pbm-physical, archive-oplog, pbm-pitr |
+
+The reconciler independently resumes pending or running backups and restores
+after an application restart. It records PENDING, RUNNING, COMPLETED, FAILED,
+DELETING, and DELETED status without claiming backup completion until KubeBlocks
+reports success.
+
+Database deletion is blocked while a backup or restore is active. Completed and
+failed retained backups can survive source database deletion. Project namespace
+cleanup is blocked while retained backups exist. DELETE
+/backups/{backupId} is an explicit asynchronous purge: it deletes only the
+known DBaaS-owned KubeBlocks Backup resource using its delete policy, which
+removes its associated object-storage data. Unknown or orphan Kubernetes backup
+resources are never deleted automatically.
+
+Backup and restore responses never contain S3 credentials, encryption
+passphrases, Kubernetes Secrets, database passwords, or private endpoints.
+
+#### PowerShell: one PostgreSQL full backup and restore
+
+Replace the sample IDs with a running PostgreSQL database. The commands only
+call the DBaaS API; they do not use kubectl or kbcli.
+
+```powershell
+$baseUrl = "http://localhost:8080"
+$projectId = "prj-123"
+$sourceDatabaseId = "db-456"
+
+$backupHeaders = @{
+  "Content-Type" = "application/json"
+  "Idempotency-Key" = "backup-orders-20260907-001"
+}
+$backup = Invoke-RestMethod -Method POST -Uri "$baseUrl/api/v1/projects/$projectId/databases/$sourceDatabaseId/backups" -Headers $backupHeaders -Body '{"type":"FULL","retention":"7d"}'
+
+do {
+  Start-Sleep -Seconds $backup.pollAfterSeconds
+  $backupState = Invoke-RestMethod -Method GET -Uri "$baseUrl$($backup.statusUrl)"
+} while ($backupState.status -notin @("COMPLETED", "FAILED"))
+
+if ($backupState.status -ne "COMPLETED") {
+  throw "Backup did not complete: $($backupState.message)"
+}
+
+$restoreHeaders = @{
+  "Content-Type" = "application/json"
+  "Idempotency-Key" = "restore-orders-20260907-001"
+}
+$restore = Invoke-RestMethod -Method POST -Uri "$baseUrl/api/v1/projects/$projectId/databases/$sourceDatabaseId/backups/$($backup.backupId)/restore" -Headers $restoreHeaders -Body '{"name":"orders-restore"}'
+
+do {
+  Start-Sleep -Seconds $restore.pollAfterSeconds
+  $restoreState = Invoke-RestMethod -Method GET -Uri "$baseUrl$($restore.statusUrl)"
+} while ($restoreState.status -notin @("SUCCEEDED", "FAILED"))
+
+if ($restoreState.status -ne "SUCCEEDED") {
+  throw "Restore did not complete: $($restoreState.message)"
+}
+
+Invoke-RestMethod -Method GET -Uri "$baseUrl/api/v1/projects/$projectId/databases/$($restore.databaseId)"
+```
+
+Before enabling incremental backup, schedules, or PITR, configure and validate
+the corresponding KubeBlocks BackupPolicy methods and repository retention
+policy. The persisted policy fields and engine strategy abstraction are ready
+for that expansion, but no scheduler, incremental chain, WAL/binlog/oplog
+archive, or point-in-time recovery is enabled by this release.
 
 ### Response boundary
 
@@ -179,9 +365,11 @@ FLUSH PRIVILEGES;
 ```
 
 Flyway owns the metadata schema and Hibernate only validates it. A fresh
-database runs migrations `V1` through `V7` automatically. An existing
-installation already on the current pre-Flyway schema is safely baselined at
-`V6`, then receives the targeted `V7` cleanup. For a one-time upgrade
+database runs migrations `V1` through `V9` automatically. Migration `V9` is
+additive: it creates `backup_policies`, `backups`, and `restore_requests` for
+backup desired state, restore tracking, idempotency, retention, and safe
+failure metadata. It does not modify any already-applied migration. Existing
+installations apply it in the normal Flyway sequence. For a one-time upgrade
 from the older pre-lifecycle table layout, back up the metadata database and
 set `FLYWAY_BASELINE_VERSION=2` for that migration run.
 
@@ -213,7 +401,13 @@ HAProxy must accept OpenStack Proxy Protocol v2 on public database listeners. CI
 Import:
 
 ```text
-postman/cyfuture-dbaas.postman_collection.json
+postman/Cyfuture DBaaS.postman_collection.json
 ```
 
-The collection contains backend-managed organization settings, direct project creation, and all supported PostgreSQL, MySQL and MongoDB lifecycle requests. It intentionally has no organization-create or organization-selection request.
+The collection contains backend-managed organization settings, direct project creation,
+all supported PostgreSQL, MySQL and MongoDB lifecycle requests, and a
+**Backup and Restore** folder. Run the backup requests in this order: create a
+full backup, poll its status until COMPLETED, restore it, then poll the global
+restore operation. The folder stores returned IDs in collection variables and
+intentionally omits any request that would expose a password, private endpoint,
+repository credential, or encryption value.

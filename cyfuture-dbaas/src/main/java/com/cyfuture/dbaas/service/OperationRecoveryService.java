@@ -8,6 +8,8 @@ import com.cyfuture.dbaas.model.OperationType;
 import com.cyfuture.dbaas.model.OperationStatus;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.OperationMetadataRepository;
+import com.cyfuture.dbaas.repository.BackupMetadataRepository;
+import com.cyfuture.dbaas.repository.RestoreRequestMetadataRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
@@ -25,6 +27,11 @@ public class OperationRecoveryService {
     private final DatabaseMetadataRepository databaseRepository;
     private final AsyncProvisioningService provisioningService;
     private final KubeBlocksOperationSubmitter operationSubmitter;
+    private final BackupMetadataRepository backupRepository;
+    private final RestoreRequestMetadataRepository restoreRepository;
+    private final BackupSubmissionService backupSubmissionService;
+    private final BackupPurgeSubmitter backupPurgeSubmitter;
+    private final RestoreSubmissionService restoreSubmissionService;
 
     @EventListener(ApplicationReadyEvent.class)
     public void resumeInterruptedOperations() {
@@ -44,6 +51,15 @@ public class OperationRecoveryService {
                                     database.getDatabaseId(), database.getProjectName(),
                                     database.getNamespaceName(),
                                     request(database));
+                        } else if (operation.getType() == OperationType.BACKUP) {
+                            backupRepository.findByOperationId(operation.getOperationId())
+                                    .ifPresent(backup -> backupSubmissionService.submit(backup.getBackupId()));
+                        } else if (operation.getType() == OperationType.BACKUP_DELETE) {
+                            backupRepository.findByDeleteOperationId(operation.getOperationId())
+                                    .ifPresent(backup -> backupPurgeSubmitter.purge(backup.getBackupId()));
+                        } else if (operation.getType() == OperationType.RESTORE) {
+                            restoreRepository.findByOperationId(operation.getOperationId())
+                                    .ifPresent(restore -> restoreSubmissionService.submit(restore.getRestoreId()));
                         } else if (operation.getType() != OperationType.CREATE) {
                             operation.setStatus(OperationStatus.PENDING);
                             operation.setMessage("Resuming KubeBlocks operation after application restart");

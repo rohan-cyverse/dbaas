@@ -9,6 +9,7 @@ import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.ProvisioningStage;
 import com.cyfuture.dbaas.model.DesiredState;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
+import com.cyfuture.dbaas.repository.RestoreRequestMetadataRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -24,6 +25,7 @@ public class ProvisioningReconciler {
     private final CredentialLifecycleService credentialLifecycleService;
     private final ProvisioningProgressService progressService;
     private final SharedGatewayService sharedGatewayService;
+    private final RestoreRequestMetadataRepository restoreRepository;
 
     @Scheduled(fixedDelayString = "${dbaas.provisioning-reconcile-ms:5000}")
     public void reconcile() {
@@ -37,6 +39,11 @@ public class ProvisioningReconciler {
         if (database.getDesiredState() == DesiredState.DELETED
                 || database.getStatus() == DatabaseStatus.DELETING
                 || database.getStatus() == DatabaseStatus.DELETED) return;
+        // RestoreReconciler alone promotes a restored database to RUNNING. A
+        // Cluster can report Running before its Restore OpsRequest is finished.
+        if (restoreRepository.existsByRestoredDatabaseIdAndStatusIn(database.getDatabaseId(),
+                java.util.List.of(com.cyfuture.dbaas.model.RestoreStatus.PENDING,
+                        com.cyfuture.dbaas.model.RestoreStatus.RUNNING))) return;
         try {
             DatabaseObservation live = kubeBlocksClient.get(
                     database.getNamespaceName(), database.getDatabaseId());

@@ -17,6 +17,7 @@ public class DatabaseProperties {
     private String namespacePrefix = "dbaas-p-";
     private String storageClass = "cinder-sc";
     private GatewaySettings gateway = new GatewaySettings();
+    private BackupSettings backup = new BackupSettings();
     private EngineSettings postgresql = new EngineSettings();
     private EngineSettings mysql = new EngineSettings();
     private EngineSettings mongodb = new EngineSettings();
@@ -58,5 +59,14 @@ public class DatabaseProperties {
         private int portStart = 31000;
         private int portEnd = 31009;
         private String publicHost;
+    }
+
+    /** Configuration only; BackupRepo and KubeBlocks BackupPolicies stay platform-owned. */
+    @Getter
+    @Setter
+    public static class BackupSettings {
+        private String repositoryName = "cyfuture-dbaas-backuprepo";
+        private String defaultRetention = "7d";
+        private int pollAfterSeconds = 5;
     }
 }

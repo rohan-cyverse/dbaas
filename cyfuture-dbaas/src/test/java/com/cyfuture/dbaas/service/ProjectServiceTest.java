@@ -10,6 +10,8 @@ import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.ResourceStatus;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.ProjectMetadataRepository;
+import com.cyfuture.dbaas.repository.BackupMetadataRepository;
+import com.cyfuture.dbaas.repository.RestoreRequestMetadataRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -44,7 +46,8 @@ class ProjectServiceTest {
         friendlyNames = mock(FriendlyNameGenerator.class);
         kubeBlocksClient = mock(KubeBlocksClient.class);
         service = new ProjectService(projectRepository, databaseRepository, organizationService, friendlyNames,
-                new DatabaseProperties(), kubeBlocksClient);
+                new DatabaseProperties(), kubeBlocksClient, mock(BackupMetadataRepository.class),
+                mock(RestoreRequestMetadataRepository.class));
         when(projectRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
         defaultOrganization = new OrganizationMetadata();
         defaultOrganization.setOrganizationId(OrganizationService.DEFAULT_ORGANIZATION_ID);
