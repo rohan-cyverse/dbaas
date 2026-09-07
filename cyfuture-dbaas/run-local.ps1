@@ -22,6 +22,15 @@ Get-Content ".env" | ForEach-Object {
     }
 }
 
+$canonicalMetadataUrl = "jdbc:mysql://127.0.0.1:3307/dbaas_metadata_current_0972"
+if ($env:METADATA_DB_URL -like "$canonicalMetadataUrl*") {
+    $metadataTunnel = Get-NetTCPConnection -State Listen -LocalPort 3307 -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $metadataTunnel) {
+        throw "VM metadata tunnel is not running. In another PowerShell window run .\open-vm-metadata-tunnel.ps1, then retry."
+    }
+}
+
 $serverPort = 8080
 if (-not [string]::IsNullOrWhiteSpace($env:SERVER_PORT)) {
     if (-not [int]::TryParse($env:SERVER_PORT, [ref] $serverPort) -or $serverPort -lt 1 -or $serverPort -gt 65535) {

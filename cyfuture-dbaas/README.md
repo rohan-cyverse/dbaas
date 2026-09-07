@@ -153,6 +153,21 @@ Set `DBAAS_KUBECONFIG` to the real kubeconfig path, then run:
 If port `8080` is already occupied, stop the existing application or set
 `SERVER_PORT=8081` in `.env` before running the script.
 
+### Shared VM metadata database
+
+For the shared VM deployment, the VM metadata schema is the single source of
+truth. Set `METADATA_DB_URL` in your local `.env` to the tunnel URL
+`jdbc:mysql://127.0.0.1:3307/dbaas_metadata_current_0972?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC`,
+then open the tunnel in a separate PowerShell window before starting the local
+application:
+
+```powershell
+.\open-vm-metadata-tunnel.ps1
+```
+
+The script prompts for SSH authentication and keeps the tunnel open; do not
+store an SSH password in `.env` or source control.
+
 The metadata database is MySQL. Create the local database/user before startup:
 
 ```sql
