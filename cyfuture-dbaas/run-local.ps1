@@ -22,12 +22,27 @@ Get-Content ".env" | ForEach-Object {
     }
 }
 
-$canonicalMetadataUrl = "jdbc:mysql://127.0.0.1:3307/dbaas_metadata_current_0972"
-if ($env:METADATA_DB_URL -like "$canonicalMetadataUrl*") {
-    $metadataTunnel = Get-NetTCPConnection -State Listen -LocalPort 3307 -ErrorAction SilentlyContinue |
+$requiredMetadataVariables = @(
+    "METADATA_DB_URL",
+    "METADATA_DB_USERNAME",
+    "METADATA_DB_PASSWORD"
+)
+foreach ($name in $requiredMetadataVariables) {
+    $value = [Environment]::GetEnvironmentVariable($name, "Process")
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        throw "Set $name in .env. Every DBaaS instance must use the central VM metadata database."
+    }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($env:METADATA_DB_TUNNEL_PORT)) {
+    $metadataTunnelPort = 0
+    if (-not [int]::TryParse($env:METADATA_DB_TUNNEL_PORT, [ref] $metadataTunnelPort) -or $metadataTunnelPort -lt 1 -or $metadataTunnelPort -gt 65535) {
+        throw "METADATA_DB_TUNNEL_PORT must be a number between 1 and 65535."
+    }
+    $metadataTunnel = Get-NetTCPConnection -State Listen -LocalPort $metadataTunnelPort -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($null -eq $metadataTunnel) {
-        throw "VM metadata tunnel is not running. In another PowerShell window run .\open-vm-metadata-tunnel.ps1, then retry."
+        throw "Metadata tunnel port $metadataTunnelPort is not listening. Start .\open-vm-metadata-tunnel.ps1 or remove METADATA_DB_TUNNEL_PORT for a direct VM MySQL connection."
     }
 }
 

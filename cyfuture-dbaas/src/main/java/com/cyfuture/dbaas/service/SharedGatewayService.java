@@ -82,6 +82,7 @@ public class SharedGatewayService {
     }
 
     public synchronized void reconcileNow() {
+        if (!settings().isReconcileEnabled()) return;
         gatewayLock.execute(this::reconcileUnlocked);
     }
 
@@ -157,7 +158,9 @@ public class SharedGatewayService {
         database.setUpdatedAt(Instant.now());
         databaseRepository.save(database);
         reconcileNow();
-        waitForRollout();
+        if (settings().isReconcileEnabled()) {
+            waitForRollout();
+        }
     }
 
     public synchronized void releasePort(DatabaseMetadata database) {
@@ -170,6 +173,7 @@ public class SharedGatewayService {
 
     @Scheduled(fixedDelayString = "${dbaas.gateway.reconcile-ms:10000}")
     public void scheduledReconcile() {
+        if (!settings().isReconcileEnabled()) return;
         try {
             reconcileNow();
         } catch (Exception exception) {

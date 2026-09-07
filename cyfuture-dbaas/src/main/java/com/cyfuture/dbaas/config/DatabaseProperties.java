@@ -56,6 +56,11 @@ public class DatabaseProperties {
         private String serviceName = "dbaas-public-gateway";
         private String deploymentName = "dbaas-public-gateway";
         private String configMapName = "dbaas-public-gateway-config";
+        /**
+         * Only the designated production instance should mutate the shared
+         * HAProxy infrastructure. Disabled instances remain read-only.
+         */
+        private boolean reconcileEnabled = false;
         private int portStart = 31000;
         private int portEnd = 31009;
         private String publicHost;

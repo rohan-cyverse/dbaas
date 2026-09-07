@@ -339,30 +339,54 @@ Set `DBAAS_KUBECONFIG` to the real kubeconfig path, then run:
 If port `8080` is already occupied, stop the existing application or set
 `SERVER_PORT=8081` in `.env` before running the script.
 
-### Shared VM metadata database
+### Central VM metadata database
 
-For the shared VM deployment, the VM metadata schema is the single source of
-truth. Set `METADATA_DB_URL` in your local `.env` to the tunnel URL
-`jdbc:mysql://127.0.0.1:3307/dbaas_metadata_current_0972?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC`,
-then open the tunnel in a separate PowerShell window before starting the local
-application:
+The VM, Laptop A, and Laptop B must use one MySQL schema hosted on the VM.
+There is no local metadata-database fallback: startup requires all three
+environment variables below, and their values must identify the same schema.
+
+| Instance | `METADATA_DB_URL` | `DBAAS_GATEWAY_RECONCILE_ENABLED` |
+| --- | --- | --- |
+| VM production service | `jdbc:mysql://<VM_MYSQL_HOST>:3306/<shared-schema>?useSSL=...` | `true` |
+| Laptop A / Laptop B | The same direct URL, or a local SSH-tunnel URL that forwards to that exact schema | `false` |
+
+Every instance must set:
+
+```text
+METADATA_DB_URL=jdbc:mysql://<configurable-host>:<port>/<shared-schema>?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+METADATA_DB_USERNAME=<central-metadata-user>
+METADATA_DB_PASSWORD=<central-metadata-password>
+```
+
+Use the VM's DNS name, private address, or other routable MySQL host in the
+direct URL. The host is supplied in `METADATA_DB_URL`; it is not hardcoded by
+the application. If a laptop cannot reach MySQL directly, it may use an SSH
+tunnel while still targeting the same VM schema:
+
+```dotenv
+# .env values for the tunnel; replace every placeholder.
+METADATA_TUNNEL_VM_HOST=<vm-ssh-host>
+METADATA_TUNNEL_SSH_PORT=<vm-ssh-port>
+METADATA_TUNNEL_BIND_HOST=localhost
+METADATA_DB_TUNNEL_PORT=3307
+METADATA_DB_HOST=<mysql-host-as-seen-from-the-vm>
+METADATA_DB_PORT=3306
+
+# The laptop URL points only at its local tunnel; the tunnel's target is still
+# the central VM database above.
+METADATA_DB_URL=jdbc:mysql://localhost:3307/<shared-schema>?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+```
+
+Then open the tunnel before starting the local application:
 
 ```powershell
 .\open-vm-metadata-tunnel.ps1
 ```
 
 The script prompts for SSH authentication and keeps the tunnel open; do not
-store an SSH password in `.env` or source control.
-
-The metadata database is MySQL. Create the local database/user before startup:
-
-```sql
-CREATE DATABASE IF NOT EXISTS dbaas_metadata CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS 'dbaas'@'localhost' IDENTIFIED BY 'change-me';
-ALTER USER 'dbaas'@'localhost' IDENTIFIED BY 'change-me';
-GRANT ALL PRIVILEGES ON dbaas_metadata.* TO 'dbaas'@'localhost';
-FLUSH PRIVILEGES;
-```
+store an SSH password in `.env` or source control. Set
+`METADATA_DB_TUNNEL_PORT` only when a tunnel is required; `run-local.ps1`
+otherwise connects directly to the configured central URL.
 
 Flyway owns the metadata schema and Hibernate only validates it. A fresh
 database runs migrations `V1` through `V9` automatically. Migration `V9` is
@@ -390,11 +414,37 @@ dbaas.gateway.namespace=dbaas-gateway
 dbaas.gateway.service-name=dbaas-public-gateway
 dbaas.gateway.config-map-name=dbaas-public-gateway-config
 dbaas.gateway.deployment-name=dbaas-public-gateway
+dbaas.gateway.reconcile-enabled=false
 dbaas.gateway.port-start=31000
 dbaas.gateway.port-end=31009
 ```
 
 HAProxy must accept OpenStack Proxy Protocol v2 on public database listeners. CIDR enforcement belongs on the LoadBalancer `loadBalancerSourceRanges`, not HAProxy source ACLs, because NodePort forwarding may translate the source visible to HAProxy.
+
+Only the designated VM production service should set
+`DBAAS_GATEWAY_RECONCILE_ENABLED=true`. Laptop instances must set it to
+`false`. When false, DBaaS never writes the HAProxy ConfigMap, Deployment,
+Service, checksum, routes, or rollout state. Normal database APIs continue to
+use shared metadata; the enabled VM instance observes that metadata and applies
+the gateway route.
+
+When enabled, reconciliation acquires the shared MySQL named lock with
+`GET_LOCK` and releases it with `RELEASE_LOCK` on the same JDBC connection.
+This serializes VM writers against the central metadata database. Route ordering
+and rendered `haproxy.cfg` are deterministic; unchanged configuration does not
+update the ConfigMap, patch the Deployment, or trigger a rollout.
+
+To verify the intended writer:
+
+1. Confirm the VM systemd environment has
+   `DBAAS_GATEWAY_RECONCILE_ENABLED=true` and each laptop `.env` has
+   `DBAAS_GATEWAY_RECONCILE_ENABLED=false`.
+2. Record the gateway ConfigMap resource version and Deployment generation,
+   then run a laptop DBaaS operation while the VM reconciliation is temporarily
+   stopped. Neither value should change.
+3. Start the VM reconciler again. For a metadata change that changes a route,
+   it alone updates the ConfigMap/checksum; repeating reconciliation without a
+   metadata change leaves both resources unchanged.
 
 ## Postman
 
