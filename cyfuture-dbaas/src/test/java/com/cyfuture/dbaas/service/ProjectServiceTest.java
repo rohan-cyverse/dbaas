@@ -194,6 +194,9 @@ class ProjectServiceTest {
                 () -> service.requireActiveProject(project.getProjectId()));
 
         assertEquals(org.springframework.http.HttpStatus.NOT_FOUND, exception.getStatus());
+        assertEquals("PROJECT_NOT_FOUND", exception.getCode());
+        assertEquals("Project was not found. Use the projectId returned by POST /api/v1/projects; "
+                + "displayName is not a project identifier.", exception.getMessage());
     }
 
     @Test

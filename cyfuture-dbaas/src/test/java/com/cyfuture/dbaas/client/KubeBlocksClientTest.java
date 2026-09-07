@@ -32,6 +32,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -167,6 +168,42 @@ class KubeBlocksClientTest {
     }
 
     @Test
+    void skipsTerminatingClustersDuringPodUpdatePolicyMigration() throws Exception {
+        Map<String, Object> terminating = clusterWithPolicy("StrictInPlace");
+        terminating.put("metadata", new java.util.LinkedHashMap<>(Map.of(
+                "name", "db-deleting0001", "namespace", "dbaas-deleting",
+                "labels", Map.of("app.kubernetes.io/managed-by", "cyfuture-dbaas"),
+                "deletionTimestamp", "2026-09-02T07:45:14Z")));
+        when(customObjectsApi.listClusterCustomObject("apps.kubeblocks.io", "v1", "clusters")
+                .execute()).thenReturn(Map.of("items", List.of(terminating)));
+
+        assertEquals(0, client.migrateManagedClustersToPreferInPlace());
+        verify(customObjectsApi, never()).replaceNamespacedCustomObject(
+                eq("apps.kubeblocks.io"), eq("v1"), any(), eq("clusters"), any(), any());
+        Map<?, ?> component = (Map<?, ?>) ((List<?>) ((Map<?, ?>) terminating.get("spec"))
+                .get("componentSpecs")).get(0);
+        assertEquals("StrictInPlace", component.get("podUpdatePolicy"));
+    }
+
+    @Test
+    void ignoresAClusterThatDisappearsDuringPodUpdatePolicyMigration() throws Exception {
+        Map<String, Object> vanished = managedCluster("db-vanished0001", "dbaas-removed");
+        Map<String, Object> active = managedCluster("db-active00001", "dbaas-orders");
+        when(customObjectsApi.listClusterCustomObject("apps.kubeblocks.io", "v1", "clusters")
+                .execute()).thenReturn(Map.of("items", List.of(vanished, active)));
+        when(customObjectsApi.replaceNamespacedCustomObject(eq("apps.kubeblocks.io"), eq("v1"),
+                eq("dbaas-removed"), eq("clusters"), eq("db-vanished0001"), any()).execute())
+                .thenThrow(new io.kubernetes.client.openapi.ApiException(404, "Not Found"));
+        when(customObjectsApi.replaceNamespacedCustomObject(eq("apps.kubeblocks.io"), eq("v1"),
+                eq("dbaas-orders"), eq("clusters"), eq("db-active00001"), any()).execute())
+                .thenReturn(Map.of());
+
+        assertEquals(1, client.migrateManagedClustersToPreferInPlace());
+        verify(customObjectsApi).replaceNamespacedCustomObject(eq("apps.kubeblocks.io"), eq("v1"),
+                eq("dbaas-orders"), eq("clusters"), eq("db-active00001"), any());
+    }
+
+    @Test
     void verifiesActualRequestedPodResourcesBeforeCompletingVerticalScaling() throws Exception {
         when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
                 "dbaas-orders", "clusters", "db-orders0001").execute())
@@ -289,6 +326,14 @@ class KubeBlocksClientTest {
         spec.put("componentSpecs", List.of(component));
         Map<String, Object> cluster = new java.util.LinkedHashMap<>();
         cluster.put("spec", spec);
+        return cluster;
+    }
+
+    private Map<String, Object> managedCluster(String name, String namespace) {
+        Map<String, Object> cluster = clusterWithPolicy("StrictInPlace");
+        cluster.put("metadata", new java.util.LinkedHashMap<>(Map.of(
+                "name", name, "namespace", namespace,
+                "labels", Map.of("app.kubernetes.io/managed-by", "cyfuture-dbaas"))));
         return cluster;
     }
 

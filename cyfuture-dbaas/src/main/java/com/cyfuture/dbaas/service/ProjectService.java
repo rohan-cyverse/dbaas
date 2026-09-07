@@ -154,14 +154,18 @@ public class ProjectService {
         String organizationId = currentOrganizationId();
         ProjectMetadata metadata = projectRepository
                 .findById(project)
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND,
-                        "Project " + project + " was not found"));
+                .orElseThrow(this::projectNotFound);
         if (!organizationId.equals(metadata.getOrganizationId())) {
             // Do not disclose whether another organization's immutable project ID exists.
-            throw new ApiException(HttpStatus.NOT_FOUND,
-                    "Project " + project + " was not found");
+            throw projectNotFound();
         }
         return metadata;
+    }
+
+    private ApiException projectNotFound() {
+        return new ApiException(HttpStatus.NOT_FOUND, "PROJECT_NOT_FOUND", false,
+                "Project was not found. Use the projectId returned by POST /api/v1/projects; "
+                        + "displayName is not a project identifier.");
     }
 
     private ProjectMetadata activateNamespace(ProjectMetadata project) {

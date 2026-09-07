@@ -21,6 +21,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.net.URI;
 import java.util.List;
 
 @RestController
@@ -34,8 +35,9 @@ public class ProjectController {
     @Operation(summary = "Create a project bound to the backend-managed organization")
     public ResponseEntity<ProjectResponse> create(
             @Valid @RequestBody CreateProjectRequest request) {
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(projectService.create(request));
+        ProjectResponse project = projectService.create(request);
+        URI location = URI.create("/api/v1/projects/" + project.projectId());
+        return ResponseEntity.created(location).body(project);
     }
 
     @GetMapping

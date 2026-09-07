@@ -48,6 +48,7 @@ public class GlobalExceptionHandler {
 
     private String messageFor(ApiException exception) {
         return switch (exception.getCode()) {
+            case "PROJECT_NOT_FOUND" -> exception.getMessage();
             case "DATABASE_NOT_READY" -> "Database is not ready.";
             case "PUBLIC_ENDPOINT_NOT_READY" -> "Public endpoint is not ready.";
             case "DELETION_PROTECTION_ENABLED" ->

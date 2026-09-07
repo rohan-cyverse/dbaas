@@ -22,5 +22,24 @@ Get-Content ".env" | ForEach-Object {
     }
 }
 
+$serverPort = 8080
+if (-not [string]::IsNullOrWhiteSpace($env:SERVER_PORT)) {
+    if (-not [int]::TryParse($env:SERVER_PORT, [ref] $serverPort) -or $serverPort -lt 1 -or $serverPort -gt 65535) {
+        throw "SERVER_PORT must be a number between 1 and 65535."
+    }
+}
+
+$listener = Get-NetTCPConnection -State Listen -LocalPort $serverPort -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if ($null -ne $listener) {
+    $owner = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
+    $ownerDescription = if ($null -ne $owner) {
+        "$($owner.ProcessName) (PID $($listener.OwningProcess))"
+    } else {
+        "PID $($listener.OwningProcess)"
+    }
+    throw "Port $serverPort is already in use by $ownerDescription. Stop that process, or set SERVER_PORT=8081 in .env and run again."
+}
+
 & ".\mvnw.cmd" spring-boot:run
 exit $LASTEXITCODE

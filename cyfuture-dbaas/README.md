@@ -51,9 +51,9 @@ PUT    /api/v1/organization
 
 POST   /api/v1/projects
 GET    /api/v1/projects
-GET    /api/v1/projects/{project}
-PUT    /api/v1/projects/{project}
-DELETE /api/v1/projects/{project}
+GET    /api/v1/projects/{projectId}
+PUT    /api/v1/projects/{projectId}
+DELETE /api/v1/projects/{projectId}
 ```
 
 Deleting a project immediately clears DB-level deletion protection and requests deletion of its
@@ -71,19 +71,22 @@ Create request:
 }
 ```
 
+The create response includes the immutable `projectId` and a `Location` header with its canonical
+route. Use that `projectId`—not the editable `displayName`—for every `{projectId}` path segment.
+
 ### Databases
 
 ```text
-GET    /api/v1/projects/{project}/databases/options
-POST   /api/v1/projects/{project}/databases
-GET    /api/v1/projects/{project}/databases
-GET    /api/v1/projects/{project}/databases/{databaseId}
-GET    /api/v1/projects/{project}/databases/{databaseId}/operations
-GET    /api/v1/projects/{project}/databases/{databaseId}/operations/{operationId}
-GET    /api/v1/projects/{project}/databases/{databaseId}/connection
-POST   /api/v1/projects/{project}/databases/{databaseId}/credentials/rotate
-PUT    /api/v1/projects/{project}/databases/{databaseId}/deletion-protection?enabled=false
-DELETE /api/v1/projects/{project}/databases/{databaseId}
+GET    /api/v1/projects/{projectId}/databases/options
+POST   /api/v1/projects/{projectId}/databases
+GET    /api/v1/projects/{projectId}/databases
+GET    /api/v1/projects/{projectId}/databases/{databaseId}
+GET    /api/v1/projects/{projectId}/databases/{databaseId}/operations
+GET    /api/v1/projects/{projectId}/databases/{databaseId}/operations/{operationId}
+GET    /api/v1/projects/{projectId}/databases/{databaseId}/connection
+POST   /api/v1/projects/{projectId}/databases/{databaseId}/credentials/rotate
+PUT    /api/v1/projects/{projectId}/databases/{databaseId}/deletion-protection?enabled=false
+DELETE /api/v1/projects/{projectId}/databases/{databaseId}
 ```
 
 Database creation requires an `Idempotency-Key` header. Example:
@@ -146,6 +149,9 @@ Set `DBAAS_KUBECONFIG` to the real kubeconfig path, then run:
 ```powershell
 .\run-local.ps1
 ```
+
+If port `8080` is already occupied, stop the existing application or set
+`SERVER_PORT=8081` in `.env` before running the script.
 
 The metadata database is MySQL. Create the local database/user before startup:
 

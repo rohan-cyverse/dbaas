@@ -39,6 +39,22 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void missingProjectExplainsThatDisplayNamesAreNotRouteIdentifiers() {
+        GlobalExceptionHandler handler = new GlobalExceptionHandler();
+        ApiException exception = new ApiException(HttpStatus.NOT_FOUND, "PROJECT_NOT_FOUND", false,
+                "Project was not found. Use the projectId returned by POST /api/v1/projects; "
+                        + "displayName is not a project identifier.");
+
+        var response = handler.handleApiException(exception);
+        ApiErrorResponse body = response.getBody();
+
+        assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
+        assertEquals("PROJECT_NOT_FOUND", body.code());
+        assertEquals(exception.getMessage(), body.message());
+        assertFalse(body.retryable());
+    }
+
+    @Test
     void deletionProtectionErrorExplainsHowToProceed() {
         GlobalExceptionHandler handler = new GlobalExceptionHandler();
 

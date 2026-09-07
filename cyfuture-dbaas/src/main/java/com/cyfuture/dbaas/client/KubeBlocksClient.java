@@ -368,14 +368,24 @@ public class KubeBlocksClient {
                 Map<String, Object> metadata = asMap(cluster.get("metadata"));
                 Map<String, Object> labels = asMap(metadata.get("labels"));
                 if (!"cyfuture-dbaas".equals(labels.get("app.kubernetes.io/managed-by"))) continue;
+                // A terminating Cluster cannot be safely patched. In particular, a namespace
+                // deletion can make a stale cross-namespace list item unwriteable before it
+                // disappears from the list response.
+                if (metadata.get("deletionTimestamp") != null) continue;
                 if (!setPreferInPlace(cluster, null)) continue;
                 String namespace = String.valueOf(metadata.get("namespace"));
                 String name = String.valueOf(metadata.get("name"));
                 if (namespace.isBlank() || name.isBlank() || "null".equals(namespace)
                         || "null".equals(name)) continue;
-                customObjectsApi.replaceNamespacedCustomObject(
-                        GROUP, VERSION, namespace, CLUSTERS, name, cluster).execute();
-                migrated++;
+                try {
+                    customObjectsApi.replaceNamespacedCustomObject(
+                            GROUP, VERSION, namespace, CLUSTERS, name, cluster).execute();
+                    migrated++;
+                } catch (io.kubernetes.client.openapi.ApiException exception) {
+                    // The namespace or Cluster can disappear between the global list and the
+                    // individual replacement. It is already gone, so there is nothing to migrate.
+                    if (exception.getCode() != 404) throw exception;
+                }
             }
             return migrated;
         } catch (io.kubernetes.client.openapi.ApiException exception) {
