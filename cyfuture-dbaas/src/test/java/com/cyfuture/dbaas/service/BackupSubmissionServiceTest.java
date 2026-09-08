@@ -65,6 +65,8 @@ class BackupSubmissionServiceTest {
                 org.junit.jupiter.params.provider.Arguments.of(DatabaseEngine.MYSQL,
                         DatabaseMode.REPLICATION, "xtrabackup"),
                 org.junit.jupiter.params.provider.Arguments.of(DatabaseEngine.MONGODB,
+                        DatabaseMode.STANDALONE, "dump"),
+                org.junit.jupiter.params.provider.Arguments.of(DatabaseEngine.MONGODB,
                         DatabaseMode.REPLICA_SET, "dump"));
     }
 
