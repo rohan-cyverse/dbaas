@@ -22,10 +22,10 @@ class BackupEngineStrategiesTest {
     }
 
     @Test
-    void allowsOnlyMongoReplicaSetForDumpBackup() {
+    void allowsMongoStandaloneAndReplicaSetForDumpBackup() {
         var mongo = strategies.require(DatabaseEngine.MONGODB);
+        assertTrue(mongo.supportsTopology(DatabaseMode.STANDALONE));
         assertTrue(mongo.supportsTopology(DatabaseMode.REPLICA_SET));
-        assertFalse(mongo.supportsTopology(DatabaseMode.STANDALONE));
         assertFalse(mongo.supportsTopology(DatabaseMode.SHARDING));
     }
 }
