@@ -3,6 +3,7 @@ package com.cyfuture.dbaas.repository;
 import com.cyfuture.dbaas.entity.BackupMetadata;
 import com.cyfuture.dbaas.model.BackupStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -12,8 +13,10 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
-public interface BackupMetadataRepository extends JpaRepository<BackupMetadata, String> {
+public interface BackupMetadataRepository extends JpaRepository<BackupMetadata, String>,
+        JpaSpecificationExecutor<BackupMetadata> {
     List<BackupMetadata> findByProjectNameAndDatabaseIdOrderByCreatedAtDesc(String projectName, String databaseId);
+    List<BackupMetadata> findByProjectNameOrderByCreatedAtDesc(String projectName);
     Optional<BackupMetadata> findByBackupIdAndProjectNameAndDatabaseId(
             String backupId, String projectName, String databaseId);
     Optional<BackupMetadata> findByProjectNameAndDatabaseIdAndIdempotencyKey(
@@ -21,6 +24,11 @@ public interface BackupMetadataRepository extends JpaRepository<BackupMetadata, 
     Optional<BackupMetadata> findByOperationId(String operationId);
     Optional<BackupMetadata> findByDeleteOperationId(String deleteOperationId);
     List<BackupMetadata> findByStatusInOrderByCreatedAtAsc(Collection<BackupStatus> statuses);
+    List<BackupMetadata> findByProjectNameAndDatabaseIdAndStatusOrderByCompletedAtDesc(
+            String projectName, String databaseId, BackupStatus status);
+    Optional<BackupMetadata> findByKubernetesBackupName(String kubernetesBackupName);
+    Optional<BackupMetadata> findByKubernetesNamespaceAndKubernetesBackupName(
+            String kubernetesNamespace, String kubernetesBackupName);
     boolean existsByProjectNameAndStatusIn(String projectName, Collection<BackupStatus> statuses);
     boolean existsByProjectNameAndDatabaseIdAndStatusIn(
             String projectName, String databaseId, Collection<BackupStatus> statuses);

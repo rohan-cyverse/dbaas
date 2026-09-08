@@ -29,6 +29,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -42,6 +43,7 @@ public class ProjectService {
     private final KubeBlocksClient kubeBlocksClient;
     private final BackupMetadataRepository backupRepository;
     private final RestoreRequestMetadataRepository restoreRepository;
+    private final BackupRetentionService backupRetentionService;
 
     public ProjectResponse create(CreateProjectRequest request) {
         String organizationId = organizationService.requireDefaultOrganization().getOrganizationId();
@@ -82,23 +84,51 @@ public class ProjectService {
     }
 
     public DeleteProjectResponse delete(String project) {
+        return delete(project, false);
+    }
+
+    public DeleteProjectResponse delete(String project, boolean purgeBackups) {
         ProjectMetadata metadata = requireOwnedProject(project);
         if (metadata.getStatus() == ResourceStatus.DELETED) return deletionResponse(metadata);
         if (backupRepository.existsByProjectNameAndStatusIn(project,
-                List.of(BackupStatus.PENDING, BackupStatus.RUNNING, BackupStatus.COMPLETED,
-                        BackupStatus.FAILED, BackupStatus.DELETING))) {
+                List.of(BackupStatus.PENDING, BackupStatus.RUNNING, BackupStatus.DELETING))) {
+            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_BACKUP_OPERATION_IN_PROGRESS", false,
+                    "Project deletion is blocked while a backup operation is active.");
+        }
+        if (backupRepository.existsByProjectNameAndStatusIn(project,
+                List.of(BackupStatus.COMPLETED, BackupStatus.FAILED)) && !purgeBackups) {
             throw new ApiException(HttpStatus.CONFLICT, "PROJECT_BACKUPS_RETAINED", false,
-                    "Project deletion is blocked while retained backups exist. Purge those backups first.");
+                    "Project deletion is blocked while retained backups exist. Retry with purgeBackups=true to explicitly purge them.");
         }
         if (restoreRepository.existsByProjectNameAndStatusIn(project,
                 List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))) {
             throw new ApiException(HttpStatus.CONFLICT, "PROJECT_RESTORE_IN_PROGRESS", false,
                     "Project deletion is blocked while a restore is active.");
         }
-        // Mark every child before infrastructure cleanup. The metadata rows stay
-        // authoritative while Kubernetes removes the project namespace.
         List<DatabaseMetadata> databases = databaseRepository
                 .findByProjectNameOrderByCreatedAtDesc(project);
+        if (purgeBackups && !backupRetentionService.prepareProjectPurge(project)) {
+            // Desired project deletion is durable; the reconciler waits until
+            // every explicitly purged Backup CR has reached a terminal state.
+            markDatabasesDeleting(databases);
+            metadata.setStatus(ResourceStatus.DELETING);
+            metadata.setUpdatedAt(Instant.now());
+            projectRepository.save(metadata);
+            return deletionResponse(metadata);
+        }
+        // Mark every child before infrastructure cleanup. The metadata rows stay
+        // authoritative while Kubernetes removes the project namespace.
+        markDatabasesDeleting(databases);
+        // Persist the desired state before the Kubernetes request. If that request
+        // is temporarily unavailable, a repeated DELETE retries the same namespace.
+        metadata.setStatus(ResourceStatus.DELETING);
+        metadata.setUpdatedAt(Instant.now());
+        projectRepository.save(metadata);
+        advanceDeletion(metadata, databases);
+        return deletionResponse(metadata);
+    }
+
+    private void markDatabasesDeleting(List<DatabaseMetadata> databases) {
         databases.forEach(database -> {
             database.setDesiredState(DesiredState.DELETED);
             database.setStatus(DatabaseStatus.DELETING);
@@ -108,13 +138,6 @@ public class ProjectService {
             database.setUpdatedAt(Instant.now());
             databaseRepository.save(database);
         });
-        // Persist the desired state before the Kubernetes request. If that request
-        // is temporarily unavailable, a repeated DELETE retries the same namespace.
-        metadata.setStatus(ResourceStatus.DELETING);
-        metadata.setUpdatedAt(Instant.now());
-        projectRepository.save(metadata);
-        advanceDeletion(metadata, databases);
-        return deletionResponse(metadata);
     }
 
     /** Continues an asynchronous project deletion without revalidating user input. */
@@ -125,6 +148,17 @@ public class ProjectService {
     }
 
     private void advanceDeletion(ProjectMetadata metadata, List<DatabaseMetadata> databases) {
+        // Purging project backups is an explicit user choice. Reconciliation
+        // must never turn a later scheduled/completed backup into a purge just
+        // because project deletion was already requested.
+        if (backupRepository.existsByProjectNameAndStatusIn(metadata.getProjectId(),
+                List.of(BackupStatus.PENDING, BackupStatus.RUNNING, BackupStatus.DELETING))
+                || backupRepository.existsByProjectNameAndStatusIn(metadata.getProjectId(),
+                List.of(BackupStatus.COMPLETED, BackupStatus.FAILED))
+                || restoreRepository.existsByProjectNameAndStatusIn(metadata.getProjectId(),
+                List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))) {
+            return;
+        }
         for (DatabaseMetadata database : databases) {
             kubeBlocksClient.prepareProjectDatabaseDeletion(
                     database.getNamespaceName(), database.getDatabaseId());
@@ -177,6 +211,18 @@ public class ProjectService {
             throw projectNotFound();
         }
         return metadata;
+    }
+
+    /** Ownership check for immutable history, including a project that is deleting or deleted. */
+    public ProjectMetadata requireProjectOwnership(String project) {
+        return requireOwnedProject(project);
+    }
+
+    /** Limits global backup/restore catalog responses to projects owned by the current organization. */
+    public Set<String> ownedProjectIds() {
+        return projectRepository.findByOrganizationIdOrderByCreatedAtDesc(currentOrganizationId()).stream()
+                .map(ProjectMetadata::getProjectId)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
     private ApiException projectNotFound() {

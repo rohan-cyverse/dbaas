@@ -2,6 +2,8 @@ package com.cyfuture.dbaas.client;
 
 import com.cyfuture.dbaas.config.DatabaseProperties;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
+import com.cyfuture.dbaas.dto.BackupConfigurationRequest;
+import com.cyfuture.dbaas.model.BackupRetentionPolicy;
 import com.cyfuture.dbaas.model.DatabaseEngine;
 import com.cyfuture.dbaas.model.DatabaseMode;
 import com.cyfuture.dbaas.model.SizePlan;
@@ -23,10 +25,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -287,6 +292,298 @@ class KubeBlocksClientTest {
                 "apps.kubeblocks.io", "v1", "dbaas-orders", "clusters", "db-orders0001");
     }
 
+    @Test
+    void resolvesCurrentDefaultPolicyWhenApprovedRepositoryIsClusterDefault() throws Exception {
+        readyBackupRepository(true);
+        when(customObjectsApi.listNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backuppolicies").execute()).thenReturn(Map.of("items", List.of(
+                backupPolicy("dataprotection.kubeblocks.io/is-default-policy", null))));
+
+        KubeBlocksClient.BackupPolicyInfo policy = client.resolveReadyBackupPolicy(
+                "dbaas-orders", "db-orders0001", DatabaseEngine.POSTGRESQL,
+                "pg-basebackup", "cyfuture-dbaas-backuprepo");
+
+        assertEquals("db-orders0001-postgresql-backup-policy", policy.policyName());
+        assertEquals("cyfuture-dbaas-backuprepo", policy.repositoryName());
+        assertEquals("pg-basebackup", policy.backupMethod());
+    }
+
+    @Test
+    void rejectsAnExplicitPolicyRepositoryOtherThanTheApprovedOne() throws Exception {
+        readyBackupRepository(true);
+        when(customObjectsApi.listNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backuppolicies").execute()).thenReturn(Map.of("items", List.of(
+                backupPolicy("dataprotection.kubeblocks.io/is-default-policy", "other-repository"))));
+
+        com.cyfuture.dbaas.exception.ApiException exception = assertThrows(
+                com.cyfuture.dbaas.exception.ApiException.class,
+                () -> client.resolveReadyBackupPolicy("dbaas-orders", "db-orders0001",
+                        DatabaseEngine.POSTGRESQL, "pg-basebackup", "cyfuture-dbaas-backuprepo"));
+
+        assertEquals("BACKUP_REPOSITORY_MISMATCH", exception.getCode());
+    }
+
+    @Test
+    void restoreManifestMatchesInstalledKubeBlocksSchema() throws Exception {
+        client.createRestoreOpsRequest("dbaas-orders", "prj-orders", "db-restore0001",
+                "rst-restore0001", "bkp-backup0001", null);
+
+        ArgumentCaptor<Object> body = ArgumentCaptor.forClass(Object.class);
+        verify(customObjectsApi).createNamespacedCustomObject(eq("operations.kubeblocks.io"),
+                eq("v1alpha1"), eq("dbaas-orders"), eq("opsrequests"), body.capture());
+        Map<?, ?> spec = (Map<?, ?>) ((Map<?, ?>) body.getValue()).get("spec");
+        assertEquals("Restore", spec.get("type"));
+        assertEquals("db-restore0001", spec.get("clusterName"));
+        Map<?, ?> restore = (Map<?, ?>) spec.get("restore");
+        assertEquals("bkp-backup0001", restore.get("backupName"));
+        assertEquals("Parallel", restore.get("volumeRestorePolicy"));
+    }
+
+    @Test
+    void scheduledBackupConfigurationPatchesOnlyClusterSpecBackup() throws Exception {
+        readyBackupRepository(true);
+        Map<String, Object> cluster = new java.util.LinkedHashMap<>();
+        cluster.put("metadata", Map.of("name", "db-orders0001", "labels", Map.of(
+                "app.kubernetes.io/managed-by", "cyfuture-dbaas",
+                "dbaas.cyfuture.com/project", "prj-orders",
+                "dbaas.cyfuture.com/database-id", "db-orders0001")));
+        cluster.put("spec", new java.util.LinkedHashMap<>(Map.of("componentSpecs", List.of())));
+        when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
+                "dbaas-orders", "clusters", "db-orders0001").execute()).thenReturn(cluster);
+        client.configureScheduledBackup("dbaas-orders", "prj-orders", "db-orders0001",
+                "pg-basebackup", "cyfuture-dbaas-backuprepo", "7d", "0 2 * * *", true);
+
+        ArgumentCaptor<Object> body = ArgumentCaptor.forClass(Object.class);
+        verify(customObjectsApi).patchNamespacedCustomObject(eq("apps.kubeblocks.io"), eq("v1"),
+                eq("dbaas-orders"), eq("clusters"), eq("db-orders0001"), body.capture());
+        Map<?, ?> backup = (Map<?, ?>) ((Map<?, ?>) ((Map<?, ?>) body.getValue()).get("spec")).get("backup");
+        assertEquals(true, backup.get("enabled"));
+        assertEquals("pg-basebackup", backup.get("method"));
+        assertEquals("cyfuture-dbaas-backuprepo", backup.get("repoName"));
+        assertEquals("7d", backup.get("retentionPeriod"));
+        assertEquals("0 2 * * *", backup.get("cronExpression"));
+        assertEquals(false, backup.get("pitrEnabled"));
+    }
+
+    @Test
+    void scheduledBackupConfigurationDoesNotRewriteAnUnchangedCluster() throws Exception {
+        readyBackupRepository(true);
+        Map<String, Object> cluster = new java.util.LinkedHashMap<>();
+        cluster.put("metadata", Map.of("name", "db-orders0001", "labels", Map.of(
+                "app.kubernetes.io/managed-by", "cyfuture-dbaas",
+                "dbaas.cyfuture.com/project", "prj-orders",
+                "dbaas.cyfuture.com/database-id", "db-orders0001")));
+        cluster.put("spec", new java.util.LinkedHashMap<>(Map.of("backup", Map.of(
+                "enabled", true, "method", "pg-basebackup", "repoName", "cyfuture-dbaas-backuprepo",
+                "retentionPeriod", "7d", "cronExpression", "0 2 * * *", "pitrEnabled", false))));
+        when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
+                "dbaas-orders", "clusters", "db-orders0001").execute()).thenReturn(cluster);
+
+        client.configureScheduledBackup("dbaas-orders", "prj-orders", "db-orders0001",
+                "pg-basebackup", "cyfuture-dbaas-backuprepo", "7d", "0 2 * * *", true);
+
+        verify(customObjectsApi, never()).patchNamespacedCustomObject(eq("apps.kubeblocks.io"), eq("v1"),
+                eq("dbaas-orders"), eq("clusters"), eq("db-orders0001"), any());
+    }
+
+    @Test
+    void manualBackupManifestUsesManagedIdentityAndRetainDeletionPolicy() throws Exception {
+        when(customObjectsApi.createNamespacedCustomObject(eq("dataprotection.kubeblocks.io"),
+                eq("v1alpha1"), eq("dbaas-orders"), eq("backups"), any()).execute()).thenReturn(Map.of());
+
+        client.createBackup("dbaas-orders", "prj-orders", "db-orders0001", "bkp-orders0001",
+                "db-orders-policy", "pg-basebackup", "7d", null,
+                "bkp-orders0001", "op-orders0001");
+
+        ArgumentCaptor<Object> body = ArgumentCaptor.forClass(Object.class);
+        verify(customObjectsApi).createNamespacedCustomObject(eq("dataprotection.kubeblocks.io"),
+                eq("v1alpha1"), eq("dbaas-orders"), eq("backups"), body.capture());
+        Map<?, ?> manifest = (Map<?, ?>) body.getValue();
+        assertEquals("Retain", ((Map<?, ?>) manifest.get("spec")).get("deletionPolicy"));
+        Map<?, ?> labels = (Map<?, ?>) ((Map<?, ?>) manifest.get("metadata")).get("labels");
+        assertEquals("prj-orders", labels.get("dbaas.cyfuture.com/project"));
+        assertEquals("db-orders0001", labels.get("dbaas.cyfuture.com/database-id"));
+        assertEquals("bkp-orders0001", labels.get("dbaas.cyfuture.com/backup-id"));
+        assertEquals("op-orders0001", labels.get("dbaas.cyfuture.com/operation-id"));
+    }
+
+    @Test
+    void discoversOnlyBackupScheduleOwnedBackupsForTheKnownPolicy() throws Exception {
+        Map<String, Object> generated = Map.of(
+                "metadata", Map.of("name", "scheduled-good", "uid", "uid-good", "labels", Map.of(),
+                        "ownerReferences", List.of(Map.of("kind", "BackupSchedule"))),
+                "spec", Map.of("backupPolicyName", "db-orders-policy", "backupMethod", "pg-basebackup",
+                        "retentionPeriod", "7d"),
+                "status", Map.of("phase", "Completed", "totalSize", 42L));
+        Map<String, Object> unknown = Map.of(
+                "metadata", Map.of("name", "manual-other", "uid", "uid-other", "labels", Map.of(
+                        "app.kubernetes.io/instance", "db-orders0001")),
+                "spec", Map.of("backupPolicyName", "db-orders-policy"), "status", Map.of());
+        when(customObjectsApi.listNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backups").execute()).thenReturn(Map.of("items", List.of(generated, unknown)));
+
+        var discovered = client.listScheduledBackups("dbaas-orders", "db-orders0001", "db-orders-policy");
+
+        assertEquals(1, discovered.size());
+        assertEquals("scheduled-good", discovered.get(0).backupName());
+        assertEquals("uid-good", discovered.get(0).uid());
+        assertEquals(42L, discovered.get(0).sizeBytes());
+    }
+
+    @Test
+    void deletesAnImportedScheduledBackupOnlyWhenUidAndPolicyStillMatch() throws Exception {
+        Map<String, Object> scheduled = Map.of(
+                "metadata", Map.of("uid", "uid-scheduled-001", "labels", Map.of(
+                        "app.kubernetes.io/instance", "db-orders0001"),
+                        "ownerReferences", List.of(Map.of("kind", "BackupSchedule"))),
+                "spec", Map.of("backupPolicyName", "db-orders-policy"));
+        when(customObjectsApi.getNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backups", "scheduled-orders-001").execute()).thenReturn(scheduled);
+
+        client.deleteManagedBackup("dbaas-orders", "prj-orders", "db-orders0001",
+                "bkp-a-001", "op-a-001", "scheduled-orders-001", "uid-scheduled-001",
+                "db-orders-policy", false);
+
+        verify(customObjectsApi).deleteNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backups", "scheduled-orders-001");
+    }
+
+    @Test
+    void refusesToDeleteANameReusedByAnotherScheduledBackup() throws Exception {
+        Map<String, Object> replacement = Map.of(
+                "metadata", Map.of("uid", "uid-new", "labels", Map.of(
+                        "app.kubernetes.io/instance", "db-orders0001"),
+                        "ownerReferences", List.of(Map.of("kind", "BackupSchedule"))),
+                "spec", Map.of("backupPolicyName", "db-orders-policy"));
+        when(customObjectsApi.getNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backups", "scheduled-orders-001").execute()).thenReturn(replacement);
+
+        com.cyfuture.dbaas.exception.ApiException exception = assertThrows(
+                com.cyfuture.dbaas.exception.ApiException.class,
+                () -> client.deleteManagedBackup("dbaas-orders", "prj-orders", "db-orders0001",
+                        "bkp-a-001", "op-a-001", "scheduled-orders-001", "uid-historic",
+                        "db-orders-policy", true));
+
+        assertEquals("BACKUP_RESOURCE_NOT_MANAGED", exception.getCode());
+        verify(customObjectsApi, never()).deleteNamespacedCustomObject(
+                eq("dataprotection.kubeblocks.io"), eq("v1alpha1"), eq("dbaas-orders"),
+                eq("backups"), eq("scheduled-orders-001"));
+    }
+
+    @Test
+    void backupObservationConvertsKubernetesQuantityToBytes() throws Exception {
+        when(customObjectsApi.getNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backups", "bkp-orders0001").execute()).thenReturn(Map.of(
+                "metadata", Map.of("uid", "backup-uid"),
+                "status", Map.of("phase", "Completed", "totalSize", "1.5Gi",
+                        "startTimestamp", "2026-09-08T10:00:00Z",
+                        "completionTimestamp", "2026-09-08T10:01:00Z",
+                        "expiration", "2026-09-15T10:01:00Z")));
+
+        KubeBlocksClient.BackupObservation observed = client.observeBackup(
+                "dbaas-orders", "bkp-orders0001");
+
+        assertEquals(1_610_612_736L, observed.sizeBytes());
+        assertEquals(Instant.parse("2026-09-15T10:01:00Z"), observed.expiration());
+    }
+
+    @Test
+    void backupObservationDoesNotExposeSecretOrPrivateEndpointDiagnostics() throws Exception {
+        when(customObjectsApi.getNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backups", "bkp-orders0001").execute()).thenReturn(Map.of(
+                "metadata", Map.of("uid", "backup-uid"),
+                "status", Map.of("phase", "Failed", "failureReason",
+                        "Secret backup-s3 password=not-for-api at db.orders.svc.cluster.local")));
+
+        KubeBlocksClient.BackupObservation observed = client.observeBackup(
+                "dbaas-orders", "bkp-orders0001");
+
+        assertFalse(observed.message().toLowerCase().contains("secret"));
+        assertFalse(observed.message().toLowerCase().contains("password"));
+        assertFalse(observed.message().contains("svc.cluster.local"));
+    }
+
+    @Test
+    void observesOnlyRestoreOwnedByTheKnownOpsRequest() throws Exception {
+        Map<String, Object> restore = Map.of(
+                "metadata", Map.of("name", "restore-orders", "ownerReferences", List.of(
+                        Map.of("kind", "OpsRequest", "name", "rst-orders0001"))),
+                "status", Map.of("phase", "Completed", "startTimestamp", "2026-09-08T10:00:00Z",
+                        "completionTimestamp", "2026-09-08T10:02:00Z"));
+        when(customObjectsApi.listNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "restores").execute()).thenReturn(Map.of("items", List.of(restore)));
+
+        KubeBlocksClient.RestoreObservation observed = client.observeRestore(
+                "dbaas-orders", "rst-orders0001", null);
+
+        assertTrue(observed.exists());
+        assertEquals("restore-orders", observed.restoreName());
+        assertEquals("Completed", observed.phase());
+    }
+
+    @Test
+    void validatesLinkedTemplateFromTheV102DataProtectionApi() throws Exception {
+        readyBackupRepository(true);
+        Map<String, Object> policy = new java.util.LinkedHashMap<>(backupPolicy(
+                "dataprotection.kubeblocks.io/is-default-policy", null));
+        Map<String, Object> metadata = new java.util.LinkedHashMap<>((Map<String, Object>) policy.get("metadata"));
+        metadata.put("annotations", Map.of(
+                "dataprotection.kubeblocks.io/is-default-policy", "true",
+                "dataprotection.kubeblocks.io/backup-policy-template", "postgres-template"));
+        policy.put("metadata", metadata);
+        when(customObjectsApi.listNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backuppolicies").execute()).thenReturn(Map.of("items", List.of(policy)));
+        when(customObjectsApi.getClusterCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "backuppolicytemplates", "postgres-template").execute()).thenReturn(Map.of(
+                "spec", Map.of("backupMethods", List.of(Map.of("name", "pg-basebackup"))),
+                "status", Map.of("phase", "Available")));
+        org.mockito.Mockito.clearInvocations(customObjectsApi);
+
+        client.resolveReadyBackupPolicy("dbaas-orders", "db-orders0001", DatabaseEngine.POSTGRESQL,
+                "pg-basebackup", "cyfuture-dbaas-backuprepo");
+
+        verify(customObjectsApi).getClusterCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "backuppolicytemplates", "postgres-template");
+    }
+
+    @Test
+    void databaseCreationCarriesNormalizedBackupSpecWhenConfigured() throws Exception {
+        CreateDatabaseRequest backupRequest = new CreateDatabaseRequest("orders-db", null,
+                DatabaseEngine.POSTGRESQL, DatabaseMode.REPLICATION, "test-version", SizePlan.C1G1,
+                10, 2, 0, null, List.of(), false, Map.of(),
+                new BackupConfigurationRequest("cyfuture-dbaas-backuprepo", true, 7,
+                        "30 20 * * *", "Asia/Kolkata", BackupRetentionPolicy.RETAIN_LATEST, false));
+
+        client.create("dbaas-orders", "prj-orders", "db-postgres0002", backupRequest);
+
+        ArgumentCaptor<Object> body = ArgumentCaptor.forClass(Object.class);
+        verify(customObjectsApi).createNamespacedCustomObject(eq("apps.kubeblocks.io"), eq("v1"),
+                eq("dbaas-orders"), eq("clusters"), body.capture());
+        Map<?, ?> backup = (Map<?, ?>) ((Map<?, ?>) ((Map<?, ?>) body.getValue()).get("spec")).get("backup");
+        assertEquals("pg-basebackup", backup.get("method"));
+        assertEquals("30 20 * * *", backup.get("cronExpression"));
+        assertEquals(false, backup.get("pitrEnabled"));
+    }
+
+    private void readyBackupRepository(boolean defaultRepository) throws Exception {
+        when(customObjectsApi.getClusterCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "backuprepos", "cyfuture-dbaas-backuprepo").execute()).thenReturn(Map.of("status", Map.of(
+                "phase", "Ready", "isDefault", defaultRepository)));
+    }
+
+    private Map<String, Object> backupPolicy(String defaultAnnotation, String repositoryName) {
+        Map<String, Object> spec = new java.util.LinkedHashMap<>();
+        spec.put("backupMethods", List.of(Map.of("name", "pg-basebackup")));
+        if (repositoryName != null) spec.put("backupRepoName", repositoryName);
+        return Map.of(
+                "metadata", Map.of(
+                        "name", "db-orders0001-postgresql-backup-policy",
+                        "labels", Map.of("app.kubernetes.io/instance", "db-orders0001"),
+                        "annotations", Map.of(defaultAnnotation, "true")),
+                "spec", spec,
+                "status", Map.of("phase", "Available"));
+    }
+
     private CreateDatabaseRequest request(DatabaseEngine engine, DatabaseMode mode) {
         return new CreateDatabaseRequest("orders-db", null, engine, mode, "test-version",
                 SizePlan.C1G1, 10, 2, 0, null, List.of(), false, Map.of());
@@ -302,7 +599,8 @@ class KubeBlocksClientTest {
                                 "verticalScaling", Map.of("type", "array"),
                                 "horizontalScaling", Map.of("type", "array"),
                                 "volumeExpansion", Map.of("type", "array"),
-                                "restart", Map.of("type", "array"))))))))));
+                                "restart", Map.of("type", "array"),
+                                "restore", Map.of("type", "object"))))))))));
     }
 
     private Map<String, Object> cluster() {

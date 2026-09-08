@@ -10,6 +10,7 @@ import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import com.cyfuture.dbaas.repository.BackupMetadataRepository;
 import com.cyfuture.dbaas.repository.RestoreRequestMetadataRepository;
+import com.cyfuture.dbaas.repository.BackupPolicyMetadataRepository;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -31,7 +32,8 @@ class OperationRecoveryServiceTest {
                 databaseRepository, provisioningService, submitter,
                 mock(BackupMetadataRepository.class), mock(RestoreRequestMetadataRepository.class),
                 mock(BackupSubmissionService.class), mock(BackupPurgeSubmitter.class),
-                mock(RestoreSubmissionService.class));
+                mock(RestoreSubmissionService.class), mock(BackupPolicyMetadataRepository.class),
+                mock(BackupPolicySubmissionService.class));
 
         OperationMetadata operation = OperationMetadata.builder()
                 .operationId("op-restart0001")

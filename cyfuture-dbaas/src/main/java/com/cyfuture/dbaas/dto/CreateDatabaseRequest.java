@@ -10,6 +10,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.Valid;
 
 import java.util.List;
 import java.util.Map;
@@ -32,9 +33,20 @@ public record CreateDatabaseRequest(
         @Schema(hidden = true) @Size(max = 10) List<String> allowedCidrs,
         @Schema(example = "true") boolean deletionProtection,
         @Schema(example = "{\"environment\":\"test\",\"team\":\"orders\"}")
-        @Size(max = 20) Map<String, String> tags
+        @Size(max = 20) Map<String, String> tags,
+        @Schema(description = "Optional full-backup policy. PITR and incremental backups are not available yet.")
+        @Valid BackupConfigurationRequest backup
 ) {
     public CreateDatabaseRequest {
         if (allowedCidrs == null) allowedCidrs = List.of();
+    }
+
+    /** Keeps Java callers compiled against the original database-create payload. */
+    public CreateDatabaseRequest(String name, String remark, DatabaseEngine engine, DatabaseMode mode,
+                                 String version, SizePlan size, int storageGi, int replicas, int shards,
+                                 String timezone, List<String> allowedCidrs,
+                                 boolean deletionProtection, Map<String, String> tags) {
+        this(name, remark, engine, mode, version, size, storageGi, replicas, shards, timezone,
+                allowedCidrs, deletionProtection, tags, null);
     }
 }

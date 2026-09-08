@@ -4,6 +4,7 @@ import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.dto.PublicEndpointResponse;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.RestoreRequestMetadata;
+import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.OperationStatus;
 import com.cyfuture.dbaas.model.ProvisioningStage;
@@ -48,6 +49,10 @@ public class RestoreReconciler {
         for (RestoreRequestMetadata restore : restoreRepository.findByStatusInOrderByCreatedAtAsc(
                 List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))) {
             try {
+                if (timedOut(restore)) {
+                    fail(restore, "RESTORE_TIMEOUT", "Restore timed out before readiness was verified.");
+                    continue;
+                }
                 if (restore.getStatus() == RestoreStatus.PENDING) {
                     submissionService.submit(restore.getRestoreId());
                 } else {
@@ -56,8 +61,13 @@ public class RestoreReconciler {
             } catch (Exception exception) {
                 if (timedOut(restore)) {
                     fail(restore, "RESTORE_TIMEOUT", "Restore timed out before readiness was verified.");
+                } else if (exception instanceof ApiException apiException && !apiException.isRetryable()) {
+                    fail(restore, BackupRestoreSafety.failureCode(apiException, "RESTORE_RECONCILE_FAILED"),
+                            BackupRestoreSafety.safeMessage(apiException,
+                                    "Restore validation failed before readiness was verified."));
                 }
-                log.debug("Restore reconciliation for {} will retry: {}", restore.getRestoreId(), exception.getMessage());
+                log.debug("Restore reconciliation for {} will retry: {}", restore.getRestoreId(),
+                        BackupRestoreSafety.safeMessage(exception, "Restore reconciliation will retry."));
             }
         }
     }
@@ -73,6 +83,23 @@ public class RestoreReconciler {
                 target.getNamespaceName(), restore.getKubernetesOpsRequestName());
         if (failedPhase(observed.phase())) {
             fail(restore, "KUBERNETES_RESTORE_FAILED", observed.message());
+            return;
+        }
+        KubeBlocksClient.RestoreObservation restoreObserved = kubeBlocksClient.observeRestore(
+                target.getNamespaceName(), restore.getKubernetesOpsRequestName(),
+                restore.getKubernetesRestoreName());
+        if (restoreObserved.exists()) {
+            synchronizeRestoreResource(restore, restoreObserved);
+            if ("Failed".equalsIgnoreCase(restoreObserved.phase())) {
+                fail(restore, "KUBERNETES_RESTORE_FAILED", restoreObserved.message());
+                return;
+            }
+            if (!"Completed".equalsIgnoreCase(restoreObserved.phase())) {
+                updateRunning(restore, observed, 40, "KubeBlocks is restoring database data");
+                return;
+            }
+        } else if (!"Succeed".equalsIgnoreCase(observed.phase())) {
+            updateRunning(restore, observed, 30, "Waiting for the KubeBlocks Restore resource");
             return;
         }
         if (!"Succeed".equalsIgnoreCase(observed.phase())) {
@@ -94,8 +121,24 @@ public class RestoreReconciler {
             updateRunning(restore, observed, 70, "Waiting for restored database replicas");
             return;
         }
-        if (!credentialLifecycleService.ready(target)) {
+        String restoredLogicalDatabase = restore.getRestoredDatabaseName();
+        if (restoredLogicalDatabase == null || restoredLogicalDatabase.isBlank()) {
+            restoredLogicalDatabase = CredentialLifecycleService.managedDatabaseName(
+                    restore.getSourceDatabaseId());
+            restore.setRestoredDatabaseName(restoredLogicalDatabase);
+            restore.setLastObservedAt(Instant.now());
+            restoreRepository.save(restore);
+        }
+        String restoredUsername = CredentialLifecycleService.managedUsername(restore.getSourceDatabaseId());
+        if (!credentialLifecycleService.readyForRestoredDatabase(target, restoredLogicalDatabase,
+                restoredUsername)) {
             updateRunning(restore, observed, 82, "Creating restored database credentials");
+            return;
+        }
+        String actualLogicalDatabase = credentialLifecycleService.databaseName(target);
+        if (!restoredLogicalDatabase.equals(actualLogicalDatabase)) {
+            fail(restore, "RESTORED_DATABASE_NAME_MISMATCH",
+                    "Restored database credentials do not target the restored logical database.");
             return;
         }
         PublicEndpointResponse endpoint = sharedGatewayService.configure(target);
@@ -105,10 +148,33 @@ public class RestoreReconciler {
         }
         progressService.ready(target);
         restore.setStatus(RestoreStatus.COMPLETED);
+        restore.setRestoredDatabaseName(actualLogicalDatabase);
+        restore.setPublicHost(endpoint.host());
+        restore.setPublicPort(endpoint.port());
         restore.setCompletedAt(Instant.now());
         restore.setLastObservedAt(Instant.now());
         restore.setFailureCode(null);
         restore.setFailureMessage(null);
+        restoreRepository.save(restore);
+        operationRepository.findById(restore.getOperationId()).ifPresent(operation -> {
+            operation.setStatus(OperationStatus.SUCCEEDED);
+            operation.setProvisioningStage(ProvisioningStage.READY);
+            operation.setProgress(100);
+            operation.setMessage("Restore completed and public connection is ready");
+            if (operation.getStartedAt() == null) operation.setStartedAt(Instant.now());
+            operation.setCompletedAt(Instant.now());
+            operationRepository.save(operation);
+        });
+    }
+
+    private void synchronizeRestoreResource(RestoreRequestMetadata restore,
+                                            KubeBlocksClient.RestoreObservation observed) {
+        boolean changed = !Objects.equals(restore.getKubernetesRestoreName(), observed.restoreName())
+                || (observed.startedAt() != null && !Objects.equals(restore.getStartedAt(), observed.startedAt()));
+        if (!changed) return;
+        restore.setKubernetesRestoreName(observed.restoreName());
+        if (observed.startedAt() != null) restore.setStartedAt(observed.startedAt());
+        restore.setLastObservedAt(Instant.now());
         restoreRepository.save(restore);
     }
 

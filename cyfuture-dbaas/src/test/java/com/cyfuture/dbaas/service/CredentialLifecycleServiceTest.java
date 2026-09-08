@@ -26,6 +26,7 @@ import io.kubernetes.client.openapi.models.V1PodStatus;
 import io.kubernetes.client.openapi.models.V1Secret;
 import io.kubernetes.client.openapi.models.V1SecretList;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -34,6 +35,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
@@ -43,6 +45,55 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class CredentialLifecycleServiceTest {
+    @Test
+    void restoredCredentialSecretTargetsTheSourceLogicalDatabaseAndUser() throws Exception {
+        CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        BatchV1Api batch = mock(BatchV1Api.class, RETURNS_DEEP_STUBS);
+        KubeBlocksClient kubeBlocks = mock(KubeBlocksClient.class);
+        DatabaseProperties properties = new DatabaseProperties();
+        properties.getPostgresql().setCredentialImage("credential-manager:test");
+        CredentialLifecycleService service = new CredentialLifecycleService(
+                kubeBlocks, properties, mock(OperationMetadataRepository.class),
+                new OperationMapper(), core, batch);
+        DatabaseMetadata target = database();
+        target.setEngine(DatabaseEngine.POSTGRESQL);
+        when(kubeBlocks.get("dbaas-orders", "db-orders0001")).thenReturn(new DatabaseObservation(
+                "db-orders0001", "orders", DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE,
+                "17.5.0", SizePlan.C1G1, 10, false, DatabaseStatus.RUNNING,
+                1, 1, 1, true, "orders", 5432, "ready"));
+        when(kubeBlocks.clusterOwnerReference("dbaas-orders", "db-orders0001"))
+                .thenReturn(new io.kubernetes.client.openapi.models.V1OwnerReference().kind("Cluster"));
+        when(kubeBlocks.adminCredentialSecretName("dbaas-orders", "db-orders0001", DatabaseEngine.POSTGRESQL))
+                .thenReturn("admin-credentials");
+        when(core.readNamespacedSecret("db-orders0001-managed-credentials", "dbaas-orders")
+                .execute()).thenThrow(new io.kubernetes.client.openapi.ApiException(404, "missing"));
+        V1Secret created = new V1Secret().metadata(new V1ObjectMeta()
+                .name("db-orders0001-managed-credentials")
+                .annotations(new LinkedHashMap<>(Map.of(
+                        "dbaas.cyfuture.com/credential-status", "PENDING",
+                        "dbaas.cyfuture.com/credential-generation", "1"))));
+        when(core.createNamespacedSecret(org.mockito.ArgumentMatchers.eq("dbaas-orders"), any()).execute())
+                .thenReturn(created);
+        when(batch.readNamespacedJob("db-orders0001-credentials-1", "dbaas-orders")
+                .execute()).thenThrow(new io.kubernetes.client.openapi.ApiException(404, "missing"));
+
+        assertFalse(service.readyForRestoredDatabase(target, "orders_data", "dbaas_orders"));
+
+        ArgumentCaptor<V1Secret> secret = ArgumentCaptor.forClass(V1Secret.class);
+        verify(core).createNamespacedSecret(org.mockito.ArgumentMatchers.eq("dbaas-orders"), secret.capture());
+        assertEquals("orders_data", secret.getValue().getStringData().get("database"));
+        assertEquals("dbaas_orders", secret.getValue().getStringData().get("username"));
+
+        ArgumentCaptor<V1Job> job = ArgumentCaptor.forClass(V1Job.class);
+        verify(batch).createNamespacedJob(org.mockito.ArgumentMatchers.eq("dbaas-orders"), job.capture());
+        var container = job.getValue().getSpec().getTemplate().getSpec().getContainers().get(0);
+        assertEquals("true", container.getEnv().stream()
+                .filter(value -> "REQUIRE_EXISTING_DATABASE".equals(value.getName()))
+                .findFirst().orElseThrow().getValue());
+        assertTrue(container.getArgs().get(0).contains("REQUIRE_EXISTING_DATABASE"));
+        assertTrue(container.getArgs().get(0).contains("Restored logical database is missing"));
+    }
+
     @Test
     void removesOnlyDatabaseSpecificCredentialHelpersAndLeavesSharedResourcesAlone() throws Exception {
         CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);

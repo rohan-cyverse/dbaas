@@ -7,6 +7,7 @@ import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.OrganizationMetadata;
 import com.cyfuture.dbaas.entity.ProjectMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
+import com.cyfuture.dbaas.model.BackupStatus;
 import com.cyfuture.dbaas.model.ResourceStatus;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.ProjectMetadataRepository;
@@ -35,6 +36,9 @@ class ProjectServiceTest {
     private OrganizationService organizationService;
     private FriendlyNameGenerator friendlyNames;
     private KubeBlocksClient kubeBlocksClient;
+    private BackupMetadataRepository backupRepository;
+    private RestoreRequestMetadataRepository restoreRepository;
+    private BackupRetentionService retention;
     private ProjectService service;
     private OrganizationMetadata defaultOrganization;
 
@@ -45,9 +49,12 @@ class ProjectServiceTest {
         organizationService = mock(OrganizationService.class);
         friendlyNames = mock(FriendlyNameGenerator.class);
         kubeBlocksClient = mock(KubeBlocksClient.class);
+        backupRepository = mock(BackupMetadataRepository.class);
+        restoreRepository = mock(RestoreRequestMetadataRepository.class);
+        retention = mock(BackupRetentionService.class);
         service = new ProjectService(projectRepository, databaseRepository, organizationService, friendlyNames,
-                new DatabaseProperties(), kubeBlocksClient, mock(BackupMetadataRepository.class),
-                mock(RestoreRequestMetadataRepository.class));
+                new DatabaseProperties(), kubeBlocksClient, backupRepository, restoreRepository, retention);
+        when(retention.prepareProjectPurge(org.mockito.ArgumentMatchers.anyString())).thenReturn(true);
         when(projectRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
         defaultOrganization = new OrganizationMetadata();
         defaultOrganization.setOrganizationId(OrganizationService.DEFAULT_ORGANIZATION_ID);
@@ -154,6 +161,23 @@ class ProjectServiceTest {
         assertEquals(ResourceStatus.DELETED, project.getStatus());
         verify(kubeBlocksClient).deleteProjectNamespace(
                 project.getNamespaceName(), project.getProjectId());
+    }
+
+    @Test
+    void deletionReconciliationNeverImplicitlyPurgesANewlyRetainedBackup() {
+        ProjectMetadata project = new ProjectMetadata();
+        project.setProjectId("prj-orders0001");
+        project.setNamespaceName("dbaas-p-prj-orders0001");
+        project.setStatus(ResourceStatus.DELETING);
+        when(databaseRepository.findByProjectNameOrderByCreatedAtDesc(project.getProjectId()))
+                .thenReturn(java.util.List.of());
+        when(backupRepository.existsByProjectNameAndStatusIn(project.getProjectId(),
+                java.util.List.of(BackupStatus.COMPLETED, BackupStatus.FAILED))).thenReturn(true);
+
+        service.reconcileDeletion(project);
+
+        verify(retention, never()).prepareProjectPurge(project.getProjectId());
+        verify(kubeBlocksClient, never()).deleteProjectNamespace(any(), any());
     }
 
     @Test

@@ -119,6 +119,11 @@ inside that project, DBaaS keeps the requested base and appends a short suffix i
 The create response includes the final `name` alongside `databaseId` and `operationId`, so
 the UI can show the selected handle immediately.
 
+To configure automatic full backup while creating a database, include the same
+`backup` object documented in [Scheduled full backups and retention](#scheduled-full-backups-and-retention).
+The creation request remains asynchronous; the database lifecycle and backup-policy
+lifecycle reconcile independently.
+
 Public access is automatic. `allowedCidrs` may be omitted. In local development the API can discover the caller's public egress address. Behind Cyfuture.ai, disable that fallback and forward trusted proxy headers.
 
 If deletion protection is enabled, deleting the database returns `409 Conflict` with
@@ -130,6 +135,9 @@ no request body; component-level restarts are not exposed by this API.
 ### Backups and restore
 
 ```text
+PUT    /api/v1/projects/{projectId}/databases/{databaseId}/backup-policy
+GET    /api/v1/projects/{projectId}/databases/{databaseId}/backup-policy
+
 POST   /api/v1/projects/{projectId}/databases/{databaseId}/backups
 GET    /api/v1/projects/{projectId}/databases/{databaseId}/backups
 GET    /api/v1/projects/{projectId}/databases/{databaseId}/backups/{backupId}
@@ -137,10 +145,15 @@ DELETE /api/v1/projects/{projectId}/databases/{databaseId}/backups/{backupId}
 
 POST   /api/v1/projects/{projectId}/databases/{databaseId}/backups/{backupId}/restore
 GET    /api/v1/operations/{operationId}
+
+GET    /api/v1/backups
+GET    /api/v1/backup-history
+GET    /api/v1/restore-history
+GET    /api/v1/backup-repositories
 ```
 
-The current release supports manual FULL backups only. Every create or restore
-request requires an Idempotency-Key header of 8-128 letters, numbers, period,
+The current release supports manual and scheduled FULL backups. Every create,
+delete, policy-update, or restore request requires an Idempotency-Key header of 8-128 letters, numbers, period,
 underscore, colon, or hyphen. Keep the exact key when retrying the same
 request; use a new key for a new backup or restore. Reusing a key with a
 different request returns IDEMPOTENCY_KEY_REUSED.
@@ -153,28 +166,28 @@ Idempotency-Key: backup-orders-20260907-001
 Content-Type: application/json
 
 {
-  "type": "FULL",
-  "retention": "7d"
+  "retentionDays": 7
 }
 ```
 
-Retention is optional and uses a KubeBlocks duration, for example 7d, 24h,
-or 1mo7d. Omitting the request body uses the configured default of 7d.
+`retentionDays` is optional (1-3650). The legacy `retention` duration remains
+accepted for compatible callers, but it cannot be combined with `retentionDays`.
+Omitting the request body uses the configured default of 7d.
 The server returns 202 Accepted, Location, Operation-Location, and Retry-After
 headers before it submits the KubeBlocks Backup resource:
 
 ```json
 {
   "operationId": "op-7d4cba9f4bd2",
-  "backupId": "bkp-0eb83c49ab21",
+  "resourceId": "bkp-0eb83c49ab21",
   "status": "PENDING",
-  "statusUrl": "/api/v1/projects/prj-123/databases/db-456/backups/bkp-0eb83c49ab21",
+  "statusUrl": "/api/v1/operations/op-7d4cba9f4bd2",
   "pollAfterSeconds": 5
 }
 ```
 
-Poll statusUrl until status is COMPLETED or FAILED. A normal backup status is
-safe to display in a UI:
+Poll `statusUrl` until the operation is `SUCCEEDED` or `FAILED`, then fetch the
+backup `resourceId`. A normal backup status is safe to display in a UI:
 
 ```json
 {
@@ -183,12 +196,71 @@ safe to display in a UI:
   "databaseId": "db-456",
   "engine": "POSTGRESQL",
   "type": "FULL",
+  "method": "pg-basebackup",
+  "triggerMethod": "MANUAL",
   "parentBackupId": null,
   "backupChainId": "bkp-0eb83c49ab21",
   "status": "COMPLETED",
   "retention": "7d",
+  "retentionPolicy": "RETAIN_LATEST",
   "sizeBytes": 3707917,
   "message": "Backup completed."
+}
+```
+
+#### Scheduled full backups and retention
+
+Backup configuration can be supplied in the normal database-create request as
+`backup`, or updated independently. DBaaS validates the Ready, platform-owned
+`cyfuture-dbaas-backuprepo`, the engine method/topology exposed by the installed
+KubeBlocks template, a five-field cron expression, timezone, and 1-3650 day
+retention range. KubeBlocks schedules are UTC-only: a fixed-offset timezone is
+converted before it is written; DST-aware schedules must be submitted in UTC.
+
+```http
+PUT /api/v1/projects/prj-123/databases/db-456/backup-policy
+Idempotency-Key: backup-policy-orders-20260907-001
+Content-Type: application/json
+
+{
+  "repository": "cyfuture-dbaas-backuprepo",
+  "autoBackupEnabled": true,
+  "retentionDays": 7,
+  "cronExpression": "0 2 * * *",
+  "timezone": "UTC",
+  "retentionPolicy": "RETAIN_LATEST",
+  "pitrEnabled": false
+}
+```
+
+The asynchronous operation patches only `Cluster.spec.backup` with `enabled`,
+`method`, `repoName`, `retentionPeriod`, `cronExpression`, and
+`pitrEnabled: false`. DBaaS does not create or mutate the generated
+`BackupPolicy` or `BackupSchedule`; it reports the policy as `ACTIVE` only after
+both KubeBlocks resources are Available. Backups created by that schedule are
+discovered and imported with `triggerMethod: AUTOMATIC`.
+
+Retention is evaluated only after a successful replacement is observed:
+
+- `DELETE_ALL` queues an explicit data purge before the source Cluster is deleted.
+- `RETAIN_LATEST` retains the newest completed recovery point and queues older completed points only after that replacement succeeds.
+- `RETAIN_ALL` applies each backup's own expiry; failed backups never replace a successful recovery point.
+
+`GET /api/v1/backups` returns the current restorable Backup Set. The history
+routes retain completed, failed, expired, and deleted records in MySQL even if
+the Kubernetes resource or source database is gone. They accept `project`,
+`databaseId`, `engine`, `status`, `triggerMethod`, `backupType`, `from`, `to`,
+`search`, `page`, `size`, `sort`, and `order` filters as applicable.
+
+Catalog and history routes return the shared `PageResponse` envelope:
+
+```json
+{
+  "items": [],
+  "page": 0,
+  "size": 20,
+  "totalItems": 0,
+  "totalPages": 0
 }
 ```
 
@@ -208,9 +280,8 @@ The restore never overwrites db-456; it allocates a new databaseId and returns:
 
 ```json
 {
-  "restoreId": "rst-4059d1a1f560",
   "operationId": "op-5340ccaa2f58",
-  "databaseId": "db-7a011c19ca1b",
+  "resourceId": "db-7a011c19ca1b",
   "status": "PENDING",
   "statusUrl": "/api/v1/operations/op-5340ccaa2f58",
   "pollAfterSeconds": 5
@@ -221,11 +292,15 @@ Poll the global operation route. A restore reaches SUCCEEDED only after the
 KubeBlocks restore operation succeeds, the restored Cluster is healthy, managed
 credentials are ready, and the shared public gateway route is ready. Fetch the
 new database through its normal database route and obtain connection details
-only through its existing /connection endpoint.
+only through its existing /connection endpoint. The restore history's
+`restoredDatabaseName` is the logical database recovered from the backup; the
+new DBaaS resource still retains the display name supplied in the restore
+request. DBaaS reuses that restored logical database and managed username with
+a fresh target-cluster password—it does not create a target-ID-named empty
+database.
 
 restoreTime is reserved for a future point-in-time restore request. It is
-rejected with PITR_NOT_AVAILABLE unless continuous backups are enabled; this
-release does not claim PITR support.
+rejected with FEATURE_NOT_AVAILABLE in this release.
 
 #### Backup infrastructure and lifecycle safety
 
@@ -234,6 +309,10 @@ observed infrastructure state. Backup objects are stored in the existing
 S3-compatible repository; DBaaS uses the existing Ready
 cyfuture-dbaas-backuprepo and only reads its status. It never creates, patches,
 or replaces that BackupRepo or its encryption configuration.
+
+KubeBlocks 1.0 generated `BackupPolicy` resources can omit `backupRepoName`.
+That selects the cluster default, which DBaaS accepts only when
+`cyfuture-dbaas-backuprepo` is both Ready and marked as that default.
 
 The generated KubeBlocks BackupPolicy must expose the manual method appropriate
 to the engine:
@@ -244,18 +323,19 @@ to the engine:
 | MySQL | xtrabackup | xtrabackup-inc, archive-binlog |
 | MongoDB | dump | pbm-physical, archive-oplog, pbm-pitr |
 
-The reconciler independently resumes pending or running backups and restores
-after an application restart. It records PENDING, RUNNING, COMPLETED, FAILED,
-DELETING, and DELETED status without claiming backup completion until KubeBlocks
-reports success.
+The restart-safe reconcilers independently resume policy updates, pending or
+running backups, scheduled backup discovery, deletions, and restores. They
+record PENDING, RUNNING, COMPLETED, FAILED, EXPIRED, DELETING, and DELETED
+history without claiming completion until KubeBlocks reports success.
 
 Database deletion is blocked while a backup or restore is active. Completed and
 failed retained backups can survive source database deletion. Project namespace
-cleanup is blocked while retained backups exist. DELETE
-/backups/{backupId} is an explicit asynchronous purge: it deletes only the
-known DBaaS-owned KubeBlocks Backup resource using its delete policy, which
-removes its associated object-storage data. Unknown or orphan Kubernetes backup
-resources are never deleted automatically.
+cleanup is blocked while retained backups exist unless
+`DELETE /api/v1/projects/{projectId}?purgeBackups=true` explicitly queues their
+purge. `DELETE /backups/{backupId}` deletes only the known DBaaS-owned Backup
+CR by default and preserves its object data. Add `?purge=true` to first change
+that known CR to KubeBlocks `Delete` policy and then purge its data. Unknown or
+orphan Kubernetes resources and finalizers are never force-deleted.
 
 Backup and restore responses never contain S3 credentials, encryption
 passphrases, Kubernetes Secrets, database passwords, or private endpoints.
@@ -274,22 +354,26 @@ $backupHeaders = @{
   "Content-Type" = "application/json"
   "Idempotency-Key" = "backup-orders-20260907-001"
 }
-$backup = Invoke-RestMethod -Method POST -Uri "$baseUrl/api/v1/projects/$projectId/databases/$sourceDatabaseId/backups" -Headers $backupHeaders -Body '{"type":"FULL","retention":"7d"}'
+$backup = Invoke-RestMethod -Method POST -Uri "$baseUrl/api/v1/projects/$projectId/databases/$sourceDatabaseId/backups" -Headers $backupHeaders -Body '{"retentionDays":7}'
+$backupId = $backup.resourceId
 
 do {
   Start-Sleep -Seconds $backup.pollAfterSeconds
   $backupState = Invoke-RestMethod -Method GET -Uri "$baseUrl$($backup.statusUrl)"
-} while ($backupState.status -notin @("COMPLETED", "FAILED"))
+} while ($backupState.status -notin @("SUCCEEDED", "FAILED"))
 
-if ($backupState.status -ne "COMPLETED") {
+if ($backupState.status -ne "SUCCEEDED") {
   throw "Backup did not complete: $($backupState.message)"
 }
+$backupSet = Invoke-RestMethod -Method GET -Uri "$baseUrl/api/v1/projects/$projectId/databases/$sourceDatabaseId/backups/$backupId"
+if ($backupSet.status -ne "COMPLETED") { throw "Backup is not restorable: $($backupSet.message)" }
 
 $restoreHeaders = @{
   "Content-Type" = "application/json"
   "Idempotency-Key" = "restore-orders-20260907-001"
 }
-$restore = Invoke-RestMethod -Method POST -Uri "$baseUrl/api/v1/projects/$projectId/databases/$sourceDatabaseId/backups/$($backup.backupId)/restore" -Headers $restoreHeaders -Body '{"name":"orders-restore"}'
+$restore = Invoke-RestMethod -Method POST -Uri "$baseUrl/api/v1/projects/$projectId/databases/$sourceDatabaseId/backups/$backupId/restore" -Headers $restoreHeaders -Body '{"name":"orders-restore"}'
+$restoredDatabaseId = $restore.resourceId
 
 do {
   Start-Sleep -Seconds $restore.pollAfterSeconds
@@ -300,14 +384,13 @@ if ($restoreState.status -ne "SUCCEEDED") {
   throw "Restore did not complete: $($restoreState.message)"
 }
 
-Invoke-RestMethod -Method GET -Uri "$baseUrl/api/v1/projects/$projectId/databases/$($restore.databaseId)"
+Invoke-RestMethod -Method GET -Uri "$baseUrl/api/v1/projects/$projectId/databases/$restoredDatabaseId"
 ```
 
-Before enabling incremental backup, schedules, or PITR, configure and validate
-the corresponding KubeBlocks BackupPolicy methods and repository retention
-policy. The persisted policy fields and engine strategy abstraction are ready
-for that expansion, but no scheduler, incremental chain, WAL/binlog/oplog
-archive, or point-in-time recovery is enabled by this release.
+The supported engines and full-backup methods are PostgreSQL `pg-basebackup`,
+MySQL `xtrabackup`, and MongoDB replica-set `dump`. PITR and incremental or
+continuous backups are intentionally rejected with FEATURE_NOT_AVAILABLE; no
+WAL, binlog, oplog, parent-chain, or point-in-time replay is attempted.
 
 ### Response boundary
 

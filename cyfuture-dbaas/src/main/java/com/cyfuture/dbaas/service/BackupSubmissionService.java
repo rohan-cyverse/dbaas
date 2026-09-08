@@ -7,6 +7,9 @@ import com.cyfuture.dbaas.entity.BackupPolicyMetadata;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.OperationMetadata;
 import com.cyfuture.dbaas.model.BackupStatus;
+import com.cyfuture.dbaas.model.BackupPolicyStatus;
+import com.cyfuture.dbaas.model.BackupRetentionPolicy;
+import com.cyfuture.dbaas.model.BackupTriggerMethod;
 import com.cyfuture.dbaas.model.OperationStatus;
 import com.cyfuture.dbaas.model.ProvisioningStage;
 import com.cyfuture.dbaas.repository.BackupMetadataRepository;
@@ -34,7 +37,8 @@ public class BackupSubmissionService {
     public void submit(String backupId) {
         BackupMetadata backup = backupRepository.findById(backupId).orElse(null);
         if (backup == null || backup.getStatus() == BackupStatus.DELETING
-                || backup.getStatus() == BackupStatus.DELETED || backup.getStatus() == BackupStatus.COMPLETED) return;
+                || backup.getStatus() == BackupStatus.DELETED || backup.getStatus() == BackupStatus.COMPLETED
+                || backup.getTriggerMethod() == BackupTriggerMethod.AUTOMATIC) return;
         DatabaseMetadata source = databaseRepository
                 .findByDatabaseIdAndProjectName(backup.getDatabaseId(), backup.getProjectName()).orElse(null);
         if (source == null) {
@@ -43,14 +47,19 @@ public class BackupSubmissionService {
         }
         try {
             BackupEngineStrategy strategy = strategies.require(backup.getEngine());
+            String requestedMethod = backup.getBackupMethod() == null || backup.getBackupMethod().isBlank()
+                    ? strategy.manualFullMethod() : backup.getBackupMethod();
             KubeBlocksClient.BackupPolicyInfo policy = kubeBlocksClient.resolveReadyBackupPolicy(
                     source.getNamespaceName(), source.getDatabaseId(), source.getEngine(),
-                    strategy.manualFullMethod(), properties.getBackup().getRepositoryName());
+                    requestedMethod, backup.getBackupRepositoryName());
             synchronizePolicy(backup, policy);
             kubeBlocksClient.createBackup(source.getNamespaceName(), backup.getProjectName(),
                     backup.getDatabaseId(), backup.getKubernetesBackupName(), policy.policyName(),
-                    policy.backupMethod(), backup.getRetentionPeriod(), null);
+                    policy.backupMethod(), backup.getRetentionPeriod(), null,
+                    backup.getBackupId(), backup.getOperationId());
             backup.setKubernetesPolicyName(policy.policyName());
+            backup.setKubernetesNamespace(source.getNamespaceName());
+            backup.setBackupMethod(policy.backupMethod());
             backup.setStatus(BackupStatus.RUNNING);
             if (backup.getStartedAt() == null) backup.setStartedAt(Instant.now());
             backup.setFailureCode(null);
@@ -82,14 +91,23 @@ public class BackupSubmissionService {
             policy.setDatabaseId(backup.getDatabaseId());
             policy.setCreatedAt(Instant.now());
             policy.setSchedulingEnabled(false);
+            policy.setAutoBackupEnabled(false);
+            policy.setRetentionDays(7);
+            policy.setRetentionPolicy(BackupRetentionPolicy.RETAIN_ALL);
+            policy.setTimezone("UTC");
+            policy.setPitrEnabled(false);
+            policy.setPolicyStatus(BackupPolicyStatus.ACTIVE);
         }
         policy.setEngine(observed.engine());
         policy.setKubernetesPolicyName(observed.policyName());
         policy.setBackupRepositoryName(observed.repositoryName());
         policy.setDefaultBackupMethod(observed.backupMethod());
         policy.setEncryptionConfigured(observed.encryptionConfigured());
-        policy.setDefaultRetentionPeriod(properties.getBackup().getDefaultRetention());
+        if (policy.getDefaultRetentionPeriod() == null || policy.getDefaultRetentionPeriod().isBlank()) {
+            policy.setDefaultRetentionPeriod(properties.getBackup().getDefaultRetention());
+        }
         policy.setObservedStatus(observed.observedStatus());
+        policy.setLastObservedAt(Instant.now());
         policy.setUpdatedAt(Instant.now());
         policyRepository.save(policy);
     }

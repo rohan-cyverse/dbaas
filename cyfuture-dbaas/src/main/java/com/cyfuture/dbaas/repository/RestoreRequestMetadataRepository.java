@@ -6,11 +6,14 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 
-public interface RestoreRequestMetadataRepository extends JpaRepository<RestoreRequestMetadata, String> {
+public interface RestoreRequestMetadataRepository extends JpaRepository<RestoreRequestMetadata, String>,
+        JpaSpecificationExecutor<RestoreRequestMetadata> {
     Optional<RestoreRequestMetadata> findByProjectNameAndSourceBackupIdAndIdempotencyKey(
             String projectName, String sourceBackupId, String idempotencyKey);
     Optional<RestoreRequestMetadata> findByRestoredDatabaseId(String restoredDatabaseId);
+    boolean existsByRestoredDatabaseId(String restoredDatabaseId);
     Optional<RestoreRequestMetadata> findByOperationId(String operationId);
     boolean existsByProjectNameAndSourceBackupIdAndStatusIn(
             String projectName, String sourceBackupId, Collection<RestoreStatus> statuses);

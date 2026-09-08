@@ -37,7 +37,10 @@ public class RestoreSubmissionService {
         try {
             kubeBlocksClient.createRestoreOpsRequest(target.getNamespaceName(), restore.getProjectName(),
                     target.getDatabaseId(), restore.getKubernetesOpsRequestName(),
-                    restore.getSourceBackupId(), restore.getRestoreTime());
+                    restore.getSourceKubernetesBackupName() == null ? restore.getSourceBackupId()
+                            : restore.getSourceKubernetesBackupName(),
+                    restore.getSourceBackupNamespace(), restore.getSourceBackupId(), restore.getOperationId(),
+                    null);
             restore.setStatus(RestoreStatus.RUNNING);
             if (restore.getStartedAt() == null) restore.setStartedAt(Instant.now());
             restore.setFailureCode(null);

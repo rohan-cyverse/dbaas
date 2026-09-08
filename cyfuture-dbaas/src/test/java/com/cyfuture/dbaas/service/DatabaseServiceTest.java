@@ -63,7 +63,8 @@ class DatabaseServiceTest {
         service = new DatabaseService(kubeBlocksClient, properties, repository,
                 provisioning, metadataCreation, mock(CredentialLifecycleService.class),
                 projects, mock(SharedGatewayService.class), mock(OperationMetadataRepository.class), friendlyNames,
-                mock(BackupMetadataRepository.class), mock(RestoreRequestMetadataRepository.class));
+                mock(BackupMetadataRepository.class), mock(RestoreRequestMetadataRepository.class),
+                mock(BackupPolicyService.class), mock(BackupRetentionService.class));
     }
 
     @Test

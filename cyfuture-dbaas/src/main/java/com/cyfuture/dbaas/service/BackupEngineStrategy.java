@@ -2,6 +2,7 @@ package com.cyfuture.dbaas.service;
 
 import com.cyfuture.dbaas.model.BackupType;
 import com.cyfuture.dbaas.model.DatabaseEngine;
+import com.cyfuture.dbaas.model.DatabaseMode;
 
 import java.util.List;
 
@@ -16,6 +17,9 @@ public interface BackupEngineStrategy {
     List<String> futureIncrementalMethods();
 
     List<String> futureContinuousMethods();
+
+    /** The topology must be one backed by the installed KubeBlocks template. */
+    boolean supportsTopology(DatabaseMode mode);
 
     default boolean supportsNow(BackupType type) {
         return type == BackupType.FULL;

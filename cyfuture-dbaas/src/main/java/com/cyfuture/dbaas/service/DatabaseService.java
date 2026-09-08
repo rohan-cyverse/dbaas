@@ -12,6 +12,8 @@ import com.cyfuture.dbaas.dto.PublicEndpointResponse;
 import com.cyfuture.dbaas.dto.OperationResponse;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.OperationMetadata;
+import com.cyfuture.dbaas.entity.BackupPolicyMetadata;
+import com.cyfuture.dbaas.entity.RestoreRequestMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.DatabaseEngine;
 import com.cyfuture.dbaas.model.DatabaseMode;
@@ -67,6 +69,8 @@ public class DatabaseService {
     private final FriendlyNameGenerator friendlyNameGenerator;
     private final BackupMetadataRepository backupRepository;
     private final RestoreRequestMetadataRepository restoreRepository;
+    private final BackupPolicyService backupPolicyService;
+    private final BackupRetentionService backupRetentionService;
 
     public CreateDatabaseResponse create(String project, String idempotencyKey,
                                          CreateDatabaseRequest request) {
@@ -79,6 +83,9 @@ public class DatabaseService {
                 .getNamespaceName();
         validateIdempotencyKey(idempotencyKey);
         request = publicRequest(request, clientIp);
+        if (request.backup() != null) {
+            request = withBackup(request, backupPolicyService.normalizeForCreation(request.backup()));
+        }
         String requestHash = requestHash(request);
         DatabaseMetadata existing = databaseRepository
                 .findByProjectNameAndIdempotencyKey(project, idempotencyKey)
@@ -130,9 +137,14 @@ public class DatabaseService {
         database.setMessage("Provisioning request queued");
         database.setCreatedAt(now);
         database.setUpdatedAt(now);
+        BackupPolicyMetadata backupPolicy = request.backup() == null ? null
+                : backupPolicyService.initialPolicy(database, request.backup(), operationId);
         try {
-            metadataCreationService.save(database,
-                    operationFor(operationId, databaseId, project, now));
+            if (backupPolicy == null) {
+                metadataCreationService.save(database, operationFor(operationId, databaseId, project, now));
+            } else {
+                metadataCreationService.save(database, operationFor(operationId, databaseId, project, now), backupPolicy);
+            }
         } catch (DataIntegrityViolationException exception) {
             DatabaseMetadata duplicate = databaseRepository
                     .findByProjectNameAndIdempotencyKey(project, idempotencyKey)
@@ -184,7 +196,8 @@ public class DatabaseService {
         String value = request.name() + "|" + request.remark() + "|" + request.engine()
                 + "|" + request.mode() + "|" + request.version() + "|" + request.size()
                 + "|" + request.storageGi() + "|" + request.replicas() + "|" + request.shards()
-                + "|" + request.timezone() + "|" + request.deletionProtection() + "|" + tags;
+                + "|" + request.timezone() + "|" + request.deletionProtection() + "|" + tags
+                + "|" + backupHash(request);
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(value.getBytes(StandardCharsets.UTF_8));
@@ -241,6 +254,19 @@ public class DatabaseService {
         if (live.status() != DatabaseStatus.RUNNING || !live.serviceReady()) {
             throw new ApiException(HttpStatus.CONFLICT, "DATABASE_NOT_READY", true,
                     "Database is not ready for connections");
+        }
+        // A restored target must continue to use the logical database from
+        // its recovery point. Re-establish that specific credential first if
+        // its managed Secret was removed; never fall back to creating a
+        // target-ID-named database.
+        RestoreRequestMetadata restore = restoreRepository.findByRestoredDatabaseId(databaseId).orElse(null);
+        if (restore != null && restore.getStatus() == RestoreStatus.COMPLETED) {
+            if (!credentialLifecycleService.readyForRestoredDatabase(database,
+                    restore.getRestoredDatabaseName(),
+                    CredentialLifecycleService.managedUsername(restore.getSourceDatabaseId()))) {
+                throw new ApiException(HttpStatus.CONFLICT, "RESTORED_CREDENTIALS_NOT_READY", true,
+                        "Restored database credentials are being prepared; retry shortly.");
+            }
         }
         ManagedCredential credential = credentialLifecycleService.credentials(database);
         PublicEndpointResponse publicEndpoint = publicEndpoint(database);
@@ -302,6 +328,13 @@ public class DatabaseService {
         database.setMessage("Database deletion requested; removing public route");
         database.setUpdatedAt(Instant.now());
         databaseRepository.save(database);
+
+        if (!backupRetentionService.readyForClusterDeletion(project, databaseId)) {
+            database.setMessage("Database deletion is waiting for active backup work or DELETE_ALL backup purge");
+            database.setUpdatedAt(Instant.now());
+            databaseRepository.save(database);
+            return deletionResponse(database);
+        }
 
         try {
             sharedGatewayService.removeRoute(database);
@@ -538,7 +571,7 @@ public class DatabaseService {
         return new CreateDatabaseRequest(request.name(), request.remark(), request.engine(),
                 request.mode(), request.version(), request.size(), request.storageGi(),
                 request.replicas(), request.shards(), request.timezone(), cidrs,
-                request.deletionProtection(), request.tags());
+                request.deletionProtection(), request.tags(), request.backup());
     }
 
     private CreateDatabaseRequest withAllocatedName(String project, CreateDatabaseRequest request) {
@@ -549,7 +582,22 @@ public class DatabaseService {
         return new CreateDatabaseRequest(displayName, request.remark(), request.engine(),
                 request.mode(), request.version(), request.size(), request.storageGi(),
                 request.replicas(), request.shards(), request.timezone(), request.allowedCidrs(),
-                request.deletionProtection(), request.tags());
+                request.deletionProtection(), request.tags(), request.backup());
+    }
+
+    private CreateDatabaseRequest withBackup(CreateDatabaseRequest request,
+                                             com.cyfuture.dbaas.dto.BackupConfigurationRequest backup) {
+        return new CreateDatabaseRequest(request.name(), request.remark(), request.engine(), request.mode(),
+                request.version(), request.size(), request.storageGi(), request.replicas(), request.shards(),
+                request.timezone(), request.allowedCidrs(), request.deletionProtection(), request.tags(), backup);
+    }
+
+    private String backupHash(CreateDatabaseRequest request) {
+        if (request.backup() == null) return "";
+        return String.valueOf(request.backup().repository()) + "|"
+                + request.backup().autoBackupEnabled() + "|" + request.backup().retentionDays() + "|"
+                + request.backup().cronExpression() + "|" + request.backup().timezone() + "|"
+                + request.backup().retentionPolicy() + "|" + request.backup().pitrEnabled();
     }
 
     private String allocateGeneratedName(String project, DatabaseEngine engine) {

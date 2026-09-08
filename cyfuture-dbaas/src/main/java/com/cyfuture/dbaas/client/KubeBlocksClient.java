@@ -1,6 +1,7 @@
 package com.cyfuture.dbaas.client;
 
 import com.cyfuture.dbaas.config.DatabaseProperties;
+import com.cyfuture.dbaas.dto.BackupRepositoryResponse;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
 import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.DatabaseEngine;
@@ -23,13 +24,16 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -47,12 +51,32 @@ public class KubeBlocksClient {
     private static final String DATA_PROTECTION_GROUP = "dataprotection.kubeblocks.io";
     private static final String DATA_PROTECTION_VERSION = "v1alpha1";
     private static final String BACKUPS = "backups";
+    private static final String RESTORES = "restores";
     private static final String BACKUP_POLICIES = "backuppolicies";
+    private static final String BACKUP_POLICY_TEMPLATES = "backuppolicytemplates";
+    private static final String BACKUP_SCHEDULES = "backupschedules";
     private static final String BACKUP_REPOS = "backuprepos";
     private static final String APP_INSTANCE_LABEL = "app.kubernetes.io/instance";
-    private static final String DEFAULT_BACKUP_POLICY =
-            "dataprotection.kubeblocks.io/is-default-backup-policy";
+    private static final String MANAGED_BY_LABEL = "app.kubernetes.io/managed-by";
+    private static final String PROJECT_LABEL = "dbaas.cyfuture.com/project";
+    private static final String DATABASE_LABEL = "dbaas.cyfuture.com/database-id";
+    private static final String BACKUP_ID_LABEL = "dbaas.cyfuture.com/backup-id";
+    private static final String OPERATION_ID_LABEL = "dbaas.cyfuture.com/operation-id";
+    /*
+     * KubeBlocks 1.0 uses is-default-policy. Keep the earlier spelling as a
+     * compatibility fallback for clusters upgraded from older releases.
+     */
+    private static final List<String> DEFAULT_BACKUP_POLICY_ANNOTATIONS = List.of(
+            "dataprotection.kubeblocks.io/is-default-policy",
+            "dataprotection.kubeblocks.io/is-default-backup-policy");
     private static final Pattern QUANTITY = Pattern.compile("^([1-9][0-9]*)(Mi|Gi|Ti)$");
+    private static final Pattern SENSITIVE_BACKUP_DIAGNOSTIC = Pattern.compile(
+            "(?i)(\\b(secret|password|passwd|pwd|token|access[_-]?key|credential|passphrase|"
+                    + "encryption|kms)\\b|s3://|\\.svc\\.cluster\\.local\\b|"
+                    + "\\b(?:10|127)\\.(?:\\d{1,3}\\.){2}\\d{1,3}\\b|"
+                    + "\\b192\\.168\\.(?:\\d{1,3}\\.)?\\d{1,3}\\b|"
+                    + "\\b172\\.(?:1[6-9]|2\\d|3[01])\\.(?:\\d{1,3}\\.)?\\d{1,3}\\b|"
+                    + "\\bnamespace\\b)");
     /** Lets KubeBlocks use in-place resize when available and safely recreate Pods otherwise. */
     private static final String PREFER_IN_PLACE = "PreferInPlace";
 
@@ -495,7 +519,7 @@ public class KubeBlocksClient {
                                                      DatabaseEngine engine,
                                                      String expectedMethod,
                                                      String expectedRepository) {
-        requireReadyBackupRepository(expectedRepository);
+        BackupRepositoryInfo repository = requireReadyBackupRepository(expectedRepository);
         try {
             Map<String, Object> list = asMap(customObjectsApi.listNamespacedCustomObject(
                     DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace,
@@ -505,12 +529,11 @@ public class KubeBlocksClient {
             for (Object item : (List<?>) list.getOrDefault("items", List.of())) {
                 Map<String, Object> policy = asMap(item);
                 Map<String, Object> metadata = asMap(policy.get("metadata"));
-                Map<String, Object> labels = asMap(metadata.get("labels"));
-                if (!databaseId.equals(String.valueOf(labels.get(APP_INSTANCE_LABEL)))) continue;
+                Map<String, Object> spec = asMap(policy.get("spec"));
+                if (!belongsToCluster(metadata, spec, databaseId)) continue;
                 policies.add(policy);
                 Map<String, Object> annotations = asMap(metadata.get("annotations"));
-                if ("true".equalsIgnoreCase(String.valueOf(
-                        annotations.get(DEFAULT_BACKUP_POLICY)))) {
+                if (isDefaultBackupPolicy(annotations)) {
                     defaults.add(policy);
                 }
             }
@@ -533,10 +556,17 @@ public class KubeBlocksClient {
             Map<String, Object> metadata = asMap(policy.get("metadata"));
             Map<String, Object> spec = asMap(policy.get("spec"));
             String policyName = String.valueOf(metadata.get("name"));
-            String repository = String.valueOf(spec.get("backupRepoName"));
-            if (!expectedRepository.equals(repository)) {
+            String configuredRepository = optionalText(spec.get("backupRepoName"));
+            if (configuredRepository != null && !expectedRepository.equals(configuredRepository)) {
                 throw new ApiException(HttpStatus.CONFLICT, "BACKUP_REPOSITORY_MISMATCH", false,
                         "The database BackupPolicy is not configured for the approved BackupRepo.");
+            }
+            // backupRepoName is optional in KubeBlocks 1.0. An omitted value
+            // intentionally selects the cluster's default BackupRepo, so it is
+            // valid only when the DBaaS-approved repository is that default.
+            if (configuredRepository == null && !repository.defaultRepository()) {
+                throw new ApiException(HttpStatus.CONFLICT, "BACKUP_REPOSITORY_MISMATCH", false,
+                        "The database BackupPolicy uses the default BackupRepo, which is not the approved BackupRepo.");
             }
             boolean methodFound = ((List<?>) spec.getOrDefault("backupMethods", List.of())).stream()
                     .map(this::asMap)
@@ -547,6 +577,7 @@ public class KubeBlocksClient {
             }
             String observedStatus = policyObservedStatus(asMap(policy.get("status")));
             boolean encryptionConfigured = !asMap(spec.get("encryptionConfig")).isEmpty();
+            validateInstalledTemplate(policy, expectedMethod);
             return new BackupPolicyInfo(policyName, expectedRepository, expectedMethod,
                     encryptionConfigured, observedStatus, engine);
         } catch (io.kubernetes.client.openapi.ApiException exception) {
@@ -554,17 +585,199 @@ public class KubeBlocksClient {
         }
     }
 
+    /**
+     * Updates only Cluster.spec.backup. The shared BackupRepo is read and
+     * validated but never created, changed, or removed by this client.
+     */
+    public void configureScheduledBackup(String namespace, String project, String databaseId,
+                                        String method, String repositoryName,
+                                        String retentionPeriod, String cronExpression,
+                                        boolean enabled) {
+        requireReadyBackupRepository(repositoryName);
+        for (int attempt = 0; attempt < 3; attempt++) {
+            try {
+                Map<String, Object> cluster = new LinkedHashMap<>(asMap(
+                        customObjectsApi.getNamespacedCustomObject(
+                                GROUP, VERSION, namespace, CLUSTERS, databaseId).execute()));
+                Map<String, Object> metadata = asMap(cluster.get("metadata"));
+                Map<String, Object> labels = asMap(metadata.get("labels"));
+                if (!"cyfuture-dbaas".equals(String.valueOf(labels.get(MANAGED_BY_LABEL)))
+                        || !project.equals(String.valueOf(labels.get(PROJECT_LABEL)))
+                        || !databaseId.equals(String.valueOf(labels.get(DATABASE_LABEL)))) {
+                    throw new ApiException(HttpStatus.CONFLICT, "DATABASE_RESOURCE_NOT_MANAGED", false,
+                            "The KubeBlocks Cluster is not owned by this DBaaS database.");
+                }
+                Map<String, Object> currentBackup = asMap(asMap(cluster.get("spec")).get("backup"));
+                // Send a merge patch containing only fields owned by this
+                // version. This avoids rewriting unrelated Cluster fields or
+                // future KubeBlocks backup fields during every reconciliation.
+                Map<String, Object> backup = new LinkedHashMap<>();
+                backup.put("enabled", enabled);
+                backup.put("method", method);
+                backup.put("repoName", repositoryName);
+                backup.put("retentionPeriod", retentionPeriod);
+                if (cronExpression != null && !cronExpression.isBlank()) {
+                    backup.put("cronExpression", cronExpression);
+                } else {
+                    // JSON merge-patch null removes a previously configured
+                    // schedule when automatic backups are disabled.
+                    backup.put("cronExpression", null);
+                }
+                backup.put("pitrEnabled", false);
+                // A reconciler may revisit a waiting KubeBlocks policy often.
+                // Do not generate needless Cluster writes once desired state is
+                // already present.
+                if (backupSettingsMatch(currentBackup, backup)) return;
+                Map<String, Object> patch = Map.of("spec", Map.of("backup", backup));
+                customObjectsApi.patchNamespacedCustomObject(
+                                GROUP, VERSION, namespace, CLUSTERS, databaseId, patch)
+                        .fieldManager("cyfuture-dbaas")
+                        .execute();
+                return;
+            } catch (io.kubernetes.client.openapi.ApiException exception) {
+                if (exception.getCode() == 409 && attempt < 2) continue;
+                throw backupApiFailure("configure the Cluster backup policy", exception);
+            }
+        }
+    }
+
+    private boolean backupSettingsMatch(Map<String, Object> current, Map<String, Object> desired) {
+        for (Map.Entry<String, Object> setting : desired.entrySet()) {
+            Object expected = setting.getValue();
+            if (expected == null) {
+                if (current.containsKey(setting.getKey()) && current.get(setting.getKey()) != null) return false;
+            } else if (!Objects.equals(expected, current.get(setting.getKey()))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Reads the generated BackupSchedule without creating or mutating it. */
+    public BackupScheduleInfo observeGeneratedBackupSchedule(String namespace, String databaseId,
+                                                             String policyName) {
+        try {
+            Map<String, Object> list = asMap(customObjectsApi.listNamespacedCustomObject(
+                    DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace,
+                    BACKUP_SCHEDULES).execute());
+            List<Map<String, Object>> matches = new ArrayList<>();
+            for (Object item : (List<?>) list.getOrDefault("items", List.of())) {
+                Map<String, Object> schedule = asMap(item);
+                Map<String, Object> metadata = asMap(schedule.get("metadata"));
+                Map<String, Object> labels = asMap(metadata.get("labels"));
+                Map<String, Object> spec = asMap(schedule.get("spec"));
+                String configuredPolicy = optionalText(spec.get("backupPolicyName"));
+                String instance = optionalText(labels.get(APP_INSTANCE_LABEL));
+                if ((instance == null || databaseId.equals(instance))
+                        && (policyName.equals(configuredPolicy) || configuredPolicy == null)) {
+                    matches.add(schedule);
+                }
+            }
+            if (matches.size() != 1) {
+                return BackupScheduleInfo.missing();
+            }
+            Map<String, Object> schedule = matches.get(0);
+            Map<String, Object> metadata = asMap(schedule.get("metadata"));
+            Map<String, Object> status = asMap(schedule.get("status"));
+            return new BackupScheduleInfo(true, String.valueOf(metadata.get("name")),
+                    policyObservedStatus(status), ready(status));
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw backupApiFailure("read the generated BackupSchedule", exception);
+        }
+    }
+
+    /**
+     * Returns only KubeBlocks Backup CRs proven to be owned by a generated
+     * BackupSchedule for the requested Cluster. These are candidates for safe
+     * metadata import; arbitrary Backup CRs are deliberately excluded.
+     */
+    public List<ScheduledBackupInfo> listScheduledBackups(String namespace, String databaseId,
+                                                           String policyName) {
+        try {
+            Map<String, Object> list = asMap(customObjectsApi.listNamespacedCustomObject(
+                    DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS).execute());
+            List<ScheduledBackupInfo> discovered = new ArrayList<>();
+            for (Object item : (List<?>) list.getOrDefault("items", List.of())) {
+                Map<String, Object> backup = asMap(item);
+                Map<String, Object> metadata = asMap(backup.get("metadata"));
+                Map<String, Object> labels = asMap(metadata.get("labels"));
+                Map<String, Object> spec = asMap(backup.get("spec"));
+                String instance = optionalText(labels.get(APP_INSTANCE_LABEL));
+                if (!((instance == null || databaseId.equals(instance)))
+                        || !policyName.equals(String.valueOf(spec.get("backupPolicyName")))
+                        || !hasOwnerKind(metadata, "BackupSchedule")) {
+                    continue;
+                }
+                Map<String, Object> status = asMap(backup.get("status"));
+                String name = optionalText(metadata.get("name"));
+                String uid = optionalText(metadata.get("uid"));
+                if (name == null || uid == null) continue;
+                discovered.add(new ScheduledBackupInfo(name, uid,
+                        optionalText(spec.get("backupMethod")),
+                        optionalText(spec.get("retentionPeriod")),
+                        String.valueOf(status.getOrDefault("phase", "New")),
+                        safeKubernetesMessage(firstNonBlank(
+                                String.valueOf(status.getOrDefault("failureReason", "")),
+                                latestConditionMessage(status), "KubeBlocks is processing the backup")),
+                        size(status.get("totalSize")), instant(status.get("startTimestamp")),
+                        instant(status.get("completionTimestamp"))));
+            }
+            return discovered;
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw backupApiFailure("discover scheduled Backup resources", exception);
+        }
+    }
+
+    /** Performs the read-only readiness validation required before accepting backup work. */
+    public void validateReadyBackupRepository(String repositoryName) {
+        requireReadyBackupRepository(repositoryName);
+    }
+
+    /** Lists safe public BackupRepo state only; no Secret references or values leave this client. */
+    public List<BackupRepositoryResponse> listBackupRepositories() {
+        try {
+            Map<String, Object> list = asMap(customObjectsApi.listClusterCustomObject(
+                    DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, BACKUP_REPOS).execute());
+            List<BackupRepositoryResponse> result = new ArrayList<>();
+            for (Object item : (List<?>) list.getOrDefault("items", List.of())) {
+                Map<String, Object> repository = asMap(item);
+                Map<String, Object> metadata = asMap(repository.get("metadata"));
+                Map<String, Object> spec = asMap(repository.get("spec"));
+                Map<String, Object> status = asMap(repository.get("status"));
+                String name = optionalText(metadata.get("name"));
+                if (name == null) continue;
+                Map<String, Object> provider = asMap(spec.get("storageProviderRef"));
+                String providerName = firstNonBlank(optionalText(provider.get("name")),
+                        optionalText(spec.get("storageProviderRef")), optionalText(spec.get("storageProvider")),
+                        optionalText(status.get("storageProvider")), "unknown");
+                result.add(new BackupRepositoryResponse(name, providerName,
+                        "true".equalsIgnoreCase(String.valueOf(status.get("isDefault"))), ready(status)));
+            }
+            return result;
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw backupApiFailure("list BackupRepo resources", exception);
+        }
+    }
+
     /** Creates a KubeBlocks Backup CR for a policy that was already validated. */
     public void createBackup(String namespace, String project, String databaseId,
                              String backupName, String policyName, String backupMethod,
                              String retentionPeriod, String parentBackupName) {
+        createBackup(namespace, project, databaseId, backupName, policyName, backupMethod,
+                retentionPeriod, parentBackupName, backupName, null);
+    }
+
+    /** Creates a labelled manual Backup CR. Retain makes CR deletion distinct from S3 purging. */
+    public void createBackup(String namespace, String project, String databaseId,
+                             String backupName, String policyName, String backupMethod,
+                             String retentionPeriod, String parentBackupName,
+                             String backupId, String operationId) {
         Map<String, Object> spec = new LinkedHashMap<>();
         spec.put("backupPolicyName", policyName);
         spec.put("backupMethod", backupMethod);
-        // DBaaS owns the generated CR. A user-initiated DELETE therefore purges
-        // both this CR and the data it owns. Cluster/database deletion does not
-        // owner-reference this CR, so completed retained backups survive it.
-        spec.put("deletionPolicy", "Delete");
+        // Retain means deleting the CR alone never erases data. A purge is an
+        // explicit two-step operation that first changes this known CR to Delete.
+        spec.put("deletionPolicy", "Retain");
         spec.put("retentionPeriod", retentionPeriod);
         if (parentBackupName != null && !parentBackupName.isBlank()) {
             spec.put("parentBackupName", parentBackupName);
@@ -572,11 +785,14 @@ public class KubeBlocksClient {
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("name", backupName);
         metadata.put("namespace", namespace);
-        metadata.put("labels", Map.of(
-                "app.kubernetes.io/managed-by", "cyfuture-dbaas",
-                APP_INSTANCE_LABEL, databaseId,
-                "dbaas.cyfuture.com/project", project,
-                "dbaas.cyfuture.com/database-id", databaseId));
+        Map<String, String> labels = new LinkedHashMap<>();
+        labels.put(MANAGED_BY_LABEL, "cyfuture-dbaas");
+        labels.put(APP_INSTANCE_LABEL, databaseId);
+        labels.put(PROJECT_LABEL, project);
+        labels.put(DATABASE_LABEL, databaseId);
+        labels.put(BACKUP_ID_LABEL, backupId);
+        if (operationId != null && !operationId.isBlank()) labels.put(OPERATION_ID_LABEL, operationId);
+        metadata.put("labels", labels);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("apiVersion", DATA_PROTECTION_GROUP + "/" + DATA_PROTECTION_VERSION);
         body.put("kind", "Backup");
@@ -586,7 +802,18 @@ public class KubeBlocksClient {
             customObjectsApi.createNamespacedCustomObject(
                     DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS, body).execute();
         } catch (io.kubernetes.client.openapi.ApiException exception) {
-            if (exception.getCode() == 409) return;
+            if (exception.getCode() == 409) {
+                try {
+                    Map<String, Object> existing = asMap(customObjectsApi.getNamespacedCustomObject(
+                            DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS,
+                            backupName).execute());
+                    if (ownedBackup(existing, project, databaseId, backupId, operationId, null, null)) return;
+                } catch (io.kubernetes.client.openapi.ApiException readException) {
+                    throw backupApiFailure("verify an existing Backup resource", readException);
+                }
+                throw new ApiException(HttpStatus.CONFLICT, "BACKUP_RESOURCE_NOT_MANAGED", false,
+                        "A Backup resource with this name is not owned by this DBaaS backup.");
+            }
             throw backupApiFailure("create the Backup resource", exception);
         }
     }
@@ -596,27 +823,109 @@ public class KubeBlocksClient {
         try {
             Map<String, Object> backup = asMap(customObjectsApi.getNamespacedCustomObject(
                     DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS, backupName).execute());
-            Map<String, Object> status = asMap(backup.get("status"));
-            String phase = String.valueOf(status.getOrDefault("phase", "New"));
-            String message = firstNonBlank(String.valueOf(status.getOrDefault("failureReason", "")),
-                    latestConditionMessage(status), "KubeBlocks is processing the backup");
-            return new BackupObservation(true, phase, safeKubernetesMessage(message),
-                    size(status.get("totalSize")), instant(status.get("startTimestamp")),
-                    instant(status.get("completionTimestamp")));
+            return backupObservation(backup);
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             if (exception.getCode() == 404) return BackupObservation.missing();
             throw backupApiFailure("observe the Backup resource", exception);
         }
     }
 
-    /** Explicitly purges only a Backup CR whose deterministic name DBaaS owns. */
-    public void deleteBackup(String namespace, String backupName) {
+    /**
+     * Observes a Backup CR only after proving it still matches the durable
+     * metadata identity. This protects history and restore eligibility if a
+     * Kubernetes name is later reused by another resource.
+     */
+    public BackupObservation observeManagedBackup(String namespace, String project, String databaseId,
+                                                  String backupId, String operationId, String backupName,
+                                                  String expectedUid, String expectedPolicyName) {
         try {
-            customObjectsApi.deleteNamespacedCustomObject(
-                    DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS, backupName).execute();
+            Map<String, Object> backup = asMap(customObjectsApi.getNamespacedCustomObject(
+                    DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS, backupName).execute());
+            if (!ownedBackup(backup, project, databaseId, backupId, operationId,
+                    expectedUid, expectedPolicyName)) {
+                throw new ApiException(HttpStatus.CONFLICT, "BACKUP_RESOURCE_NOT_MANAGED", false,
+                        "The KubeBlocks Backup resource is not owned by this DBaaS backup.");
+            }
+            return backupObservation(backup);
         } catch (io.kubernetes.client.openapi.ApiException exception) {
-            if (exception.getCode() == 404) return;
-            throw backupApiFailure("delete the Backup resource", exception);
+            if (exception.getCode() == 404) return BackupObservation.missing();
+            throw backupApiFailure("observe the Backup resource", exception);
+        }
+    }
+
+    /**
+     * Deletes a known DBaaS manual Backup or a previously discovered generated
+     * schedule Backup. `purgeData` is the only path that changes deletionPolicy
+     * to Delete before removing the CR.
+     */
+    public void deleteManagedBackup(String namespace, String project, String databaseId,
+                                    String backupId, String operationId, String backupName,
+                                    String expectedUid, String expectedPolicyName,
+                                    boolean purgeData) {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            try {
+                Map<String, Object> backup = asMap(customObjectsApi.getNamespacedCustomObject(
+                        DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS, backupName).execute());
+                if (!ownedBackup(backup, project, databaseId, backupId, operationId,
+                        expectedUid, expectedPolicyName)) {
+                    throw new ApiException(HttpStatus.CONFLICT, "BACKUP_RESOURCE_NOT_MANAGED", false,
+                            "The KubeBlocks Backup resource is not managed by this DBaaS backup.");
+                }
+                if (purgeData) {
+                    mutableChildMap(backup, "spec").put("deletionPolicy", "Delete");
+                    try {
+                        customObjectsApi.replaceNamespacedCustomObject(
+                                DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS,
+                                backupName, backup).execute();
+                    } catch (io.kubernetes.client.openapi.ApiException exception) {
+                        if (exception.getCode() == 409 && attempt < 2) continue;
+                        throw exception;
+                    }
+                }
+                customObjectsApi.deleteNamespacedCustomObject(
+                        DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS, backupName).execute();
+                return;
+            } catch (io.kubernetes.client.openapi.ApiException exception) {
+                if (exception.getCode() == 404) return;
+                throw backupApiFailure("delete the Backup resource", exception);
+            }
+        }
+    }
+
+    /**
+     * Observes the Restore resource created as a child of the known Restore
+     * OpsRequest. It is read-only and rejects an ambiguous or unrelated CR,
+     * rather than attributing another tenant's restore to this operation.
+     */
+    public RestoreObservation observeRestore(String namespace, String opsRequestName,
+                                             String knownRestoreName) {
+        try {
+            if (knownRestoreName != null && !knownRestoreName.isBlank()) {
+                Map<String, Object> restore = asMap(customObjectsApi.getNamespacedCustomObject(
+                        DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace,
+                        RESTORES, knownRestoreName).execute());
+                if (!ownedRestore(restore, opsRequestName)) {
+                    throw new ApiException(HttpStatus.CONFLICT, "RESTORE_RESOURCE_NOT_MANAGED", false,
+                            "The KubeBlocks Restore resource is not owned by this restore operation.");
+                }
+                return restoreObservation(restore);
+            }
+            Map<String, Object> list = asMap(customObjectsApi.listNamespacedCustomObject(
+                    DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, RESTORES).execute());
+            List<Map<String, Object>> matches = new ArrayList<>();
+            for (Object item : (List<?>) list.getOrDefault("items", List.of())) {
+                Map<String, Object> restore = asMap(item);
+                if (ownedRestore(restore, opsRequestName)) matches.add(restore);
+            }
+            if (matches.isEmpty()) return RestoreObservation.missing();
+            if (matches.size() > 1) {
+                throw new ApiException(HttpStatus.CONFLICT, "RESTORE_RESOURCE_AMBIGUOUS", false,
+                        "KubeBlocks reported more than one Restore resource for this operation.");
+            }
+            return restoreObservation(matches.get(0));
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 404) return RestoreObservation.missing();
+            throw backupApiFailure("observe the KubeBlocks Restore resource", exception);
         }
     }
 
@@ -624,19 +933,34 @@ public class KubeBlocksClient {
     public void createRestoreOpsRequest(String namespace, String project, String databaseId,
                                         String operationName, String backupName,
                                         Instant restoreTime) {
+        createRestoreOpsRequest(namespace, project, databaseId, operationName, backupName,
+                null, null, null, restoreTime);
+    }
+
+    /** Mirrors the KubeBlocks Restore OpsRequest schema while retaining source backup identity. */
+    public void createRestoreOpsRequest(String namespace, String project, String databaseId,
+                                        String operationName, String backupName,
+                                        String backupNamespace, String backupId, String operationId,
+                                        Instant restoreTime) {
         Map<String, Object> restore = new LinkedHashMap<>();
         restore.put("backupName", backupName);
+        if (backupNamespace != null && !backupNamespace.isBlank() && !namespace.equals(backupNamespace)) {
+            restore.put("backupNamespace", backupNamespace);
+        }
         restore.put("volumeRestorePolicy", "Parallel");
         if (restoreTime != null) restore.put("restorePointInTime", restoreTime.toString());
         ensureOpsRequestSchemaSupports("restore");
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("name", operationName);
         metadata.put("namespace", namespace);
-        metadata.put("labels", Map.of(
-                "app.kubernetes.io/managed-by", "cyfuture-dbaas",
-                "dbaas.cyfuture.com/project", project,
-                "dbaas.cyfuture.com/database-id", databaseId,
-                "dbaas.cyfuture.com/restore", "true"));
+        Map<String, String> labels = new LinkedHashMap<>();
+        labels.put(MANAGED_BY_LABEL, "cyfuture-dbaas");
+        labels.put(PROJECT_LABEL, project);
+        labels.put(DATABASE_LABEL, databaseId);
+        labels.put("dbaas.cyfuture.com/restore", "true");
+        if (backupId != null && !backupId.isBlank()) labels.put(BACKUP_ID_LABEL, backupId);
+        if (operationId != null && !operationId.isBlank()) labels.put(OPERATION_ID_LABEL, operationId);
+        metadata.put("labels", labels);
         Map<String, Object> spec = new LinkedHashMap<>();
         spec.put("clusterName", databaseId);
         spec.put("type", "Restore");
@@ -758,6 +1082,22 @@ public class KubeBlocksClient {
         spec.put("clusterDef", settings.getClusterDefinition());
         spec.put("topology", request.mode() == DatabaseMode.SHARDING ? "sharding" : settings.getTopology());
         spec.put("terminationPolicy", request.deletionProtection() ? "DoNotTerminate" : "Delete");
+        if (request.backup() != null) {
+            int retentionDays = request.backup().retentionDays() == null
+                    ? 7 : request.backup().retentionDays();
+            Map<String, Object> backup = new LinkedHashMap<>();
+            backup.put("enabled", Boolean.TRUE.equals(request.backup().autoBackupEnabled()));
+            backup.put("method", backupMethod(request.engine()));
+            backup.put("repoName", request.backup().repository() == null || request.backup().repository().isBlank()
+                    ? properties.getBackup().getRepositoryName() : request.backup().repository());
+            backup.put("retentionPeriod", retentionDays + "d");
+            if (request.backup().cronExpression() != null && !request.backup().cronExpression().isBlank()) {
+                backup.put("cronExpression", request.backup().cronExpression());
+            }
+            // PITR is intentionally withheld until a dedicated implementation exists.
+            backup.put("pitrEnabled", false);
+            spec.put("backup", backup);
+        }
 
         if (request.mode() == DatabaseMode.SHARDING) {
             Map<String, Object> shard = new LinkedHashMap<>();
@@ -852,6 +1192,14 @@ public class KubeBlocksClient {
                     * number(asMap(sharding.get("template")).get("replicas"));
         }
         return expected;
+    }
+
+    private String backupMethod(DatabaseEngine engine) {
+        return switch (engine) {
+            case POSTGRESQL -> "pg-basebackup";
+            case MYSQL -> "xtrabackup";
+            case MONGODB -> "dump";
+        };
     }
 
     private boolean serviceReady(String namespace, String databaseId, Map<String, Object> cluster) {
@@ -1386,14 +1734,17 @@ public class KubeBlocksClient {
         return exception.getResponseBody() == null ? exception.getMessage() : exception.getResponseBody();
     }
 
-    private void requireReadyBackupRepository(String repositoryName) {
+    private BackupRepositoryInfo requireReadyBackupRepository(String repositoryName) {
         try {
             Map<String, Object> repository = asMap(customObjectsApi.getClusterCustomObject(
                     DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, BACKUP_REPOS, repositoryName).execute());
-            if (!ready(asMap(repository.get("status")))) {
+            Map<String, Object> status = asMap(repository.get("status"));
+            if (!ready(status)) {
                 throw new ApiException(HttpStatus.CONFLICT, "BACKUP_REPOSITORY_NOT_READY", true,
                         "The approved KubeBlocks BackupRepo is not Ready.");
             }
+            return new BackupRepositoryInfo("true".equalsIgnoreCase(
+                    String.valueOf(status.get("isDefault"))));
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             if (exception.getCode() == 404) {
                 throw new ApiException(HttpStatus.CONFLICT, "BACKUP_REPOSITORY_NOT_READY", true,
@@ -1403,16 +1754,154 @@ public class KubeBlocksClient {
         }
     }
 
+    /**
+     * The generated policy is the authoritative binding to an installed
+     * BackupPolicyTemplate. When KubeBlocks exposes that template link, verify
+     * the template itself still advertises the selected method as well.
+     */
+    private void validateInstalledTemplate(Map<String, Object> policy, String expectedMethod) {
+        Map<String, Object> metadata = asMap(policy.get("metadata"));
+        Map<String, Object> annotations = asMap(metadata.get("annotations"));
+        String templateName = optionalText(annotations.get("apps.kubeblocks.io/backup-policy-template"));
+        if (templateName == null) {
+            templateName = optionalText(annotations.get("dataprotection.kubeblocks.io/backup-policy-template"));
+        }
+        if (templateName == null) {
+            for (Object reference : (List<?>) metadata.getOrDefault("ownerReferences", List.of())) {
+                Map<String, Object> owner = asMap(reference);
+                if ("BackupPolicyTemplate".equals(String.valueOf(owner.get("kind")))) {
+                    templateName = optionalText(owner.get("name"));
+                    break;
+                }
+            }
+        }
+        // Older v1.0 controllers do not persist a direct template name on the
+        // generated policy. Its backupMethods were already checked above.
+        if (templateName == null) return;
+        try {
+            Map<String, Object> template = asMap(customObjectsApi.getClusterCustomObject(
+                    DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION,
+                    BACKUP_POLICY_TEMPLATES, templateName).execute());
+            Map<String, Object> spec = asMap(template.get("spec"));
+            if (!ready(asMap(template.get("status")))) {
+                throw new ApiException(HttpStatus.CONFLICT, "BACKUP_POLICY_TEMPLATE_NOT_READY", true,
+                        "The KubeBlocks BackupPolicyTemplate is not available yet.");
+            }
+            List<?> methods = (List<?>) spec.getOrDefault("backupMethods", List.of());
+            if (!methods.isEmpty() && methods.stream().map(this::asMap)
+                    .noneMatch(method -> expectedMethod.equals(String.valueOf(method.get("name"))))) {
+                throw new ApiException(HttpStatus.CONFLICT, "BACKUP_METHOD_UNSUPPORTED", false,
+                        "The installed KubeBlocks BackupPolicyTemplate does not support this backup method.");
+            }
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 404) {
+                throw new ApiException(HttpStatus.CONFLICT, "BACKUP_POLICY_TEMPLATE_NOT_FOUND", true,
+                        "The KubeBlocks BackupPolicyTemplate is not available yet.");
+            }
+            throw backupApiFailure("validate the BackupPolicyTemplate", exception);
+        }
+    }
+
+    private boolean hasOwnerKind(Map<String, Object> metadata, String kind) {
+        return ((List<?>) metadata.getOrDefault("ownerReferences", List.of())).stream()
+                .map(this::asMap)
+                .anyMatch(owner -> kind.equals(String.valueOf(owner.get("kind"))));
+    }
+
+    private boolean hasOwner(Map<String, Object> metadata, String kind, String name) {
+        return ((List<?>) metadata.getOrDefault("ownerReferences", List.of())).stream()
+                .map(this::asMap)
+                .anyMatch(owner -> kind.equals(String.valueOf(owner.get("kind")))
+                && name.equals(String.valueOf(owner.get("name"))));
+    }
+
+    /** KubeBlocks versions differ in whether generated children copy the instance label. */
+    private boolean belongsToCluster(Map<String, Object> metadata, Map<String, Object> spec,
+                                     String databaseId) {
+        Map<String, Object> labels = asMap(metadata.get("labels"));
+        String instance = optionalText(labels.get(APP_INSTANCE_LABEL));
+        return databaseId.equals(instance)
+                || databaseId.equals(optionalText(spec.get("clusterName")))
+                || hasOwner(metadata, "Cluster", databaseId);
+    }
+
+    private boolean ownedRestore(Map<String, Object> restore, String opsRequestName) {
+        return hasOwner(asMap(restore.get("metadata")), "OpsRequest", opsRequestName);
+    }
+
+    private RestoreObservation restoreObservation(Map<String, Object> restore) {
+        Map<String, Object> metadata = asMap(restore.get("metadata"));
+        Map<String, Object> status = asMap(restore.get("status"));
+        String message = firstNonBlank(String.valueOf(status.getOrDefault("failureReason", "")),
+                latestConditionMessage(status), "KubeBlocks is processing the restore");
+        return new RestoreObservation(true, optionalText(metadata.get("name")),
+                String.valueOf(status.getOrDefault("phase", "Running")), safeKubernetesMessage(message),
+                instant(status.get("startTimestamp")), instant(status.get("completionTimestamp")));
+    }
+
+    private BackupObservation backupObservation(Map<String, Object> backup) {
+        Map<String, Object> status = asMap(backup.get("status"));
+        Map<String, Object> metadata = asMap(backup.get("metadata"));
+        String phase = String.valueOf(status.getOrDefault("phase", "New"));
+        String message = firstNonBlank(String.valueOf(status.getOrDefault("failureReason", "")),
+                latestConditionMessage(status), "KubeBlocks is processing the backup");
+        return new BackupObservation(true, phase, safeKubernetesMessage(message),
+                size(status.get("totalSize")), instant(status.get("startTimestamp")),
+                instant(status.get("completionTimestamp")), optionalText(metadata.get("uid")),
+                instant(status.get("expiration")));
+    }
+
+    private boolean ownedBackup(Map<String, Object> backup, String project, String databaseId,
+                                String backupId, String operationId,
+                                String expectedUid, String expectedPolicyName) {
+        Map<String, Object> metadata = asMap(backup.get("metadata"));
+        Map<String, Object> labels = asMap(metadata.get("labels"));
+        boolean manual = "cyfuture-dbaas".equals(String.valueOf(labels.get(MANAGED_BY_LABEL)))
+                && project.equals(String.valueOf(labels.get(PROJECT_LABEL)))
+                && databaseId.equals(String.valueOf(labels.get(DATABASE_LABEL)))
+                && backupId.equals(String.valueOf(labels.get(BACKUP_ID_LABEL)))
+                && operationId != null && !operationId.isBlank()
+                && operationId.equals(String.valueOf(labels.get(OPERATION_ID_LABEL)));
+        if (manual) {
+            return true;
+        }
+        // Imported automatic backups are trusted only after discovery proved
+        // they are generated by the database's BackupSchedule. Require the
+        // originally observed UID and policy name as well, so a later CR with
+        // a reused name can never be deleted as if it were the historic one.
+        Map<String, Object> spec = asMap(backup.get("spec"));
+        String instance = optionalText(labels.get(APP_INSTANCE_LABEL));
+        return expectedUid != null && !expectedUid.isBlank()
+                && expectedPolicyName != null && !expectedPolicyName.isBlank()
+                && expectedUid.equals(optionalText(metadata.get("uid")))
+                && expectedPolicyName.equals(optionalText(spec.get("backupPolicyName")))
+                && (instance == null || databaseId.equals(instance))
+                && hasOwnerKind(metadata, "BackupSchedule");
+    }
+
+    private boolean isDefaultBackupPolicy(Map<String, Object> annotations) {
+        return DEFAULT_BACKUP_POLICY_ANNOTATIONS.stream().anyMatch(annotation ->
+                "true".equalsIgnoreCase(String.valueOf(annotations.get(annotation))));
+    }
+
+    private String optionalText(Object value) {
+        if (value == null) return null;
+        String text = String.valueOf(value).trim();
+        return text.isBlank() || "null".equalsIgnoreCase(text) ? null : text;
+    }
+
     private boolean ready(Map<String, Object> status) {
-        if ("Ready".equalsIgnoreCase(String.valueOf(status.get("phase")))) return true;
+        if ("Ready".equalsIgnoreCase(String.valueOf(status.get("phase")))
+                || "Available".equalsIgnoreCase(String.valueOf(status.get("phase")))) return true;
         return ((List<?>) status.getOrDefault("conditions", List.of())).stream()
                 .map(this::asMap)
-                .anyMatch(condition -> "Ready".equalsIgnoreCase(String.valueOf(condition.get("type")))
+                .anyMatch(condition -> ("Ready".equalsIgnoreCase(String.valueOf(condition.get("type")))
+                        || "Available".equalsIgnoreCase(String.valueOf(condition.get("type"))))
                         && "True".equalsIgnoreCase(String.valueOf(condition.get("status"))));
     }
 
     private String policyObservedStatus(Map<String, Object> status) {
-        if (ready(status)) return "READY";
+        if (ready(status)) return "AVAILABLE";
         Object phase = status.get("phase");
         return phase == null || String.valueOf(phase).isBlank() ? "OBSERVED" : String.valueOf(phase);
     }
@@ -1423,7 +1912,34 @@ public class KubeBlocksClient {
         try {
             return Long.parseLong(String.valueOf(value));
         } catch (NumberFormatException ignored) {
-            return null;
+            // KubeBlocks reports BackupStatus.totalSize as a Kubernetes
+            // quantity (for example 1Gi), not always a raw byte count.
+            String text = String.valueOf(value).trim();
+            java.util.regex.Matcher matcher = Pattern.compile(
+                    "^([0-9]+(?:\\.[0-9]+)?)(Ki|Mi|Gi|Ti|Pi|Ei|K|M|G|T|P|E)?$").matcher(text);
+            if (!matcher.matches()) return null;
+            try {
+                BigDecimal amount = new BigDecimal(matcher.group(1));
+                String unit = matcher.group(2);
+                BigDecimal multiplier = switch (unit == null ? "" : unit) {
+                    case "Ki" -> BigDecimal.valueOf(1024L);
+                    case "Mi" -> BigDecimal.valueOf(1024L).pow(2);
+                    case "Gi" -> BigDecimal.valueOf(1024L).pow(3);
+                    case "Ti" -> BigDecimal.valueOf(1024L).pow(4);
+                    case "Pi" -> BigDecimal.valueOf(1024L).pow(5);
+                    case "Ei" -> BigDecimal.valueOf(1024L).pow(6);
+                    case "K" -> BigDecimal.valueOf(1000L);
+                    case "M" -> BigDecimal.valueOf(1000L).pow(2);
+                    case "G" -> BigDecimal.valueOf(1000L).pow(3);
+                    case "T" -> BigDecimal.valueOf(1000L).pow(4);
+                    case "P" -> BigDecimal.valueOf(1000L).pow(5);
+                    case "E" -> BigDecimal.valueOf(1000L).pow(6);
+                    default -> BigDecimal.ONE;
+                };
+                return amount.multiply(multiplier).setScale(0, RoundingMode.HALF_UP).longValueExact();
+            } catch (ArithmeticException exception) {
+                return null;
+            }
         }
     }
 
@@ -1455,8 +1971,14 @@ public class KubeBlocksClient {
 
     private String safeKubernetesMessage(String message) {
         if (message == null || message.isBlank()) return "KubeBlocks is processing the backup";
-        return message.replaceAll("(?i)(password|passwd|pwd|token|secret|access[_-]?key|credential|passphrase)"
-                + "\\s*[:=]\\s*[^\\s,;\\\"']+", "$1=******");
+        String sanitized = message.replaceAll(
+                "(?i)(password|passwd|pwd|token|secret|access[_-]?key|credential|passphrase)"
+                        + "\\s*[:=]\\s*[^\\s,;\\\"']+", "$1=******");
+        if (SENSITIVE_BACKUP_DIAGNOSTIC.matcher(sanitized).find()) {
+            return "KubeBlocks reported a backup lifecycle update. Check platform logs.";
+        }
+        sanitized = sanitized.trim();
+        return sanitized.length() <= 500 ? sanitized : sanitized.substring(0, 500);
     }
 
     private String settingsOr(String value) {
@@ -1501,19 +2023,66 @@ public class KubeBlocksClient {
             DatabaseEngine engine
     ) {}
 
+    private record BackupRepositoryInfo(boolean defaultRepository) {}
+
     public record BackupObservation(
             boolean exists,
             String phase,
             String message,
             Long sizeBytes,
             Instant startedAt,
-            Instant completedAt
+            Instant completedAt,
+            String uid,
+            Instant expiration
     ) {
+        /** Backward-compatible constructor for callers that do not need expiration. */
+        public BackupObservation(boolean exists, String phase, String message, Long sizeBytes,
+                                 Instant startedAt, Instant completedAt, String uid) {
+            this(exists, phase, message, sizeBytes, startedAt, completedAt, uid, null);
+        }
+        /** Backward-compatible constructor for callers that do not need the Kubernetes UID. */
+        public BackupObservation(boolean exists, String phase, String message, Long sizeBytes,
+                                 Instant startedAt, Instant completedAt) {
+            this(exists, phase, message, sizeBytes, startedAt, completedAt, null, null);
+        }
         public static BackupObservation missing() {
             return new BackupObservation(false, "Missing", "KubeBlocks Backup was not found",
-                    null, null, null);
+                    null, null, null, null, null);
         }
     }
+
+    public record RestoreObservation(
+            boolean exists,
+            String restoreName,
+            String phase,
+            String message,
+            Instant startedAt,
+            Instant completedAt
+    ) {
+        public static RestoreObservation missing() {
+            return new RestoreObservation(false, null, "Missing",
+                    "Waiting for KubeBlocks Restore resource", null, null);
+        }
+    }
+
+    public record BackupScheduleInfo(boolean exists, String scheduleName,
+                                     String observedStatus, boolean available) {
+        public static BackupScheduleInfo missing() {
+            return new BackupScheduleInfo(false, null, "MISSING", false);
+        }
+    }
+
+    public record ScheduledBackupInfo(
+            String backupName,
+            String uid,
+            String backupMethod,
+            String retentionPeriod,
+            String phase,
+            String message,
+            Long sizeBytes,
+            Instant startedAt,
+            Instant completedAt
+    ) {}
 
     public record VerticalScalingObservation(
             boolean complete,

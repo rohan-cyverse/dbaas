@@ -3,6 +3,8 @@ package com.cyfuture.dbaas.service;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.OperationMetadata;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
+import com.cyfuture.dbaas.dto.BackupConfigurationRequest;
+import com.cyfuture.dbaas.entity.BackupPolicyMetadata;
 import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.OperationType;
 import com.cyfuture.dbaas.model.OperationStatus;
@@ -10,6 +12,7 @@ import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import com.cyfuture.dbaas.repository.BackupMetadataRepository;
 import com.cyfuture.dbaas.repository.RestoreRequestMetadataRepository;
+import com.cyfuture.dbaas.repository.BackupPolicyMetadataRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
@@ -32,6 +35,8 @@ public class OperationRecoveryService {
     private final BackupSubmissionService backupSubmissionService;
     private final BackupPurgeSubmitter backupPurgeSubmitter;
     private final RestoreSubmissionService restoreSubmissionService;
+    private final BackupPolicyMetadataRepository backupPolicyRepository;
+    private final BackupPolicySubmissionService backupPolicySubmissionService;
 
     @EventListener(ApplicationReadyEvent.class)
     public void resumeInterruptedOperations() {
@@ -60,6 +65,10 @@ public class OperationRecoveryService {
                         } else if (operation.getType() == OperationType.RESTORE) {
                             restoreRepository.findByOperationId(operation.getOperationId())
                                     .ifPresent(restore -> restoreSubmissionService.submit(restore.getRestoreId()));
+                        } else if (operation.getType() == OperationType.BACKUP_POLICY_UPDATE) {
+                            backupPolicyRepository.findByProjectNameAndDatabaseId(
+                                            operation.getProjectName(), operation.getDatabaseId())
+                                    .ifPresent(policy -> backupPolicySubmissionService.submit(policy.getPolicyId()));
                         } else if (operation.getType() != OperationType.CREATE) {
                             operation.setStatus(OperationStatus.PENDING);
                             operation.setMessage("Resuming KubeBlocks operation after application restart");
@@ -71,11 +80,16 @@ public class OperationRecoveryService {
     }
 
     private CreateDatabaseRequest request(DatabaseMetadata database) {
+        BackupPolicyMetadata policy = backupPolicyRepository
+                .findByProjectNameAndDatabaseId(database.getProjectName(), database.getDatabaseId()).orElse(null);
+        BackupConfigurationRequest backup = policy == null ? null : new BackupConfigurationRequest(
+                policy.getBackupRepositoryName(), policy.isAutoBackupEnabled(), policy.getRetentionDays(),
+                policy.getCronExpression(), policy.getTimezone(), policy.getRetentionPolicy(), false);
         return new CreateDatabaseRequest(database.getDisplayName(), database.getRemark(),
                 database.getEngine(), database.getMode(), database.getDatabaseVersion(),
                 database.getSizePlan(), database.getStorageGi(), database.getReplicas(),
                 database.getShards(), database.getTimezone(), cidrs(database.getAllowedCidrs()),
-                database.isDeletionProtection(), tags(database.getTags()));
+                database.isDeletionProtection(), tags(database.getTags()), backup);
     }
 
     private List<String> cidrs(String stored) {

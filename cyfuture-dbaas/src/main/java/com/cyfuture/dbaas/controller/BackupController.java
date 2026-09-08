@@ -1,10 +1,9 @@
 package com.cyfuture.dbaas.controller;
 
-import com.cyfuture.dbaas.dto.BackupAcceptedResponse;
+import com.cyfuture.dbaas.dto.AcceptedOperationResponse;
 import com.cyfuture.dbaas.dto.BackupResponse;
 import com.cyfuture.dbaas.dto.CreateBackupRequest;
 import com.cyfuture.dbaas.dto.CreateRestoreRequest;
-import com.cyfuture.dbaas.dto.RestoreAcceptedResponse;
 import com.cyfuture.dbaas.service.BackupService;
 import com.cyfuture.dbaas.service.RestoreService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -21,6 +20,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -36,13 +36,13 @@ public class BackupController {
     @PostMapping
     @Operation(summary = "Create a manual full backup",
             description = "Creates metadata and an operation first, then asynchronously submits a KubeBlocks Backup CR. Only FULL backups are enabled in this release.")
-    public ResponseEntity<BackupAcceptedResponse> create(
+    public ResponseEntity<AcceptedOperationResponse> create(
             @PathVariable String project,
             @PathVariable String databaseId,
             @Parameter(description = "Unique retry-safe key", example = "backup-orders-20260907-001")
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody(required = false) CreateBackupRequest request) {
-        BackupAcceptedResponse response = backupService.create(project, databaseId, idempotencyKey, request);
+        AcceptedOperationResponse response = backupService.create(project, databaseId, idempotencyKey, request);
         return ResponseEntity.status(HttpStatus.ACCEPTED)
                 .header("Location", response.statusUrl())
                 .header("Operation-Location", "/api/v1/operations/" + response.operationId())
@@ -65,25 +65,32 @@ public class BackupController {
     }
 
     @DeleteMapping("/{backupId}")
-    @Operation(summary = "Purge a backup",
-            description = "Explicitly deletes the DBaaS-owned KubeBlocks Backup CR. Its Delete deletion policy removes the associated object-storage data. Unknown Kubernetes resources are never deleted.")
-    public ResponseEntity<BackupResponse> purge(@PathVariable String project, @PathVariable String databaseId,
-                                                 @PathVariable String backupId) {
+    @Operation(summary = "Delete a backup CR or explicitly purge backup data",
+            description = "By default only the DBaaS-owned Backup CR is deleted and retained object data is not purged. Set purge=true to explicitly purge data. Unknown Kubernetes resources are never deleted.")
+    public ResponseEntity<AcceptedOperationResponse> purge(@PathVariable String project,
+                                                 @PathVariable String databaseId,
+                                                 @PathVariable String backupId,
+                                                 @RequestHeader("Idempotency-Key") String idempotencyKey,
+                                                 @RequestParam(defaultValue = "false") boolean purge) {
+        AcceptedOperationResponse response = backupService.delete(project, databaseId, backupId, idempotencyKey, purge);
         return ResponseEntity.status(HttpStatus.ACCEPTED)
-                .body(backupService.purge(project, databaseId, backupId));
+                .header("Location", response.statusUrl())
+                .header("Operation-Location", response.statusUrl())
+                .header("Retry-After", String.valueOf(response.pollAfterSeconds()))
+                .body(response);
     }
 
     @PostMapping("/{backupId}/restore")
     @Operation(summary = "Restore a completed backup to a new database",
             description = "Never overwrites the source database. Returns completion only after KubeBlocks, managed credentials, and the shared public gateway route are ready.")
-    public ResponseEntity<RestoreAcceptedResponse> restore(
+    public ResponseEntity<AcceptedOperationResponse> restore(
             @PathVariable String project,
             @PathVariable String databaseId,
             @PathVariable String backupId,
             @Parameter(description = "Unique retry-safe key", example = "restore-orders-20260907-001")
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody(required = false) CreateRestoreRequest request) {
-        RestoreAcceptedResponse response = restoreService.restore(project, databaseId, backupId,
+        AcceptedOperationResponse response = restoreService.restore(project, databaseId, backupId,
                 idempotencyKey, request);
         return ResponseEntity.status(HttpStatus.ACCEPTED)
                 .header("Location", response.statusUrl())

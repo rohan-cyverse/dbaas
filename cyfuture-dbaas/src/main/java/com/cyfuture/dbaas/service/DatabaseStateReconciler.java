@@ -44,6 +44,7 @@ public class DatabaseStateReconciler {
     private final KubeBlocksClient kubeBlocksClient;
     private final SharedGatewayService sharedGatewayService;
     private final CredentialLifecycleService credentialLifecycleService;
+    private final BackupRetentionService backupRetentionService;
     private final DataSource dataSource;
 
     @Value("${dbaas.state.degraded-grace-ms:30000}")
@@ -111,6 +112,10 @@ public class DatabaseStateReconciler {
 
     private void handleHealthy(DatabaseMetadata database,
                                KubeBlocksClient.ClusterObservation observed) {
+        // A restored Cluster can become healthy before its credentials and
+        // shared-gateway route are ready. RestoreReconciler is the only path
+        // allowed to publish RUNNING for that target.
+        if (hasActiveRestoreOperation(database)) return;
         update(database::setMissingSince, null);
         update(database::setDegradedSince, null);
         if (database.getStatus() == DatabaseStatus.DEGRADED
@@ -171,6 +176,15 @@ public class DatabaseStateReconciler {
             if (database.getDeleteRequestedAt() == null) {
                 update(database::setDeleteRequestedAt, Instant.now());
             }
+            if (!backupRetentionService.readyForClusterDeletion(
+                    database.getProjectName(), database.getDatabaseId())) {
+                update(database::setMessage,
+                        "Database deletion is waiting for active backup work or DELETE_ALL backup purge");
+                finishDeleteOperation(database, OperationStatus.RUNNING,
+                        "Waiting for backup retention processing");
+                saveIfChanged(database);
+                return;
+            }
             sharedGatewayService.removeRoute(database);
             CredentialLifecycleService.CredentialCleanupObservation credentialCleanup =
                     credentialLifecycleService.cleanupDatabaseResources(database);
@@ -223,6 +237,13 @@ public class DatabaseStateReconciler {
                 .stream()
                 .anyMatch(operation -> operation.getType() != OperationType.CREATE
                         && operation.getType() != OperationType.DELETE);
+    }
+
+    private boolean hasActiveRestoreOperation(DatabaseMetadata database) {
+        return operationRepository.findByDatabaseIdAndProjectNameAndStatusIn(
+                        database.getDatabaseId(), database.getProjectName(),
+                        List.of(OperationStatus.PENDING, OperationStatus.RUNNING))
+                .stream().anyMatch(operation -> operation.getType() == OperationType.RESTORE);
     }
 
     private void finishDeleteOperation(DatabaseMetadata database,

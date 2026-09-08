@@ -1,7 +1,7 @@
 package com.cyfuture.dbaas.service;
 
+import com.cyfuture.dbaas.dto.AcceptedOperationResponse;
 import com.cyfuture.dbaas.dto.CreateRestoreRequest;
-import com.cyfuture.dbaas.dto.RestoreAcceptedResponse;
 import com.cyfuture.dbaas.entity.BackupMetadata;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.OperationMetadata;
@@ -9,7 +9,6 @@ import com.cyfuture.dbaas.entity.ProjectMetadata;
 import com.cyfuture.dbaas.entity.RestoreRequestMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.BackupStatus;
-import com.cyfuture.dbaas.model.BackupType;
 import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.DesiredState;
 import com.cyfuture.dbaas.model.OperationStatus;
@@ -37,6 +36,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
+/** Creates a new KubeBlocks Restore OpsRequest; it never provisions an empty replacement Cluster. */
 @Service
 @RequiredArgsConstructor
 public class RestoreService {
@@ -47,11 +47,12 @@ public class RestoreService {
     private final DatabaseMetadataRepository databaseRepository;
     private final OperationMetadataRepository operationRepository;
     private final ProjectService projectService;
+    private final BackupEngineStrategies strategies;
     private final RestoreSubmissionService submissionService;
 
     @Transactional
-    public RestoreAcceptedResponse restore(String project, String databaseId, String backupId,
-                                           String idempotencyKey, CreateRestoreRequest request) {
+    public AcceptedOperationResponse restore(String project, String databaseId, String backupId,
+                                             String idempotencyKey, CreateRestoreRequest request) {
         ProjectMetadata projectMetadata = projectService.requireActiveProject(project);
         validateIdempotencyKey(idempotencyKey);
         BackupMetadata backup = backupRepository.findByBackupIdAndProjectNameAndDatabaseId(
@@ -59,16 +60,31 @@ public class RestoreService {
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "BACKUP_NOT_FOUND", false,
                         "Backup was not found for this database."));
         if (backup.getStatus() != BackupStatus.COMPLETED) {
-            throw new ApiException(HttpStatus.CONFLICT, "BACKUP_NOT_COMPLETED", false,
-                    "Only completed backups can be restored.");
+            throw new ApiException(HttpStatus.CONFLICT, "BACKUP_NOT_AVAILABLE", false,
+                    "Only an available completed backup can be restored.");
         }
-        Instant requestedTime = request == null ? null : request.restoreTime();
-        if (requestedTime != null && backup.getBackupType() != BackupType.CONTINUOUS) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "PITR_NOT_AVAILABLE", false,
-                    "Point-in-time restore requires continuous backup, which is not enabled for this backup.");
+        if (backup.getKubernetesBackupName() == null || backup.getKubernetesBackupName().isBlank()) {
+            throw new ApiException(HttpStatus.CONFLICT, "BACKUP_NOT_AVAILABLE", false,
+                    "The KubeBlocks backup identity is unavailable for restore.");
+        }
+        if (request != null && request.restoreTime() != null) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "FEATURE_NOT_AVAILABLE", false,
+                    "Point-in-time restore is not available yet.");
+        }
+        BackupEngineStrategy strategy = strategies.require(backup.getEngine());
+        String backupMethod = backup.getBackupMethod() == null || backup.getBackupMethod().isBlank()
+                ? strategy.manualFullMethod() : backup.getBackupMethod();
+        if (backup.getBackupType() != com.cyfuture.dbaas.model.BackupType.FULL
+                || !strategy.manualFullMethod().equals(backupMethod)) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "FEATURE_NOT_AVAILABLE", false,
+                    "Only full backups created with the supported engine method can be restored.");
+        }
+        if (!strategy.supportsTopology(backup.getSourceMode())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "BACKUP_TOPOLOGY_UNSUPPORTED", false,
+                    "This backup was created from a topology not supported for restore.");
         }
         String requestedName = request == null ? null : request.name();
-        String requestHash = hash(blank(requestedName) ? "" : requestedName, String.valueOf(requestedTime));
+        String requestHash = hash(blank(requestedName) ? "" : requestedName, "");
         RestoreRequestMetadata duplicate = restoreRepository
                 .findByProjectNameAndSourceBackupIdAndIdempotencyKey(project, backupId, idempotencyKey)
                 .orElse(null);
@@ -78,8 +94,8 @@ public class RestoreService {
         String restoreId = "rst-" + shortId();
         String operationId = "op-" + shortId();
         Instant now = Instant.now();
-        DatabaseMetadata target = restoredDatabase(backup, project, restoredDatabaseId,
-                uniqueDisplayName(project, requestedName, backup));
+        String restoredDisplayName = uniqueDisplayName(project, requestedName, backup);
+        DatabaseMetadata target = restoredDatabase(backup, project, restoredDatabaseId, restoredDisplayName);
         target.setOperationId(operationId);
         // This internal key avoids colliding with user supplied create keys while
         // RestoreRequestMetadata remains the external idempotency authority.
@@ -100,9 +116,14 @@ public class RestoreService {
         restore.setProjectName(project);
         restore.setSourceDatabaseId(databaseId);
         restore.setSourceBackupId(backupId);
+        restore.setSourceKubernetesBackupName(backup.getKubernetesBackupName());
+        restore.setSourceBackupNamespace(backup.getKubernetesNamespace());
         restore.setRestoredDatabaseId(restoredDatabaseId);
+        // The resource display name is user-facing metadata. The connection
+        // must instead target the application database restored from backup.
+        restore.setRestoredDatabaseName(logicalDatabaseName(backup));
         restore.setEngine(backup.getEngine());
-        restore.setRestoreTime(requestedTime);
+        restore.setRestoreTime(null);
         restore.setKubernetesOpsRequestName(restoreId);
         restore.setKubernetesClusterName(restoredDatabaseId);
         restore.setStatus(RestoreStatus.PENDING);
@@ -135,7 +156,7 @@ public class RestoreService {
             return duplicateResponse(existing, requestHash);
         }
         submitAfterCommit(() -> submissionService.submit(restoreId));
-        return accepted(restore);
+        return accepted(restore, OperationStatus.PENDING);
     }
 
     private DatabaseMetadata restoredDatabase(BackupMetadata backup, String project,
@@ -179,17 +200,28 @@ public class RestoreService {
                 "Unable to allocate a name for the restored database. Retry the request.");
     }
 
-    private RestoreAcceptedResponse duplicateResponse(RestoreRequestMetadata restore, String requestHash) {
+    private String logicalDatabaseName(BackupMetadata backup) {
+        if (backup.getSourceLogicalDatabaseName() != null
+                && !backup.getSourceLogicalDatabaseName().isBlank()) {
+            return backup.getSourceLogicalDatabaseName();
+        }
+        // Historic backup rows predate the safe logical-name snapshot. All
+        // DBaaS-created clusters use this deterministic naming convention.
+        return CredentialLifecycleService.managedDatabaseName(backup.getDatabaseId());
+    }
+
+    private AcceptedOperationResponse duplicateResponse(RestoreRequestMetadata restore, String requestHash) {
         if (!requestHash.equals(restore.getRequestHash())) {
             throw new ApiException(HttpStatus.CONFLICT, "IDEMPOTENCY_KEY_REUSED", false,
                     "This Idempotency-Key was already used with a different restore request.");
         }
-        return accepted(restore);
+        OperationStatus status = operationRepository.findById(restore.getOperationId())
+                .map(OperationMetadata::getStatus).orElse(OperationStatus.PENDING);
+        return accepted(restore, status);
     }
 
-    private RestoreAcceptedResponse accepted(RestoreRequestMetadata restore) {
-        return new RestoreAcceptedResponse(restore.getRestoreId(), restore.getOperationId(),
-                restore.getRestoredDatabaseId(), restore.getStatus(),
+    private AcceptedOperationResponse accepted(RestoreRequestMetadata restore, OperationStatus status) {
+        return new AcceptedOperationResponse(restore.getOperationId(), restore.getRestoredDatabaseId(), status,
                 "/api/v1/operations/" + restore.getOperationId(), 5);
     }
 

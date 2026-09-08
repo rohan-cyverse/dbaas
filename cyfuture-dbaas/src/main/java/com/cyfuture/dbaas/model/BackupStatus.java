@@ -6,6 +6,7 @@ public enum BackupStatus {
     RUNNING,
     COMPLETED,
     FAILED,
+    EXPIRED,
     DELETING,
     DELETED
 }

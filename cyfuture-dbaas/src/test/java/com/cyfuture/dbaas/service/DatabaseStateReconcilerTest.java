@@ -39,6 +39,7 @@ class DatabaseStateReconcilerTest {
     private KubeBlocksClient kubeBlocksClient;
     private SharedGatewayService gateway;
     private CredentialLifecycleService credentials;
+    private BackupRetentionService retention;
     private DataSource dataSource;
     private DatabaseStateReconciler reconciler;
 
@@ -49,11 +50,13 @@ class DatabaseStateReconcilerTest {
         kubeBlocksClient = mock(KubeBlocksClient.class);
         gateway = mock(SharedGatewayService.class);
         credentials = mock(CredentialLifecycleService.class);
+        retention = mock(BackupRetentionService.class);
         dataSource = mock(DataSource.class);
         reconciler = new DatabaseStateReconciler(databaseRepository, operationRepository,
-                kubeBlocksClient, gateway, credentials, dataSource);
+                kubeBlocksClient, gateway, credentials, retention, dataSource);
         when(credentials.cleanupDatabaseResources(any())).thenReturn(
                 new CredentialLifecycleService.CredentialCleanupObservation(true, 0, 0, 0, "gone"));
+        when(retention.readyForClusterDeletion(any(), any())).thenReturn(true);
         ReflectionTestUtils.setField(reconciler, "degradedGraceMs", 1L);
         ReflectionTestUtils.setField(reconciler, "missingGraceMs", 1L);
     }
@@ -96,6 +99,27 @@ class DatabaseStateReconcilerTest {
         assertEquals(DatabaseStatus.RUNNING, database.getStatus());
         assertNull(database.getDegradedSince());
         verify(databaseRepository).save(database);
+    }
+
+    @Test
+    void doesNotPublishRestoredDatabaseAsRunningBeforeGatewayAndCredentialsAreReady() {
+        DatabaseMetadata database = database(DatabaseStatus.MISSING);
+        OperationMetadata restore = OperationMetadata.builder()
+                .operationId("op-restore0001")
+                .databaseId("db-orders0001")
+                .projectName("orders")
+                .type(OperationType.RESTORE)
+                .status(OperationStatus.RUNNING)
+                .build();
+        when(kubeBlocksClient.observeCluster("dbaas-orders", "db-orders0001"))
+                .thenReturn(observed(true, 2, 2, true));
+        when(operationRepository.findByDatabaseIdAndProjectNameAndStatusIn(
+                "db-orders0001", "orders", List.of(OperationStatus.PENDING, OperationStatus.RUNNING)))
+                .thenReturn(List.of(restore));
+
+        reconciler.reconcile(database);
+
+        assertEquals(DatabaseStatus.MISSING, database.getStatus());
     }
 
     @Test

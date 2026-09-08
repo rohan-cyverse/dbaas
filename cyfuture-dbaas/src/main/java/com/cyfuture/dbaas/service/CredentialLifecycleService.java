@@ -91,6 +91,71 @@ public class CredentialLifecycleService {
     }
 
     public void reconcile(DatabaseMetadata metadata) {
+        // An existing restored credential Secret may deliberately point at the
+        // source logical database. Preserve that value; only a new Secret uses
+        // the normal target-ID-derived database name.
+        reconcile(metadata, null, null, false);
+    }
+
+    /**
+     * Creates/rotates the DBaaS credential against an already restored logical
+     * database. This avoids creating a target-ID-named empty database after a
+     * successful physical restore.
+     */
+    public boolean readyForRestoredDatabase(DatabaseMetadata metadata, String logicalDatabaseName,
+                                            String logicalUsername) {
+        if (logicalDatabaseName == null || logicalDatabaseName.isBlank()) {
+            throw new ApiException(HttpStatus.CONFLICT, "RESTORED_DATABASE_NAME_UNAVAILABLE", false,
+                    "The restored logical database name is unavailable.");
+        }
+        if (logicalUsername == null || logicalUsername.isBlank()) {
+            throw new ApiException(HttpStatus.CONFLICT, "RESTORED_DATABASE_USER_UNAVAILABLE", false,
+                    "The restored database user is unavailable.");
+        }
+        // This mode must only grant a fresh DBaaS credential to a logical
+        // database that KubeBlocks actually restored. It never creates one.
+        reconcile(metadata, logicalDatabaseName, logicalUsername, true);
+        return readyStatus(metadata, true);
+    }
+
+    /** Returns only the logical database name from the managed Secret, never credentials. */
+    public String databaseName(DatabaseMetadata metadata) {
+        try {
+            V1Secret secret = coreV1Api.readNamespacedSecret(
+                    secretName(metadata.getDatabaseId()), metadata.getNamespaceName()).execute();
+            if (!READY.equals(annotations(secret).get(STATUS))) {
+                throw new ApiException(HttpStatus.CONFLICT,
+                        "Managed credentials are being prepared; retry shortly");
+            }
+            return value(secret, "database");
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 404) {
+                throw new ApiException(HttpStatus.CONFLICT,
+                        "Managed credentials are being prepared; retry shortly");
+            }
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not read managed database name: " + exception.getMessage());
+        }
+    }
+
+    /** Stable logical database naming used by all DBaaS-created source clusters. */
+    public static String managedDatabaseName(String databaseId) {
+        if (databaseId == null || !databaseId.startsWith("db-") || databaseId.length() <= 3) {
+            throw new IllegalArgumentException("A DBaaS database ID is required");
+        }
+        return "appdb_" + databaseId.substring(3).replace("-", "");
+    }
+
+    /** Stable managed username used by all DBaaS-created source clusters. */
+    public static String managedUsername(String databaseId) {
+        if (databaseId == null || !databaseId.startsWith("db-") || databaseId.length() <= 3) {
+            throw new IllegalArgumentException("A DBaaS database ID is required");
+        }
+        return "dbaas_" + databaseId.substring(3).replace("-", "");
+    }
+
+    private void reconcile(DatabaseMetadata metadata, String logicalDatabaseName,
+                           String logicalUsername, boolean requireExistingDatabase) {
         try {
             if (metadata.getDesiredState() == DesiredState.DELETED
                     || metadata.getStatus() == DatabaseStatus.DELETING
@@ -104,12 +169,16 @@ public class CredentialLifecycleService {
                 return;
             }
 
-            V1Secret secret = readOrCreateSecret(metadata);
+            V1Secret secret = readOrCreateSecret(metadata, logicalDatabaseName, logicalUsername);
             Map<String, String> annotations = annotations(secret);
             if (READY.equals(annotations.get(STATUS))) {
                 deleteFinishedCredentialResources(metadata);
                 return;
             }
+            // A terminal helper failure is deliberately not retried by creating
+            // another Job. In restore mode this prevents a missing logical
+            // database from being created later by a generic reconciliation.
+            if (FAILED.equals(annotations.get(STATUS))) return;
 
             int generation = Integer.parseInt(annotations.getOrDefault(GENERATION, "1"));
             String jobName = jobName(metadata.getDatabaseId(), generation);
@@ -118,7 +187,7 @@ public class CredentialLifecycleService {
                 String adminSecret = kubeBlocksClient.adminCredentialSecretName(
                         metadata.getNamespaceName(), metadata.getDatabaseId(), metadata.getEngine());
                 createJob(metadata, database, secret.getMetadata().getName(),
-                        adminSecret, generation);
+                        adminSecret, generation, requireExistingDatabase);
                 markOperation(annotations.get(OPERATION_ID), OperationStatus.RUNNING,
                         "Updating managed database credentials", false);
                 return;
@@ -151,6 +220,14 @@ public class CredentialLifecycleService {
                 deleteJob(metadata.getNamespaceName(), jobName);
                 deleteFinishedCredentialResources(metadata);
             }
+        } catch (ApiException exception) {
+            if (requireExistingDatabase && ("RESTORED_DATABASE_NAME_MISMATCH".equals(exception.getCode())
+                    || "RESTORED_DATABASE_USER_MISMATCH".equals(exception.getCode()))) {
+                throw exception;
+            }
+            // Provisioning is eventually consistent. The scheduled reconciler retries.
+            log.debug("Credential reconciliation for {} will retry: {}",
+                    metadata.getDatabaseId(), exception.getMessage());
         } catch (Exception exception) {
             // Provisioning is eventually consistent. The scheduled reconciler retries.
             log.debug("Credential reconciliation for {} will retry: {}",
@@ -186,10 +263,22 @@ public class CredentialLifecycleService {
     /** Returns false while the managed database user is still being created. */
     public boolean ready(DatabaseMetadata metadata) {
         reconcile(metadata);
+        return readyStatus(metadata);
+    }
+
+    private boolean readyStatus(DatabaseMetadata metadata) {
+        return readyStatus(metadata, false);
+    }
+
+    private boolean readyStatus(DatabaseMetadata metadata, boolean restoredDatabase) {
         try {
             V1Secret secret = coreV1Api.readNamespacedSecret(
                     secretName(metadata.getDatabaseId()), metadata.getNamespaceName()).execute();
             if (FAILED.equals(annotations(secret).get(STATUS))) {
+                if (restoredDatabase) {
+                    throw new ApiException(HttpStatus.CONFLICT, "RESTORED_DATABASE_VALIDATION_FAILED", false,
+                            "Restored logical database validation or credential setup failed.");
+                }
                 throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
                         "Managed credential provisioning failed; inspect the credential Job");
             }
@@ -245,15 +334,34 @@ public class CredentialLifecycleService {
         }
     }
 
-    private V1Secret readOrCreateSecret(DatabaseMetadata metadata)
+    private V1Secret readOrCreateSecret(DatabaseMetadata metadata, String logicalDatabaseName,
+                                        String logicalUsername)
             throws io.kubernetes.client.openapi.ApiException {
         String name = secretName(metadata.getDatabaseId());
+        String requestedDatabase = logicalDatabaseName == null || logicalDatabaseName.isBlank()
+                ? managedDatabaseName(metadata.getDatabaseId()) : logicalDatabaseName;
+        String requestedUsername = logicalUsername == null || logicalUsername.isBlank()
+                ? managedUsername(metadata.getDatabaseId()) : logicalUsername;
         try {
-            return ensureSecretMetadata(metadata,
+            V1Secret secret = ensureSecretMetadata(metadata,
                     coreV1Api.readNamespacedSecret(name, metadata.getNamespaceName()).execute());
+            byte[] database = secret.getData() == null ? null : secret.getData().get("database");
+            byte[] username = secret.getData() == null ? null : secret.getData().get("username");
+            if (logicalDatabaseName != null && !logicalDatabaseName.isBlank() && database != null
+                    && !requestedDatabase.equals(
+                    new String(database, java.nio.charset.StandardCharsets.UTF_8))) {
+                throw new ApiException(HttpStatus.CONFLICT, "RESTORED_DATABASE_NAME_MISMATCH", false,
+                        "Managed credentials do not target the restored logical database.");
+            }
+            if (logicalUsername != null && !logicalUsername.isBlank() && username != null
+                    && !requestedUsername.equals(
+                    new String(username, java.nio.charset.StandardCharsets.UTF_8))) {
+                throw new ApiException(HttpStatus.CONFLICT, "RESTORED_DATABASE_USER_MISMATCH", false,
+                        "Managed credentials do not target the restored database user.");
+            }
+            return secret;
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             if (exception.getCode() != 404) throw exception;
-            String suffix = metadata.getDatabaseId().substring(3).replace("-", "");
             V1Secret secret = new V1Secret()
                     .metadata(new V1ObjectMeta()
                             .name(name)
@@ -265,15 +373,16 @@ public class CredentialLifecycleService {
                                     GENERATION, "1"))))
                     .type("Opaque")
                     .stringData(Map.of(
-                            "username", "dbaas_" + suffix,
+                            "username", requestedUsername,
                             "password", randomPassword(),
-                            "database", "appdb_" + suffix));
+                            "database", requestedDatabase));
             return coreV1Api.createNamespacedSecret(metadata.getNamespaceName(), secret).execute();
         }
     }
 
     private void createJob(DatabaseMetadata metadata, DatabaseObservation database,
-                           String managedSecret, String adminSecret, int generation)
+                           String managedSecret, String adminSecret, int generation,
+                           boolean requireExistingDatabase)
             throws io.kubernetes.client.openapi.ApiException {
         DatabaseProperties.EngineSettings settings = properties.engine(metadata.getEngine());
         if (settings.getCredentialImage() == null || settings.getCredentialImage().isBlank()) {
@@ -289,6 +398,7 @@ public class CredentialLifecycleService {
                 .args(List.of(script(metadata.getEngine())))
                 .env(List.of(
                         value("DB_HOST", database.privateHost()),
+                        value("REQUIRE_EXISTING_DATABASE", String.valueOf(requireExistingDatabase)),
                         secret("ADMIN_USERNAME", adminSecret, "username"),
                         secret("ADMIN_PASSWORD", adminSecret, "password"),
                         secret("MANAGED_USERNAME", managedSecret, "username"),
@@ -507,20 +617,32 @@ public class CredentialLifecycleService {
         return switch (engine) {
             case POSTGRESQL -> """
                     export PGPASSWORD="$ADMIN_PASSWORD"
+                    if [ "$REQUIRE_EXISTING_DATABASE" = "true" ] && ! psql -h "$DB_HOST" -U "$ADMIN_USERNAME" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$MANAGED_DATABASE'" | grep -q 1; then
+                      echo "Restored logical database is missing" >&2
+                      exit 42
+                    fi
                     if psql -h "$DB_HOST" -U "$ADMIN_USERNAME" -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='$MANAGED_USERNAME'" | grep -q 1; then
                       psql -v ON_ERROR_STOP=1 -h "$DB_HOST" -U "$ADMIN_USERNAME" -d postgres -c "ALTER ROLE \"$MANAGED_USERNAME\" WITH LOGIN PASSWORD '$MANAGED_PASSWORD'"
                     else
                       psql -v ON_ERROR_STOP=1 -h "$DB_HOST" -U "$ADMIN_USERNAME" -d postgres -c "CREATE ROLE \"$MANAGED_USERNAME\" WITH LOGIN PASSWORD '$MANAGED_PASSWORD'"
                     fi
-                    if ! psql -h "$DB_HOST" -U "$ADMIN_USERNAME" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$MANAGED_DATABASE'" | grep -q 1; then
+                    if [ "$REQUIRE_EXISTING_DATABASE" != "true" ] && ! psql -h "$DB_HOST" -U "$ADMIN_USERNAME" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$MANAGED_DATABASE'" | grep -q 1; then
                       psql -v ON_ERROR_STOP=1 -h "$DB_HOST" -U "$ADMIN_USERNAME" -d postgres -c "CREATE DATABASE \"$MANAGED_DATABASE\" OWNER \"$MANAGED_USERNAME\""
                     fi
                     psql -v ON_ERROR_STOP=1 -h "$DB_HOST" -U "$ADMIN_USERNAME" -d "$MANAGED_DATABASE" -c "GRANT ALL ON SCHEMA public TO \"$MANAGED_USERNAME\""
                     """;
             case MYSQL -> """
-                    mysql --protocol=TCP -h "$DB_HOST" -u"$ADMIN_USERNAME" -p"$ADMIN_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS $MANAGED_DATABASE; CREATE USER IF NOT EXISTS '$MANAGED_USERNAME'@'%' IDENTIFIED BY '$MANAGED_PASSWORD'; ALTER USER '$MANAGED_USERNAME'@'%' IDENTIFIED BY '$MANAGED_PASSWORD'; GRANT ALL PRIVILEGES ON $MANAGED_DATABASE.* TO '$MANAGED_USERNAME'@'%'; FLUSH PRIVILEGES;"
+                    if [ "$REQUIRE_EXISTING_DATABASE" = "true" ]; then
+                      mysql --protocol=TCP -h "$DB_HOST" -u"$ADMIN_USERNAME" -p"$ADMIN_PASSWORD" -Nse "SELECT 1 FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME='$MANAGED_DATABASE'" | grep -qx 1 || { echo "Restored logical database is missing" >&2; exit 42; }
+                    else
+                      mysql --protocol=TCP -h "$DB_HOST" -u"$ADMIN_USERNAME" -p"$ADMIN_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS $MANAGED_DATABASE"
+                    fi
+                    mysql --protocol=TCP -h "$DB_HOST" -u"$ADMIN_USERNAME" -p"$ADMIN_PASSWORD" -e "CREATE USER IF NOT EXISTS '$MANAGED_USERNAME'@'%' IDENTIFIED BY '$MANAGED_PASSWORD'; ALTER USER '$MANAGED_USERNAME'@'%' IDENTIFIED BY '$MANAGED_PASSWORD'; GRANT ALL PRIVILEGES ON $MANAGED_DATABASE.* TO '$MANAGED_USERNAME'@'%'; FLUSH PRIVILEGES;"
                     """;
             case MONGODB -> """
+                    if [ "$REQUIRE_EXISTING_DATABASE" = "true" ]; then
+                      mongosh --quiet --host "$DB_HOST" --username "$ADMIN_USERNAME" --password "$ADMIN_PASSWORD" --authenticationDatabase admin --eval "if (!db.adminCommand({listDatabases:1}).databases.some(function(item){ return item.name === '$MANAGED_DATABASE'; })) { quit(42); }"
+                    fi
                     mongosh --quiet --host "$DB_HOST" --username "$ADMIN_USERNAME" --password "$ADMIN_PASSWORD" --authenticationDatabase admin --eval "const target=db.getSiblingDB('$MANAGED_DATABASE'); if (target.getUser('$MANAGED_USERNAME')) { target.updateUser('$MANAGED_USERNAME',{pwd:'$MANAGED_PASSWORD',roles:[{role:'readWrite',db:'$MANAGED_DATABASE'}]}); } else { target.createUser({user:'$MANAGED_USERNAME',pwd:'$MANAGED_PASSWORD',roles:[{role:'readWrite',db:'$MANAGED_DATABASE'}]}); }"
                     """;
         };

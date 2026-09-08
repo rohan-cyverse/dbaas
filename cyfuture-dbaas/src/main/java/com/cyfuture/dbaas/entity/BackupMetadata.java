@@ -1,6 +1,9 @@
 package com.cyfuture.dbaas.entity;
 
 import com.cyfuture.dbaas.model.BackupStatus;
+import com.cyfuture.dbaas.model.BackupDeletionMode;
+import com.cyfuture.dbaas.model.BackupRetentionPolicy;
+import com.cyfuture.dbaas.model.BackupTriggerMethod;
 import com.cyfuture.dbaas.model.BackupType;
 import com.cyfuture.dbaas.model.DatabaseEngine;
 import com.cyfuture.dbaas.model.DatabaseMode;
@@ -23,8 +26,8 @@ import java.time.Instant;
 @Table(name = "backups", uniqueConstraints = {
         @UniqueConstraint(name = "uk_backups_project_database_idempotency",
                 columnNames = {"project_name", "database_id", "idempotency_key"}),
-        @UniqueConstraint(name = "uk_backups_kubernetes_name",
-                columnNames = "kubernetes_backup_name")
+        @UniqueConstraint(name = "uk_backups_kubernetes_identity",
+                columnNames = {"kubernetes_namespace", "kubernetes_backup_name"})
 })
 @Getter
 @Setter
@@ -49,6 +52,12 @@ public class BackupMetadata {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 32)
     private BackupType backupType;
+    /** Resolved KubeBlocks full-backup method, retained with the recovery point. */
+    @Column(nullable = false, length = 63)
+    private String backupMethod;
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 32)
+    private BackupTriggerMethod triggerMethod;
     @Column(length = 32)
     private String parentBackupId;
     @Column(nullable = false, length = 32)
@@ -64,6 +73,20 @@ public class BackupMetadata {
     private BackupStatus status;
     @Column(nullable = false, length = 32)
     private String retentionPeriod;
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 32)
+    private BackupRetentionPolicy retentionPolicy;
+    @Enumerated(EnumType.STRING)
+    @Column(length = 32)
+    private BackupDeletionMode deletionMode;
+    @Column(length = 128)
+    private String deleteIdempotencyKey;
+    @Column(length = 64)
+    private String deleteRequestHash;
+    @Column(length = 63)
+    private String kubernetesNamespace;
+    @Column(length = 63)
+    private String kubernetesUid;
     private Long sizeBytes;
     @Column(nullable = false, length = 128)
     private String idempotencyKey;
@@ -80,6 +103,9 @@ public class BackupMetadata {
     private DatabaseMode sourceMode;
     @Column(nullable = false, length = 32)
     private String sourceDatabaseVersion;
+    /** Logical application database preserved by a full backup; never a credential. */
+    @Column(length = 128)
+    private String sourceLogicalDatabaseName;
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 32)
     private SizePlan sourceSizePlan;
@@ -97,5 +123,7 @@ public class BackupMetadata {
     private Instant completedAt;
     private Instant deleteRequestedAt;
     private Instant deletedAt;
+    private Instant expiresAt;
+    private Instant purgedAt;
     private Instant lastObservedAt;
 }

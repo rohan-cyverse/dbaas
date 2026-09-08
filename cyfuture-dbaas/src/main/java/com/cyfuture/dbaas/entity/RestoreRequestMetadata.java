@@ -39,6 +39,10 @@ public class RestoreRequestMetadata {
     private String sourceDatabaseId;
     @Column(nullable = false, length = 32)
     private String sourceBackupId;
+    @Column(length = 63)
+    private String sourceKubernetesBackupName;
+    @Column(length = 63)
+    private String sourceBackupNamespace;
     @Column(nullable = false, length = 32)
     private String restoredDatabaseId;
     @Enumerated(EnumType.STRING)
@@ -47,8 +51,15 @@ public class RestoreRequestMetadata {
     private Instant restoreTime;
     @Column(nullable = false, length = 63)
     private String kubernetesOpsRequestName;
+    @Column(length = 63)
+    private String kubernetesRestoreName;
     @Column(nullable = false, length = 63)
     private String kubernetesClusterName;
+    @Column(length = 32)
+    private String restoredDatabaseName;
+    @Column(length = 255)
+    private String publicHost;
+    private Integer publicPort;
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 32)
     private RestoreStatus status;
