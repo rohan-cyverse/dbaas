@@ -10,6 +10,7 @@ import java.util.List;
 public class PostgreSqlBackupEngineStrategy implements BackupEngineStrategy {
     @Override public DatabaseEngine engine() { return DatabaseEngine.POSTGRESQL; }
     @Override public String manualFullMethod() { return "pg-basebackup"; }
+    @Override public String continuousMethod() { return "archive-wal"; }
     @Override public List<String> futureIncrementalMethods() { return List.of("wal-g-incremental"); }
     @Override public List<String> futureContinuousMethods() { return List.of("archive-wal"); }
     @Override public boolean supportsTopology(DatabaseMode mode) {

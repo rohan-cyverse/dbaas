@@ -84,7 +84,8 @@ public class OperationRecoveryService {
                 .findByProjectNameAndDatabaseId(database.getProjectName(), database.getDatabaseId()).orElse(null);
         BackupConfigurationRequest backup = policy == null ? null : new BackupConfigurationRequest(
                 policy.getBackupRepositoryName(), policy.isAutoBackupEnabled(), policy.getRetentionDays(),
-                policy.getCronExpression(), policy.getTimezone(), policy.getRetentionPolicy(), false);
+                policy.getCronExpression(), policy.getTimezone(), policy.getRetentionPolicy(),
+                policy.isPitrEnabled());
         return new CreateDatabaseRequest(database.getDisplayName(), database.getRemark(),
                 database.getEngine(), database.getMode(), database.getDatabaseVersion(),
                 database.getSizePlan(), database.getStorageGi(), database.getReplicas(),

@@ -14,6 +14,7 @@ public class OpenApiConfig {
                 .version("1.0")
                 .description("Provision and manage PostgreSQL, MySQL and MongoDB through KubeBlocks, "
                         + "including asynchronous full backup, scheduled backup, retention, and restore APIs. "
-                        + "PITR and incremental backups are intentionally unavailable in this version."));
+                        + "PITR is available only after installed-template and continuous-coverage validation; "
+                        + "incremental backups remain unavailable."));
     }
 }

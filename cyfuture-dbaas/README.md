@@ -229,16 +229,18 @@ Content-Type: application/json
   "cronExpression": "0 2 * * *",
   "timezone": "UTC",
   "retentionPolicy": "RETAIN_LATEST",
-  "pitrEnabled": false
+  "pitrEnabled": true
 }
 ```
 
 The asynchronous operation patches only `Cluster.spec.backup` with `enabled`,
-`method`, `repoName`, `retentionPeriod`, `cronExpression`, and
-`pitrEnabled: false`. DBaaS does not create or mutate the generated
-`BackupPolicy` or `BackupSchedule`; it reports the policy as `ACTIVE` only after
-both KubeBlocks resources are Available. Backups created by that schedule are
-discovered and imported with `triggerMethod: AUTOMATIC`.
+`method`, `continuousMethod`, `repoName`, `retentionPeriod`, `cronExpression`,
+`pitrEnabled`, and `incrementalBackupEnabled: false`. PITR requires a scheduled
+full backup and an installed template exposing the engine's full/continuous
+method pair. DBaaS does not create or mutate the generated `BackupPolicy` or
+`BackupSchedule`; it reports the policy as `ACTIVE` only after both KubeBlocks
+resources are Available. Generated full and continuous backups are discovered
+and imported with `triggerMethod: AUTOMATIC`.
 
 Retention is evaluated only after a successful replacement is observed:
 
@@ -299,8 +301,10 @@ request. DBaaS reuses that restored logical database and managed username with
 a fresh target-cluster password—it does not create a target-ID-named empty
 database.
 
-restoreTime is reserved for a future point-in-time restore request. It is
-rejected with FEATURE_NOT_AVAILABLE in this release.
+For a point-in-time restore, use `POST /api/v1/projects/{project}/databases/{databaseId}/restores`
+with `restoreMode: POINT_IN_TIME` and a past UTC `restoreTime`. DBaaS accepts it
+only within an observed recovery window; the backup-specific restore route stays
+backward-compatible for full restores.
 
 #### Backup infrastructure and lifecycle safety
 
@@ -314,14 +318,14 @@ KubeBlocks 1.0 generated `BackupPolicy` resources can omit `backupRepoName`.
 That selects the cluster default, which DBaaS accepts only when
 `cyfuture-dbaas-backuprepo` is both Ready and marked as that default.
 
-The generated KubeBlocks BackupPolicy must expose the manual method appropriate
-to the engine:
+For PITR, the generated KubeBlocks BackupPolicy and an installed
+BackupPolicyTemplate must expose the exact full/continuous pair:
 
-| Engine | Available manual full method | Reserved future methods |
+| Engine | Full method | Continuous method |
 | --- | --- | --- |
-| PostgreSQL | pg-basebackup | wal-g-incremental, archive-wal |
-| MySQL | xtrabackup | xtrabackup-inc, archive-binlog |
-| MongoDB | dump | pbm-physical, archive-oplog, pbm-pitr |
+| PostgreSQL | pg-basebackup | archive-wal |
+| MySQL | xtrabackup | archive-binlog |
+| MongoDB replica set | dump | archive-oplog |
 
 The restart-safe reconcilers independently resume policy updates, pending or
 running backups, scheduled backup discovery, deletions, and restores. They
@@ -387,10 +391,11 @@ if ($restoreState.status -ne "SUCCEEDED") {
 Invoke-RestMethod -Method GET -Uri "$baseUrl/api/v1/projects/$projectId/databases/$restoredDatabaseId"
 ```
 
-The supported engines and full-backup methods are PostgreSQL `pg-basebackup`,
-MySQL `xtrabackup`, and MongoDB replica-set `dump`. PITR and incremental or
-continuous backups are intentionally rejected with FEATURE_NOT_AVAILABLE; no
-WAL, binlog, oplog, parent-chain, or point-in-time replay is attempted.
+The supported full/continuous PITR pairs are PostgreSQL `pg-basebackup` /
+`archive-wal`, MySQL `xtrabackup` / `archive-binlog`, and MongoDB replica-set
+`dump` / `archive-oplog`. PITR readiness is reported only after an actual
+completed base backup and healthy, non-stale continuous coverage are observed.
+Incremental backups remain rejected with `FEATURE_NOT_AVAILABLE`.
 
 ### Response boundary
 

@@ -3,6 +3,7 @@ package com.cyfuture.dbaas.entity;
 import com.cyfuture.dbaas.model.BackupPolicyStatus;
 import com.cyfuture.dbaas.model.BackupRetentionPolicy;
 import com.cyfuture.dbaas.model.DatabaseEngine;
+import com.cyfuture.dbaas.model.PitrStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -41,6 +42,8 @@ public class BackupPolicyMetadata {
     private String backupRepositoryName;
     @Column(nullable = false, length = 63)
     private String defaultBackupMethod;
+    @Column(length = 63)
+    private String continuousBackupMethod;
     private boolean encryptionConfigured;
     private boolean schedulingEnabled;
     @Column(length = 128)
@@ -60,6 +63,14 @@ public class BackupPolicyMetadata {
     @Column(nullable = false, length = 60)
     private String timezone;
     private boolean pitrEnabled;
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 32)
+    private PitrStatus pitrStatus;
+    @Column(length = 1000)
+    private String pitrMessage;
+    private Instant recoverableFrom;
+    private Instant recoverableUntil;
+    private Instant pitrObservedAt;
     private boolean configurationApplied;
     @Column(length = 63)
     private String kubernetesScheduleName;

@@ -7,6 +7,7 @@ import com.cyfuture.dbaas.model.BackupDeletionMode;
 import com.cyfuture.dbaas.model.BackupRetentionPolicy;
 import com.cyfuture.dbaas.model.BackupStatus;
 import com.cyfuture.dbaas.model.BackupTriggerMethod;
+import com.cyfuture.dbaas.model.BackupType;
 import com.cyfuture.dbaas.model.OperationStatus;
 import com.cyfuture.dbaas.model.ProvisioningStage;
 import com.cyfuture.dbaas.repository.BackupMetadataRepository;
@@ -126,6 +127,10 @@ public class BackupReconciler {
         boolean changed = !Objects.equals(backup.getSizeBytes(), observed.sizeBytes())
                 || !Objects.equals(backup.getStartedAt(), observed.startedAt())
                 || !Objects.equals(backup.getKubernetesUid(), observed.uid())
+                || !Objects.equals(backup.getParentKubernetesBackupName(), observed.parentBackupName())
+                || !Objects.equals(backup.getBaseKubernetesBackupName(), observed.baseBackupName())
+                || !Objects.equals(backup.getCoverageStart(), observed.coverageStart())
+                || !Objects.equals(backup.getCoverageEnd(), observed.coverageEnd())
                 || (observed.expiration() != null
                 && !Objects.equals(backup.getExpiresAt(), observed.expiration()));
         if (!changed) return;
@@ -133,6 +138,7 @@ public class BackupReconciler {
         if (observed.startedAt() != null) backup.setStartedAt(observed.startedAt());
         if (observed.uid() != null) backup.setKubernetesUid(observed.uid());
         if (observed.expiration() != null) backup.setExpiresAt(observed.expiration());
+        applyObservedPitrFields(backup, observed, namespace);
         backup.setLastObservedAt(Instant.now());
         backupRepository.save(backup);
     }
@@ -185,12 +191,15 @@ public class BackupReconciler {
         boolean changed = backup.getStatus() != BackupStatus.RUNNING
                 || !Objects.equals(backup.getSizeBytes(), observed.sizeBytes())
                 || !Objects.equals(backup.getStartedAt(), observed.startedAt())
-                || !Objects.equals(backup.getKubernetesUid(), observed.uid());
+                || !Objects.equals(backup.getKubernetesUid(), observed.uid())
+                || !Objects.equals(backup.getCoverageStart(), observed.coverageStart())
+                || !Objects.equals(backup.getCoverageEnd(), observed.coverageEnd());
         if (!changed) return;
         backup.setStatus(BackupStatus.RUNNING);
         backup.setSizeBytes(observed.sizeBytes());
         if (observed.startedAt() != null) backup.setStartedAt(observed.startedAt());
         if (observed.uid() != null) backup.setKubernetesUid(observed.uid());
+        applyObservedPitrFields(backup, observed, namespace(backup));
         backup.setLastObservedAt(Instant.now());
         backupRepository.save(backup);
         finishOperation(backup.getOperationId(), OperationStatus.RUNNING,
@@ -204,6 +213,7 @@ public class BackupReconciler {
         if (observed.uid() != null) backup.setKubernetesUid(observed.uid());
         backup.setCompletedAt(observed.completedAt() == null ? Instant.now() : observed.completedAt());
         if (observed.expiration() != null) backup.setExpiresAt(observed.expiration());
+        applyObservedPitrFields(backup, observed, namespace(backup));
         backup.setLastObservedAt(Instant.now());
         backup.setFailureCode(null);
         backup.setFailureMessage(null);
@@ -214,7 +224,9 @@ public class BackupReconciler {
             // The recovery point is already complete. Retention coordination
             // can be retried independently and must never reclassify a
             // successful KubeBlocks backup as failed because of metadata I/O.
-            retentionService.recordCompletion(backup.getBackupId());
+            if (backup.getBackupType() == BackupType.FULL) {
+                retentionService.recordCompletion(backup.getBackupId());
+            }
         } catch (RuntimeException exception) {
             log.debug("Retention reconciliation for completed backup {} will retry: {}", backup.getBackupId(),
                     BackupRestoreSafety.safeMessage(exception, "Retention reconciliation will retry."));
@@ -230,6 +242,39 @@ public class BackupReconciler {
         backupRepository.save(backup);
         finishOperation(backup.getOperationId(), OperationStatus.SUCCEEDED,
                 ProvisioningStage.READY, 100, message);
+    }
+
+    /** Persists only safe KubeBlocks chain/time-range status used for PITR. */
+    private void applyObservedPitrFields(BackupMetadata backup,
+                                         KubeBlocksClient.BackupObservation observed,
+                                         String namespace) {
+        if (backup.getBackupType() == BackupType.FULL) {
+            backup.setBaseBackupId(backup.getBackupId());
+            backup.setBaseKubernetesBackupName(backup.getKubernetesBackupName());
+            backup.setParentBackupId(null);
+            return;
+        }
+        if (observed.parentBackupName() != null && !observed.parentBackupName().isBlank()) {
+            backup.setParentKubernetesBackupName(observed.parentBackupName());
+            backupRepository.findByKubernetesNamespaceAndKubernetesBackupName(namespace,
+                    observed.parentBackupName()).ifPresent(parent -> {
+                backup.setParentBackupId(parent.getBackupId());
+                if (backup.getBaseBackupId() == null && parent.getBaseBackupId() != null) {
+                    backup.setBaseBackupId(parent.getBaseBackupId());
+                }
+            });
+        }
+        if (observed.baseBackupName() != null && !observed.baseBackupName().isBlank()) {
+            backup.setBaseKubernetesBackupName(observed.baseBackupName());
+            backupRepository.findByKubernetesNamespaceAndKubernetesBackupName(namespace,
+                    observed.baseBackupName()).ifPresent(base -> {
+                backup.setBaseBackupId(base.getBackupId());
+                backup.setBackupChainId(base.getBackupChainId() == null
+                        ? base.getBackupId() : base.getBackupChainId());
+            });
+        }
+        backup.setCoverageStart(observed.coverageStart());
+        backup.setCoverageEnd(observed.coverageEnd());
     }
 
     private void markUnavailable(BackupMetadata backup, boolean expired) {

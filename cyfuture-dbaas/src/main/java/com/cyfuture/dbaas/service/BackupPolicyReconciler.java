@@ -31,6 +31,7 @@ public class BackupPolicyReconciler {
     private final KubeBlocksClient kubeBlocksClient;
     private final BackupPolicySubmissionService submissionService;
     private final ScheduledBackupDiscoveryService discoveryService;
+    private final PitrRecoveryService pitrRecoveryService;
 
     @EventListener(ApplicationReadyEvent.class)
     public void reconcileOnStartup() {
@@ -68,9 +69,12 @@ public class BackupPolicyReconciler {
         }
         KubeBlocksClient.BackupPolicyInfo observed = kubeBlocksClient.resolveReadyBackupPolicy(
                 source.getNamespaceName(), source.getDatabaseId(), source.getEngine(),
-                policy.getDefaultBackupMethod(), policy.getBackupRepositoryName());
+                policy.getDefaultBackupMethod(), policy.isPitrEnabled()
+                        ? policy.getContinuousBackupMethod() : null,
+                policy.getBackupRepositoryName());
         if (!"AVAILABLE".equalsIgnoreCase(observed.observedStatus())) {
             pending(policy, observed, null, "Waiting for generated KubeBlocks BackupPolicy");
+            pitrRecoveryService.refresh(policy);
             return;
         }
         if (policy.isAutoBackupEnabled()) {
@@ -83,12 +87,14 @@ public class BackupPolicyReconciler {
             activate(policy, observed, schedule, BackupPolicyStatus.ACTIVE,
                     "Backup policy and schedule are available.");
             discoveryService.discover(policy);
+            pitrRecoveryService.refresh(policy);
             return;
         }
         // A disabled schedule has no generated BackupSchedule to wait for, but
         // the generated BackupPolicy must still be available before it is stable.
         activate(policy, observed, null, BackupPolicyStatus.DISABLED,
                 "Automatic backup is disabled.");
+        pitrRecoveryService.refresh(policy);
     }
 
     private void pending(BackupPolicyMetadata policy, KubeBlocksClient.BackupPolicyInfo observed,
@@ -123,6 +129,9 @@ public class BackupPolicyReconciler {
             policy.setKubernetesPolicyName(observed.policyName());
             policy.setKubernetesScheduleName(schedule == null ? null : schedule.scheduleName());
             policy.setObservedStatus(observed.observedStatus());
+            if (observed.continuousMethod() != null && !observed.continuousMethod().isBlank()) {
+                policy.setContinuousBackupMethod(observed.continuousMethod());
+            }
             policy.setFailureCode(null);
             policy.setFailureMessage(null);
             policy.setLastObservedAt(Instant.now());

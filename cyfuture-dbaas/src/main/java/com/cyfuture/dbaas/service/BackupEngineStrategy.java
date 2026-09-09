@@ -13,6 +13,9 @@ public interface BackupEngineStrategy {
     /** The only method enabled for manual backups in this release. */
     String manualFullMethod();
 
+    /** Installed continuous-log method used only when PITR is explicitly enabled. */
+    String continuousMethod();
+
     /** Reserved method names are surfaced internally, never attempted prematurely. */
     List<String> futureIncrementalMethods();
 
@@ -20,6 +23,11 @@ public interface BackupEngineStrategy {
 
     /** The topology must be one backed by the installed KubeBlocks template. */
     boolean supportsTopology(DatabaseMode mode);
+
+    /** PITR is more restrictive than ordinary full-backup support for some engines. */
+    default boolean supportsPitrTopology(DatabaseMode mode) {
+        return supportsTopology(mode);
+    }
 
     default boolean supportsNow(BackupType type) {
         return type == BackupType.FULL;

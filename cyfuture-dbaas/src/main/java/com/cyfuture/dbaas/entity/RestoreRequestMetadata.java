@@ -1,6 +1,7 @@
 package com.cyfuture.dbaas.entity;
 
 import com.cyfuture.dbaas.model.DatabaseEngine;
+import com.cyfuture.dbaas.model.RestoreMode;
 import com.cyfuture.dbaas.model.RestoreStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -39,6 +40,11 @@ public class RestoreRequestMetadata {
     private String sourceDatabaseId;
     @Column(nullable = false, length = 32)
     private String sourceBackupId;
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 32)
+    private RestoreMode restoreMode;
+    @Column(length = 32)
+    private String continuousBackupId;
     @Column(length = 63)
     private String sourceKubernetesBackupName;
     @Column(length = 63)

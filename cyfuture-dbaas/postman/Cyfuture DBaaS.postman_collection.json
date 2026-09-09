@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "321fcd7f-040f-4080-86b7-8c66abbfad9f",
     "name": "Cyfuture DBaaS",
-    "description": "DBaaS creates and manages the default organization in the backend. Project responses expose organizationId, and every project is server-bound to that organization. Immutable IDs (org-xxxx, prj-xxxx, db-xxxx) identify resources; database names are human-facing handles. Omit a database name to receive a unique engine-prefixed handle. Keep an Idempotency-Key unchanged only when retrying the exact same infrastructure request. The Backup and Restore folder supports manual and scheduled FULL backups; wait for a COMPLETED backup before restoring it to a new database.",
+    "description": "DBaaS creates and manages the default organization in the backend. Project responses expose organizationId, and every project is server-bound to that organization. Immutable IDs (org-xxxx, prj-xxxx, db-xxxx) identify resources; database names are human-facing handles. Omit a database name to receive a unique engine-prefixed handle. Keep an Idempotency-Key unchanged only when retrying the exact same infrastructure request. The Backup and Restore folder supports scheduled full backups and PITR after KubeBlocks template validation plus a healthy observed recovery window.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "_exporter_id": "56329818",
     "_collection_link": "https://go.postman.co/collection/56329818-321fcd7f-040f-4080-86b7-8c66abbfad9f?source=collection_link"
@@ -1027,7 +1027,7 @@
     },
     {
       "name": "Backup and Restore",
-      "description": "Manual and scheduled full backups: configure the KubeBlocks-generated policy first when automatic backup is needed, create a backup, poll the operation until SUCCEEDED, verify the Backup resource is COMPLETED, then restore it to a new database. The restored database never overwrites the source. Keep each idempotency key only for a retry of the identical request.",
+      "description": "Configure the KubeBlocks-generated backup policy before automatic backups or PITR. PITR requires a scheduled full backup and a READY recovery window backed by completed base backup plus healthy continuous coverage. Full and point-in-time restores always create a new database; they never overwrite the source. Keep each idempotency key only for a retry of the identical request.",
       "item": [
         {
           "name": "Update Backup Policy",
@@ -1060,7 +1060,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"repository\": \"cyfuture-dbaas-backuprepo\",\n  \"autoBackupEnabled\": true,\n  \"retentionDays\": 7,\n  \"cronExpression\": \"0 2 * * *\",\n  \"timezone\": \"UTC\",\n  \"retentionPolicy\": \"RETAIN_LATEST\",\n  \"pitrEnabled\": false\n}"
+              "raw": "{\n  \"repository\": \"cyfuture-dbaas-backuprepo\",\n  \"autoBackupEnabled\": true,\n  \"retentionDays\": 7,\n  \"cronExpression\": \"0 2 * * *\",\n  \"timezone\": \"UTC\",\n  \"retentionPolicy\": \"RETAIN_LATEST\",\n  \"pitrEnabled\": true\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/backup-policy",
@@ -1077,7 +1077,7 @@
                 "backup-policy"
               ]
             },
-            "description": "Asynchronously applies only Cluster.spec.backup and waits for KubeBlocks-generated BackupPolicy and BackupSchedule availability. Cron is five-field and stored in UTC; pitrEnabled must be false."
+            "description": "Asynchronously patches Cluster.spec.backup including continuousMethod, pitrEnabled, and incrementalBackupEnabled=false. Cron is five-field and stored in UTC. PITR is accepted only for a supported installed full/continuous template pair."
           },
           "response": []
         },
@@ -1101,7 +1101,47 @@
                 "backup-policy"
               ]
             },
-            "description": "Returns safe effective policy state. ACTIVE means the generated KubeBlocks policy and schedule are Available; repository credentials and Kubernetes identities are not returned."
+            "description": "Returns safe effective policy state, including observed PITR status and recoverable window. ACTIVE means the generated KubeBlocks policy and schedule are Available; repository credentials and Kubernetes identities are not returned."
+          },
+          "response": []
+        },
+        {
+          "name": "Get PITR Recovery Window",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Recovery window response is available', function () { pm.response.to.have.status(200); });",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  if (body.recoverableFrom) pm.collectionVariables.set('recoverableFrom', body.recoverableFrom);",
+                  "  if (body.recoverableUntil) pm.collectionVariables.set('recoverableUntil', body.recoverableUntil);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/recovery-window",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "recovery-window"
+              ]
+            },
+            "description": "Returns observed PITR health and the actual recoverableFrom/recoverableUntil bounds. Only use POINT_IN_TIME restore when status is READY."
           },
           "response": []
         },
@@ -1255,7 +1295,7 @@
                 { "key": "size", "value": "20" }
               ]
             },
-            "description": "Lists restore attempts and public endpoint readiness metadata without passwords, usernames, Secrets, or private endpoints."
+            "description": "Lists restore attempts, restore mode/time/base backup, and public endpoint readiness metadata without passwords, usernames, Secrets, or private endpoints."
           },
           "response": []
         },
@@ -1355,7 +1395,113 @@
                 "restore"
               ]
             },
-            "description": "Requires an available COMPLETED full backup. It creates a new database through a Restore OpsRequest and never overwrites the source. Completion requires the restored logical database to exist, managed credentials to target it, and the public route to be ready; DBaaS never creates a target-ID-named empty database. Do not include restoreTime: PITR is not enabled in this release. The response stores the new database resourceId and global operation ID."
+            "description": "Backward-compatible full-restore endpoint. It requires an available COMPLETED full backup, creates a new database through a Restore OpsRequest, and never overwrites the source. Use the database-scoped restore requests below for explicit FULL or POINT_IN_TIME mode."
+          },
+          "response": []
+        },
+        {
+          "name": "Restore Full Backup (Database Endpoint)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('restoreOperationId', body.operationId);",
+                  "  pm.collectionVariables.set('restoredDatabaseId', body.resourceId);",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{fullRestoreIdempotencyKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"orders-full-restore\",\n  \"restoreMode\": \"FULL\",\n  \"backupId\": \"{{backupId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restores",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "restores"
+              ]
+            },
+            "description": "Creates an asynchronous full restore into a new Cluster. backupId must refer to a completed full backup for this source database."
+          },
+          "response": []
+        },
+        {
+          "name": "Restore Point In Time",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 202) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('restoreOperationId', body.operationId);",
+                  "  pm.collectionVariables.set('restoredDatabaseId', body.resourceId);",
+                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{pitrRestoreIdempotencyKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"orders-pitr-restore\",\n  \"restoreMode\": \"POINT_IN_TIME\",\n  \"restoreTime\": \"{{recoverableUntil}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restores",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "restores"
+              ]
+            },
+            "description": "Run Get PITR Recovery Window first. restoreTime must be an observed, past UTC timestamp within a READY recovery window. The restore always targets a new Cluster."
           },
           "response": []
         },
@@ -1662,6 +1808,22 @@
     {
       "key": "restoreIdempotencyKey",
       "value": "restore-manual-20260907-001"
+    },
+    {
+      "key": "fullRestoreIdempotencyKey",
+      "value": "restore-full-20260909-001"
+    },
+    {
+      "key": "pitrRestoreIdempotencyKey",
+      "value": "restore-pitr-20260909-001"
+    },
+    {
+      "key": "recoverableFrom",
+      "value": ""
+    },
+    {
+      "key": "recoverableUntil",
+      "value": ""
     },
     {
       "key": "componentName",

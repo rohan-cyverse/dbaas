@@ -28,7 +28,7 @@ public class BackupPolicyController {
 
     @PutMapping
     @Operation(summary = "Update scheduled backup configuration",
-            description = "Patches only Cluster.spec.backup. PITR and incremental backups return FEATURE_NOT_AVAILABLE.")
+            description = "Patches only Cluster.spec.backup. Incremental backups remain unavailable; PITR is validated against installed KubeBlocks templates.")
     public ResponseEntity<AcceptedOperationResponse> update(@PathVariable String project,
                                                               @PathVariable String databaseId,
                                                               @RequestHeader("Idempotency-Key") String idempotencyKey,

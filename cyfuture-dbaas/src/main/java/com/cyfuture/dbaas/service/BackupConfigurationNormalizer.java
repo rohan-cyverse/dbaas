@@ -41,10 +41,6 @@ public class BackupConfigurationNormalizer {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "BACKUP_REPOSITORY_NOT_ALLOWED", false,
                     "Only the platform-approved BackupRepo can be used.");
         }
-        if (Boolean.TRUE.equals(request.pitrEnabled())) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "FEATURE_NOT_AVAILABLE", false,
-                    "Point-in-time recovery is not available yet.");
-        }
         int retentionDays = request.retentionDays() == null
                 ? defaultRetentionDays() : request.retentionDays();
         if (retentionDays < 1 || retentionDays > MAX_RETENTION_DAYS) {
@@ -52,6 +48,11 @@ public class BackupConfigurationNormalizer {
                     "retentionDays must be between 1 and " + MAX_RETENTION_DAYS + ".");
         }
         boolean enabled = Boolean.TRUE.equals(request.autoBackupEnabled());
+        boolean pitrEnabled = Boolean.TRUE.equals(request.pitrEnabled());
+        if (pitrEnabled && !enabled) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "PITR_SCHEDULE_REQUIRED", false,
+                    "Scheduled full backup must be enabled when point-in-time recovery is enabled.");
+        }
         String timezone = textOr(request.timezone(), "UTC");
         ZoneId zone;
         try {
@@ -68,7 +69,7 @@ public class BackupConfigurationNormalizer {
         if (cron != null) cron = normalizeCronToUtc(cron, zone);
         return new NormalizedBackupConfiguration(repository, enabled, retentionDays, cron, zone.getId(),
                 request.retentionPolicy() == null ? BackupRetentionPolicy.RETAIN_ALL : request.retentionPolicy(),
-                false);
+                pitrEnabled);
     }
 
     public NormalizedBackupConfiguration defaults() {

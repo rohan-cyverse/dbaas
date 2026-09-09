@@ -105,7 +105,9 @@ public class BackupService {
         backup.setBackupMethod(strategies.require(database.getEngine()).manualFullMethod());
         backup.setTriggerMethod(BackupTriggerMethod.MANUAL);
         backup.setBackupChainId(backupId);
+        backup.setBaseBackupId(backupId);
         backup.setKubernetesBackupName(backupId);
+        backup.setBaseKubernetesBackupName(backupId);
         backup.setKubernetesNamespace(database.getNamespaceName());
         backup.setBackupRepositoryName(repository);
         backup.setStatus(BackupStatus.PENDING);

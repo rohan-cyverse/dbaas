@@ -11,6 +11,7 @@ import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.BackupPolicyStatus;
 import com.cyfuture.dbaas.model.OperationStatus;
 import com.cyfuture.dbaas.model.OperationType;
+import com.cyfuture.dbaas.model.PitrStatus;
 import com.cyfuture.dbaas.model.ProvisioningStage;
 import com.cyfuture.dbaas.repository.BackupPolicyMetadataRepository;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
@@ -44,6 +45,7 @@ public class BackupPolicyService {
     private final BackupEngineStrategies strategies;
     private final KubeBlocksClient kubeBlocksClient;
     private final BackupPolicySubmissionService submissionService;
+    private final PitrRecoveryService pitrRecoveryService;
 
     @Transactional
     public AcceptedOperationResponse update(String project, String databaseId, String idempotencyKey,
@@ -65,9 +67,10 @@ public class BackupPolicyService {
         }
         BackupConfigurationNormalizer.NormalizedBackupConfiguration desired = normalizer.normalize(request);
         kubeBlocksClient.validateReadyBackupRepository(desired.repository());
+        validatePitrSupport(database, strategy, desired);
         String requestHash = hash(desired.repository(), String.valueOf(desired.autoBackupEnabled()),
                 String.valueOf(desired.retentionDays()), String.valueOf(desired.cronExpression()),
-                desired.timezone(), desired.retentionPolicy().name());
+                desired.timezone(), desired.retentionPolicy().name(), String.valueOf(desired.pitrEnabled()));
 
         BackupPolicyMetadata policy = policyRepository.findByProjectNameAndDatabaseId(project, databaseId)
                 .orElse(null);
@@ -119,6 +122,7 @@ public class BackupPolicyService {
         BackupPolicyMetadata policy = policyRepository.findByProjectNameAndDatabaseId(project, databaseId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "BACKUP_POLICY_NOT_CONFIGURED", false,
                         "No backup policy has been configured for this database."));
+        pitrRecoveryService.refresh(policy);
         return response(policy);
     }
 
@@ -127,7 +131,7 @@ public class BackupPolicyService {
         BackupConfigurationNormalizer.NormalizedBackupConfiguration desired = normalizer.normalize(request);
         return new BackupConfigurationRequest(desired.repository(), desired.autoBackupEnabled(),
                 desired.retentionDays(), desired.cronExpression(), desired.timezone(),
-                desired.retentionPolicy(), false);
+                desired.retentionPolicy(), desired.pitrEnabled());
     }
 
     /** Builds a pending desired-policy row to be saved atomically with database creation metadata. */
@@ -141,6 +145,7 @@ public class BackupPolicyService {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "BACKUP_TOPOLOGY_UNSUPPORTED", false,
                     "The installed KubeBlocks backup template does not support this database topology.");
         }
+        validatePitrSupport(database, strategy, desired);
         BackupPolicyMetadata policy = new BackupPolicyMetadata();
         Instant now = Instant.now();
         policy.setPolicyId("bpol-" + shortId());
@@ -151,7 +156,8 @@ public class BackupPolicyService {
         apply(policy, database, desired, null, "create:" + database.getDatabaseId(),
                 hash(desired.repository(), String.valueOf(desired.autoBackupEnabled()),
                         String.valueOf(desired.retentionDays()), String.valueOf(desired.cronExpression()),
-                        desired.timezone(), desired.retentionPolicy().name()), now);
+                        desired.timezone(), desired.retentionPolicy().name(),
+                        String.valueOf(desired.pitrEnabled())), now);
         return policy;
     }
 
@@ -169,7 +175,10 @@ public class BackupPolicyService {
                 policy.getEngine(), policy.getBackupRepositoryName(), policy.isAutoBackupEnabled(),
                 policy.getRetentionDays(), policy.getCronExpression(), policy.getTimezone(),
                 policy.getRetentionPolicy(), policy.isPitrEnabled(), policy.getDefaultBackupMethod(),
-                policy.getPolicyStatus(), message, policy.getUpdatedAt());
+                policy.getPolicyStatus(), message, policy.getUpdatedAt(), policy.getContinuousBackupMethod(),
+                policy.getPitrStatus() == null ? PitrStatus.DISABLED : policy.getPitrStatus(),
+                policy.getRecoverableFrom(), policy.getRecoverableUntil(), policy.getPitrMessage(),
+                policy.getPitrObservedAt());
     }
 
     private void apply(BackupPolicyMetadata policy, DatabaseMetadata database,
@@ -179,6 +188,7 @@ public class BackupPolicyService {
         policy.setEngine(database.getEngine());
         policy.setBackupRepositoryName(desired.repository());
         policy.setDefaultBackupMethod(strategy.manualFullMethod());
+        policy.setContinuousBackupMethod(desired.pitrEnabled() ? strategy.continuousMethod() : null);
         policy.setSchedulingEnabled(desired.autoBackupEnabled());
         policy.setAutoBackupEnabled(desired.autoBackupEnabled());
         policy.setDefaultRetentionPeriod(normalizer.duration(desired.retentionDays()));
@@ -186,7 +196,14 @@ public class BackupPolicyService {
         policy.setRetentionPolicy(desired.retentionPolicy());
         policy.setCronExpression(desired.cronExpression());
         policy.setTimezone(desired.timezone());
-        policy.setPitrEnabled(false);
+        policy.setPitrEnabled(desired.pitrEnabled());
+        policy.setPitrStatus(desired.pitrEnabled() ? PitrStatus.PENDING : PitrStatus.DISABLED);
+        policy.setPitrMessage(desired.pitrEnabled()
+                ? "Waiting for a completed base backup and continuous log coverage."
+                : "Point-in-time recovery is disabled.");
+        policy.setRecoverableFrom(null);
+        policy.setRecoverableUntil(null);
+        policy.setPitrObservedAt(now);
         policy.setConfigurationApplied(false);
         policy.setPolicyStatus(BackupPolicyStatus.PENDING);
         policy.setObservedStatus("PENDING");
@@ -196,6 +213,17 @@ public class BackupPolicyService {
         policy.setFailureCode(null);
         policy.setFailureMessage(null);
         policy.setUpdatedAt(now);
+    }
+
+    private void validatePitrSupport(DatabaseMetadata database, BackupEngineStrategy strategy,
+                                     BackupConfigurationNormalizer.NormalizedBackupConfiguration desired) {
+        if (!desired.pitrEnabled()) return;
+        if (!strategy.supportsPitrTopology(database.getMode())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "PITR_NOT_SUPPORTED", false,
+                    "Point-in-time recovery is not supported for this database topology.");
+        }
+        kubeBlocksClient.validatePitrTemplate(database.getEngine(), strategy.manualFullMethod(),
+                strategy.continuousMethod());
     }
 
     private AcceptedOperationResponse accepted(String operationId, String policyId) {

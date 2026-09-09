@@ -73,5 +73,9 @@ public class DatabaseProperties {
         private String repositoryName = "cyfuture-dbaas-backuprepo";
         private String defaultRetention = "7d";
         private int pollAfterSeconds = 5;
+        /** A continuously archived chain older than this cannot be reported READY. */
+        private long continuousStaleMs = 300_000L;
+        /** Timestamp-skew tolerance only; default zero avoids claiming an unproven gap. */
+        private long continuousMaxGapMs = 0L;
     }
 }

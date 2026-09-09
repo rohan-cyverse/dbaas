@@ -38,8 +38,10 @@ public class BackupPolicySubmissionService {
         try {
             boolean newlyApplied = !policy.isConfigurationApplied();
             kubeBlocksClient.configureScheduledBackup(database.getNamespaceName(), policy.getProjectName(),
-                    database.getDatabaseId(), policy.getDefaultBackupMethod(), policy.getBackupRepositoryName(),
-                    policy.getDefaultRetentionPeriod(), policy.getCronExpression(), policy.isAutoBackupEnabled());
+                    database.getDatabaseId(), policy.getDefaultBackupMethod(),
+                    policy.getContinuousBackupMethod(), policy.getBackupRepositoryName(),
+                    policy.getDefaultRetentionPeriod(), policy.getCronExpression(), policy.isAutoBackupEnabled(),
+                    policy.isPitrEnabled());
             if (newlyApplied) {
                 policy.setConfigurationApplied(true);
                 policy.setLastObservedAt(Instant.now());

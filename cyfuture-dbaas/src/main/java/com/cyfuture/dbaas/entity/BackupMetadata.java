@@ -60,6 +60,12 @@ public class BackupMetadata {
     private BackupTriggerMethod triggerMethod;
     @Column(length = 32)
     private String parentBackupId;
+    @Column(length = 32)
+    private String baseBackupId;
+    @Column(length = 63)
+    private String parentKubernetesBackupName;
+    @Column(length = 63)
+    private String baseKubernetesBackupName;
     @Column(nullable = false, length = 32)
     private String backupChainId;
     @Column(nullable = false, length = 63)
@@ -125,5 +131,7 @@ public class BackupMetadata {
     private Instant deletedAt;
     private Instant expiresAt;
     private Instant purgedAt;
+    private Instant coverageStart;
+    private Instant coverageEnd;
     private Instant lastObservedAt;
 }

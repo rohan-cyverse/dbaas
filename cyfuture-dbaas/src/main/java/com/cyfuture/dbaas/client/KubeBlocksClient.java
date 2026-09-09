@@ -43,6 +43,7 @@ public class KubeBlocksClient {
     private static final String GROUP = "apps.kubeblocks.io";
     private static final String VERSION = "v1";
     private static final String CLUSTERS = "clusters";
+    private static final String CLUSTER_CRD = "clusters.apps.kubeblocks.io";
     private static final String CLUSTER_DEFINITIONS = "clusterdefinitions";
     private static final String OPS_GROUP = "operations.kubeblocks.io";
     private static final String OPS_VERSION = "v1alpha1";
@@ -85,6 +86,8 @@ public class KubeBlocksClient {
     private final CoreV1Api coreV1Api;
     private final StorageV1Api storageV1Api;
     private final Set<String> verifiedOpsRequestFields = new HashSet<>();
+    private final Set<String> verifiedRestoreFields = new HashSet<>();
+    private boolean clusterBackupSchemaVerified;
 
     @Autowired
     public KubeBlocksClient(ApiClient apiClient, DatabaseProperties properties) {
@@ -519,7 +522,25 @@ public class KubeBlocksClient {
                                                      DatabaseEngine engine,
                                                      String expectedMethod,
                                                      String expectedRepository) {
+        return resolveReadyBackupPolicy(namespace, databaseId, engine, expectedMethod, null,
+                expectedRepository);
+    }
+
+    /**
+     * Resolves the policy generated for a Cluster and verifies every requested
+     * full/continuous method against both the generated policy and its installed
+     * BackupPolicyTemplate. Continuous validation is deliberately opt-in so
+     * ordinary full backups retain their existing behavior.
+     */
+    public BackupPolicyInfo resolveReadyBackupPolicy(String namespace, String databaseId,
+                                                     DatabaseEngine engine,
+                                                     String expectedMethod,
+                                                     String expectedContinuousMethod,
+                                                     String expectedRepository) {
         BackupRepositoryInfo repository = requireReadyBackupRepository(expectedRepository);
+        if (expectedContinuousMethod != null && !expectedContinuousMethod.isBlank()) {
+            validatePitrTemplate(engine, expectedMethod, expectedContinuousMethod);
+        }
         try {
             Map<String, Object> list = asMap(customObjectsApi.listNamespacedCustomObject(
                     DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace,
@@ -568,18 +589,28 @@ public class KubeBlocksClient {
                 throw new ApiException(HttpStatus.CONFLICT, "BACKUP_REPOSITORY_MISMATCH", false,
                         "The database BackupPolicy uses the default BackupRepo, which is not the approved BackupRepo.");
             }
-            boolean methodFound = ((List<?>) spec.getOrDefault("backupMethods", List.of())).stream()
+            List<String> methodNames = ((List<?>) spec.getOrDefault("backupMethods", List.of())).stream()
                     .map(this::asMap)
-                    .anyMatch(method -> expectedMethod.equals(String.valueOf(method.get("name"))));
+                    .map(method -> optionalText(method.get("name")))
+                    .filter(Objects::nonNull)
+                    .toList();
+            boolean methodFound = methodNames.contains(expectedMethod);
             if (!methodFound) {
                 throw new ApiException(HttpStatus.CONFLICT, "BACKUP_METHOD_UNSUPPORTED", false,
                         "The configured full backup method is not available in the database BackupPolicy.");
             }
+            if (expectedContinuousMethod != null && !expectedContinuousMethod.isBlank()
+                    && !methodNames.contains(expectedContinuousMethod)) {
+                // The installed template was already proven to support this
+                // pair. A generated policy without it is still converging.
+                throw new ApiException(HttpStatus.CONFLICT, "BACKUP_POLICY_NOT_READY", true,
+                        "The generated KubeBlocks BackupPolicy has not exposed the continuous backup method yet.");
+            }
             String observedStatus = policyObservedStatus(asMap(policy.get("status")));
             boolean encryptionConfigured = !asMap(spec.get("encryptionConfig")).isEmpty();
-            validateInstalledTemplate(policy, expectedMethod);
+            validateInstalledTemplate(policy, expectedMethod, expectedContinuousMethod);
             return new BackupPolicyInfo(policyName, expectedRepository, expectedMethod,
-                    encryptionConfigured, observedStatus, engine);
+                    expectedContinuousMethod, encryptionConfigured, observedStatus, engine);
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             throw backupApiFailure("read the generated BackupPolicy", exception);
         }
@@ -593,7 +624,20 @@ public class KubeBlocksClient {
                                         String method, String repositoryName,
                                         String retentionPeriod, String cronExpression,
                                         boolean enabled) {
+        configureScheduledBackup(namespace, project, databaseId, method, null, repositoryName,
+                retentionPeriod, cronExpression, enabled, false);
+    }
+
+    public void configureScheduledBackup(String namespace, String project, String databaseId,
+                                        String method, String continuousMethod, String repositoryName,
+                                        String retentionPeriod, String cronExpression,
+                                        boolean enabled, boolean pitrEnabled) {
         requireReadyBackupRepository(repositoryName);
+        ensureClusterBackupSchemaSupports();
+        if (pitrEnabled && (continuousMethod == null || continuousMethod.isBlank())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "PITR_NOT_SUPPORTED", false,
+                    "The selected database engine has no installed continuous backup method.");
+        }
         for (int attempt = 0; attempt < 3; attempt++) {
             try {
                 Map<String, Object> cluster = new LinkedHashMap<>(asMap(
@@ -614,6 +658,9 @@ public class KubeBlocksClient {
                 Map<String, Object> backup = new LinkedHashMap<>();
                 backup.put("enabled", enabled);
                 backup.put("method", method);
+                // A null is an intentional merge-patch removal when PITR is
+                // disabled; existing recovery points are never touched.
+                backup.put("continuousMethod", pitrEnabled ? continuousMethod : null);
                 backup.put("repoName", repositoryName);
                 backup.put("retentionPeriod", retentionPeriod);
                 if (cronExpression != null && !cronExpression.isBlank()) {
@@ -623,7 +670,8 @@ public class KubeBlocksClient {
                     // schedule when automatic backups are disabled.
                     backup.put("cronExpression", null);
                 }
-                backup.put("pitrEnabled", false);
+                backup.put("pitrEnabled", pitrEnabled);
+                backup.put("incrementalBackupEnabled", false);
                 // A reconciler may revisit a waiting KubeBlocks policy often.
                 // Do not generate needless Cluster writes once desired state is
                 // already present.
@@ -728,9 +776,113 @@ public class KubeBlocksClient {
         }
     }
 
+    /**
+     * Reads generated full and continuous Backup resources from the installed
+     * v1alpha1 schema. Import is limited to the database's generated policy
+     * and controller-owned children; DBaaS never invents coverage timestamps.
+     */
+    public List<GeneratedBackupInfo> listGeneratedBackups(String namespace, String databaseId,
+                                                           String policyName, String fullMethod,
+                                                           String continuousMethod) {
+        try {
+            Map<String, Object> list = asMap(customObjectsApi.listNamespacedCustomObject(
+                    DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS).execute());
+            List<GeneratedBackupInfo> discovered = new ArrayList<>();
+            for (Object item : (List<?>) list.getOrDefault("items", List.of())) {
+                Map<String, Object> backup = asMap(item);
+                Map<String, Object> metadata = asMap(backup.get("metadata"));
+                Map<String, Object> labels = asMap(metadata.get("labels"));
+                Map<String, Object> spec = asMap(backup.get("spec"));
+                String instance = optionalText(labels.get(APP_INSTANCE_LABEL));
+                String method = optionalText(spec.get("backupMethod"));
+                if (!policyName.equals(optionalText(spec.get("backupPolicyName")))
+                        || (instance != null && !databaseId.equals(instance))) {
+                    continue;
+                }
+                GeneratedBackupKind kind;
+                if (fullMethod.equals(method)) {
+                    kind = GeneratedBackupKind.FULL;
+                } else if (continuousMethod != null && continuousMethod.equals(method)) {
+                    kind = GeneratedBackupKind.CONTINUOUS;
+                } else {
+                    continue;
+                }
+                // Manual Backup CRs have DBaaS ownership labels. Generated
+                // BackupSchedule/BackupPolicy children are the only automatic
+                // resources accepted into history.
+                if (!hasOwnerKind(metadata, "BackupSchedule")
+                        && !hasOwner(metadata, "BackupPolicy", policyName)) {
+                    continue;
+                }
+                Map<String, Object> status = asMap(backup.get("status"));
+                Map<String, Object> timeRange = asMap(status.get("timeRange"));
+                String name = optionalText(metadata.get("name"));
+                String uid = optionalText(metadata.get("uid"));
+                if (name == null || uid == null) continue;
+                String parentName = optionalText(status.get("parentBackupName"));
+                if (parentName == null) parentName = optionalText(spec.get("parentBackupName"));
+                discovered.add(new GeneratedBackupInfo(name, uid, kind, method,
+                        optionalText(spec.get("retentionPeriod")),
+                        optionalText(status.get("baseBackupName")), parentName,
+                        String.valueOf(status.getOrDefault("phase", "New")),
+                        safeKubernetesMessage(firstNonBlank(
+                                String.valueOf(status.getOrDefault("failureReason", "")),
+                                latestConditionMessage(status), "KubeBlocks is processing the backup")),
+                        size(status.get("totalSize")), instant(status.get("startTimestamp")),
+                        instant(status.get("completionTimestamp")), instant(timeRange.get("start")),
+                        instant(timeRange.get("end"))));
+            }
+            return discovered;
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw backupApiFailure("discover generated Backup resources", exception);
+        }
+    }
+
     /** Performs the read-only readiness validation required before accepting backup work. */
     public void validateReadyBackupRepository(String repositoryName) {
         requireReadyBackupRepository(repositoryName);
+    }
+
+    /**
+     * Read-only runtime validation for the exact full/continuous pair selected
+     * by an engine strategy. This intentionally lists only template metadata
+     * and backup method names; it never reads repository credentials.
+     */
+    public void validatePitrTemplate(DatabaseEngine engine, String fullMethod,
+                                     String continuousMethod) {
+        try {
+            Map<String, Object> response = asMap(customObjectsApi.listClusterCustomObject(
+                    DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, BACKUP_POLICY_TEMPLATES).execute());
+            boolean pairInstalled = false;
+            boolean pairReady = false;
+            for (Object item : (List<?>) response.getOrDefault("items", List.of())) {
+                Map<String, Object> template = asMap(item);
+                List<String> methods = ((List<?>) asMap(template.get("spec"))
+                        .getOrDefault("backupMethods", List.of())).stream()
+                        .map(this::asMap)
+                        .map(method -> optionalText(method.get("name")))
+                        .filter(Objects::nonNull)
+                        .toList();
+                if (!methods.contains(fullMethod) || !methods.contains(continuousMethod)) continue;
+                pairInstalled = true;
+                if (ready(asMap(template.get("status")))) pairReady = true;
+            }
+            if (!pairInstalled) {
+                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "PITR_NOT_SUPPORTED", false,
+                        "The installed KubeBlocks BackupPolicyTemplates do not support PITR for "
+                                + engine + ".");
+            }
+            if (!pairReady) {
+                throw new ApiException(HttpStatus.CONFLICT, "BACKUP_POLICY_NOT_READY", true,
+                        "The installed KubeBlocks BackupPolicyTemplate is not available yet.");
+            }
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 404) {
+                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "PITR_NOT_SUPPORTED", false,
+                        "KubeBlocks does not expose a BackupPolicyTemplate for point-in-time recovery.");
+            }
+            throw backupApiFailure("validate the BackupPolicyTemplate", exception);
+        }
     }
 
     /** Lists safe public BackupRepo state only; no Secret references or values leave this client. */
@@ -950,6 +1102,7 @@ public class KubeBlocksClient {
         restore.put("volumeRestorePolicy", "Parallel");
         if (restoreTime != null) restore.put("restorePointInTime", restoreTime.toString());
         ensureOpsRequestSchemaSupports("restore");
+        ensureRestoreSchemaSupports(restoreTime != null);
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("name", operationName);
         metadata.put("namespace", namespace);
@@ -1083,19 +1236,22 @@ public class KubeBlocksClient {
         spec.put("topology", request.mode() == DatabaseMode.SHARDING ? "sharding" : settings.getTopology());
         spec.put("terminationPolicy", request.deletionProtection() ? "DoNotTerminate" : "Delete");
         if (request.backup() != null) {
+            ensureClusterBackupSchemaSupports();
             int retentionDays = request.backup().retentionDays() == null
                     ? 7 : request.backup().retentionDays();
+            boolean pitrEnabled = Boolean.TRUE.equals(request.backup().pitrEnabled());
             Map<String, Object> backup = new LinkedHashMap<>();
             backup.put("enabled", Boolean.TRUE.equals(request.backup().autoBackupEnabled()));
             backup.put("method", backupMethod(request.engine()));
+            backup.put("continuousMethod", pitrEnabled ? continuousBackupMethod(request.engine()) : null);
             backup.put("repoName", request.backup().repository() == null || request.backup().repository().isBlank()
                     ? properties.getBackup().getRepositoryName() : request.backup().repository());
             backup.put("retentionPeriod", retentionDays + "d");
             if (request.backup().cronExpression() != null && !request.backup().cronExpression().isBlank()) {
                 backup.put("cronExpression", request.backup().cronExpression());
             }
-            // PITR is intentionally withheld until a dedicated implementation exists.
-            backup.put("pitrEnabled", false);
+            backup.put("pitrEnabled", pitrEnabled);
+            backup.put("incrementalBackupEnabled", false);
             spec.put("backup", backup);
         }
 
@@ -1199,6 +1355,14 @@ public class KubeBlocksClient {
             case POSTGRESQL -> "pg-basebackup";
             case MYSQL -> "xtrabackup";
             case MONGODB -> "dump";
+        };
+    }
+
+    private String continuousBackupMethod(DatabaseEngine engine) {
+        return switch (engine) {
+            case POSTGRESQL -> "archive-wal";
+            case MYSQL -> "archive-binlog";
+            case MONGODB -> "archive-oplog";
         };
     }
 
@@ -1326,6 +1490,68 @@ public class KubeBlocksClient {
                 Map<String, Object> spec = asMap(properties.get("spec"));
                 return asMap(spec.get("properties"));
             }
+        }
+        return Map.of();
+    }
+
+    /** Verifies the exact installed Cluster v1 backup schema before any patch/create uses it. */
+    private void ensureClusterBackupSchemaSupports() {
+        synchronized (this) {
+            if (clusterBackupSchemaVerified) return;
+        }
+        try {
+            Map<String, Object> crd = asMap(customObjectsApi.getClusterCustomObject(
+                    "apiextensions.k8s.io", "v1", "customresourcedefinitions", CLUSTER_CRD).execute());
+            Map<String, Object> properties = crdSpecProperties(crd, VERSION);
+            Map<String, Object> backup = asMap(asMap(properties.get("backup")).get("properties"));
+            List<String> required = List.of("enabled", "method", "continuousMethod", "repoName",
+                    "retentionPeriod", "cronExpression", "pitrEnabled", "incrementalBackupEnabled");
+            if (!backup.keySet().containsAll(required)) {
+                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "PITR_NOT_SUPPORTED", false,
+                        "The installed KubeBlocks Cluster CRD does not expose the required backup fields.");
+            }
+            synchronized (this) {
+                clusterBackupSchemaVerified = true;
+            }
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw backupApiFailure("inspect the Cluster backup CRD", exception);
+        }
+    }
+
+    /** Ensures the installed Restore OpsRequest supports PITR's restorePointInTime field. */
+    private void ensureRestoreSchemaSupports(boolean pointInTime) {
+        String cacheKey = pointInTime ? "point-in-time" : "full";
+        synchronized (verifiedRestoreFields) {
+            if (verifiedRestoreFields.contains(cacheKey)) return;
+        }
+        try {
+            Map<String, Object> crd = asMap(customObjectsApi.getClusterCustomObject(
+                    "apiextensions.k8s.io", "v1", "customresourcedefinitions", OPS_REQUEST_CRD).execute());
+            Map<String, Object> restore = asMap(asMap(opsRequestSpecProperties(crd).get("restore"))
+                    .get("properties"));
+            if (!restore.containsKey("backupName") || !restore.containsKey("volumeRestorePolicy")
+                    || (pointInTime && !restore.containsKey("restorePointInTime"))) {
+                String code = pointInTime ? "PITR_NOT_SUPPORTED" : "BACKUP_POLICY_NOT_READY";
+                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, code, false,
+                        "The installed KubeBlocks Restore OpsRequest schema does not support this restore mode.");
+            }
+            synchronized (verifiedRestoreFields) {
+                verifiedRestoreFields.add(cacheKey);
+            }
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw backupApiFailure("inspect the Restore OpsRequest CRD", exception);
+        }
+    }
+
+    private Map<String, Object> crdSpecProperties(Map<String, Object> crd, String apiVersion) {
+        List<?> versions = (List<?>) asMap(crd.get("spec")).getOrDefault("versions", List.of());
+        for (Object item : versions) {
+            Map<String, Object> version = asMap(item);
+            if (!apiVersion.equals(version.get("name"))) continue;
+            Map<String, Object> schema = asMap(version.get("schema"));
+            Map<String, Object> openApi = asMap(schema.get("openAPIV3Schema"));
+            Map<String, Object> properties = asMap(openApi.get("properties"));
+            return asMap(asMap(properties.get("spec")).get("properties"));
         }
         return Map.of();
     }
@@ -1759,7 +1985,8 @@ public class KubeBlocksClient {
      * BackupPolicyTemplate. When KubeBlocks exposes that template link, verify
      * the template itself still advertises the selected method as well.
      */
-    private void validateInstalledTemplate(Map<String, Object> policy, String expectedMethod) {
+    private void validateInstalledTemplate(Map<String, Object> policy, String expectedMethod,
+                                           String expectedContinuousMethod) {
         Map<String, Object> metadata = asMap(policy.get("metadata"));
         Map<String, Object> annotations = asMap(metadata.get("annotations"));
         String templateName = optionalText(annotations.get("apps.kubeblocks.io/backup-policy-template"));
@@ -1787,11 +2014,19 @@ public class KubeBlocksClient {
                 throw new ApiException(HttpStatus.CONFLICT, "BACKUP_POLICY_TEMPLATE_NOT_READY", true,
                         "The KubeBlocks BackupPolicyTemplate is not available yet.");
             }
-            List<?> methods = (List<?>) spec.getOrDefault("backupMethods", List.of());
-            if (!methods.isEmpty() && methods.stream().map(this::asMap)
-                    .noneMatch(method -> expectedMethod.equals(String.valueOf(method.get("name"))))) {
+            List<String> methods = ((List<?>) spec.getOrDefault("backupMethods", List.of())).stream()
+                    .map(this::asMap)
+                    .map(method -> optionalText(method.get("name")))
+                    .filter(Objects::nonNull)
+                    .toList();
+            if (!methods.isEmpty() && !methods.contains(expectedMethod)) {
                 throw new ApiException(HttpStatus.CONFLICT, "BACKUP_METHOD_UNSUPPORTED", false,
                         "The installed KubeBlocks BackupPolicyTemplate does not support this backup method.");
+            }
+            if (expectedContinuousMethod != null && !expectedContinuousMethod.isBlank()
+                    && !methods.contains(expectedContinuousMethod)) {
+                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "PITR_NOT_SUPPORTED", false,
+                        "The installed KubeBlocks BackupPolicyTemplate does not support the continuous backup method.");
             }
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             if (exception.getCode() == 404) {
@@ -1842,13 +2077,16 @@ public class KubeBlocksClient {
     private BackupObservation backupObservation(Map<String, Object> backup) {
         Map<String, Object> status = asMap(backup.get("status"));
         Map<String, Object> metadata = asMap(backup.get("metadata"));
+        Map<String, Object> timeRange = asMap(status.get("timeRange"));
         String phase = String.valueOf(status.getOrDefault("phase", "New"));
         String message = firstNonBlank(String.valueOf(status.getOrDefault("failureReason", "")),
                 latestConditionMessage(status), "KubeBlocks is processing the backup");
         return new BackupObservation(true, phase, safeKubernetesMessage(message),
                 size(status.get("totalSize")), instant(status.get("startTimestamp")),
                 instant(status.get("completionTimestamp")), optionalText(metadata.get("uid")),
-                instant(status.get("expiration")));
+                instant(status.get("expiration")), optionalText(status.get("parentBackupName")),
+                optionalText(status.get("baseBackupName")), instant(timeRange.get("start")),
+                instant(timeRange.get("end")));
     }
 
     private boolean ownedBackup(Map<String, Object> backup, String project, String databaseId,
@@ -1876,7 +2114,8 @@ public class KubeBlocksClient {
                 && expectedUid.equals(optionalText(metadata.get("uid")))
                 && expectedPolicyName.equals(optionalText(spec.get("backupPolicyName")))
                 && (instance == null || databaseId.equals(instance))
-                && hasOwnerKind(metadata, "BackupSchedule");
+                && (hasOwnerKind(metadata, "BackupSchedule")
+                || hasOwner(metadata, "BackupPolicy", expectedPolicyName));
     }
 
     private boolean isDefaultBackupPolicy(Map<String, Object> annotations) {
@@ -2018,10 +2257,18 @@ public class KubeBlocksClient {
             String policyName,
             String repositoryName,
             String backupMethod,
+            String continuousMethod,
             boolean encryptionConfigured,
             String observedStatus,
             DatabaseEngine engine
-    ) {}
+    ) {
+        /** Backward-compatible constructor for full-backup-only callers. */
+        public BackupPolicyInfo(String policyName, String repositoryName, String backupMethod,
+                                boolean encryptionConfigured, String observedStatus,
+                                DatabaseEngine engine) {
+            this(policyName, repositoryName, backupMethod, null, encryptionConfigured, observedStatus, engine);
+        }
+    }
 
     private record BackupRepositoryInfo(boolean defaultRepository) {}
 
@@ -2033,21 +2280,34 @@ public class KubeBlocksClient {
             Instant startedAt,
             Instant completedAt,
             String uid,
-            Instant expiration
+            Instant expiration,
+            String parentBackupName,
+            String baseBackupName,
+            Instant coverageStart,
+            Instant coverageEnd
     ) {
+        /** Backward-compatible constructor for callers that include expiration only. */
+        public BackupObservation(boolean exists, String phase, String message, Long sizeBytes,
+                                 Instant startedAt, Instant completedAt, String uid,
+                                 Instant expiration) {
+            this(exists, phase, message, sizeBytes, startedAt, completedAt, uid,
+                    expiration, null, null, null, null);
+        }
         /** Backward-compatible constructor for callers that do not need expiration. */
         public BackupObservation(boolean exists, String phase, String message, Long sizeBytes,
                                  Instant startedAt, Instant completedAt, String uid) {
-            this(exists, phase, message, sizeBytes, startedAt, completedAt, uid, null);
+            this(exists, phase, message, sizeBytes, startedAt, completedAt, uid,
+                    null, null, null, null, null);
         }
         /** Backward-compatible constructor for callers that do not need the Kubernetes UID. */
         public BackupObservation(boolean exists, String phase, String message, Long sizeBytes,
                                  Instant startedAt, Instant completedAt) {
-            this(exists, phase, message, sizeBytes, startedAt, completedAt, null, null);
+            this(exists, phase, message, sizeBytes, startedAt, completedAt, null,
+                    null, null, null, null, null);
         }
         public static BackupObservation missing() {
             return new BackupObservation(false, "Missing", "KubeBlocks Backup was not found",
-                    null, null, null, null, null);
+                    null, null, null, null, null, null, null, null, null);
         }
     }
 
@@ -2082,6 +2342,26 @@ public class KubeBlocksClient {
             Long sizeBytes,
             Instant startedAt,
             Instant completedAt
+    ) {}
+
+    public enum GeneratedBackupKind { FULL, CONTINUOUS }
+
+    /** Safe lifecycle fields from an automatically generated KubeBlocks Backup CR. */
+    public record GeneratedBackupInfo(
+            String backupName,
+            String uid,
+            GeneratedBackupKind kind,
+            String backupMethod,
+            String retentionPeriod,
+            String baseBackupName,
+            String parentBackupName,
+            String phase,
+            String message,
+            Long sizeBytes,
+            Instant startedAt,
+            Instant completedAt,
+            Instant coverageStart,
+            Instant coverageEnd
     ) {}
 
     public record VerticalScalingObservation(

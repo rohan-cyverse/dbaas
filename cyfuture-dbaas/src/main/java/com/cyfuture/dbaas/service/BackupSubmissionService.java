@@ -10,6 +10,7 @@ import com.cyfuture.dbaas.model.BackupStatus;
 import com.cyfuture.dbaas.model.BackupPolicyStatus;
 import com.cyfuture.dbaas.model.BackupRetentionPolicy;
 import com.cyfuture.dbaas.model.BackupTriggerMethod;
+import com.cyfuture.dbaas.model.PitrStatus;
 import com.cyfuture.dbaas.model.OperationStatus;
 import com.cyfuture.dbaas.model.ProvisioningStage;
 import com.cyfuture.dbaas.repository.BackupMetadataRepository;
@@ -96,12 +97,17 @@ public class BackupSubmissionService {
             policy.setRetentionPolicy(BackupRetentionPolicy.RETAIN_ALL);
             policy.setTimezone("UTC");
             policy.setPitrEnabled(false);
+            policy.setPitrStatus(PitrStatus.DISABLED);
+            policy.setPitrMessage("Point-in-time recovery is disabled.");
             policy.setPolicyStatus(BackupPolicyStatus.ACTIVE);
         }
         policy.setEngine(observed.engine());
         policy.setKubernetesPolicyName(observed.policyName());
         policy.setBackupRepositoryName(observed.repositoryName());
         policy.setDefaultBackupMethod(observed.backupMethod());
+        if (observed.continuousMethod() != null && !observed.continuousMethod().isBlank()) {
+            policy.setContinuousBackupMethod(observed.continuousMethod());
+        }
         policy.setEncryptionConfigured(observed.encryptionConfigured());
         if (policy.getDefaultRetentionPeriod() == null || policy.getDefaultRetentionPeriod().isBlank()) {
             policy.setDefaultRetentionPeriod(properties.getBackup().getDefaultRetention());

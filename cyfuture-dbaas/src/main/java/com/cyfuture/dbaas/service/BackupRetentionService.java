@@ -39,7 +39,8 @@ public class BackupRetentionService {
     @Transactional
     public void recordCompletion(String backupId) {
         BackupMetadata completed = backupRepository.findByBackupIdForUpdate(backupId).orElse(null);
-        if (completed == null || completed.getStatus() != BackupStatus.COMPLETED) return;
+        if (completed == null || completed.getStatus() != BackupStatus.COMPLETED
+                || completed.getBackupType() != com.cyfuture.dbaas.model.BackupType.FULL) return;
         Instant completion = completed.getCompletedAt() == null ? Instant.now() : completed.getCompletedAt();
         if (completed.getCompletedAt() == null) completed.setCompletedAt(completion);
         BackupRetentionPolicy policy = completed.getRetentionPolicy() == null
@@ -61,7 +62,10 @@ public class BackupRetentionService {
         backupRepository.save(completed);
         List<BackupMetadata> candidates = backupRepository
                 .findByProjectNameAndDatabaseIdAndStatusOrderByCompletedAtDesc(
-                        completed.getProjectName(), completed.getDatabaseId(), BackupStatus.COMPLETED);
+                        completed.getProjectName(), completed.getDatabaseId(), BackupStatus.COMPLETED)
+                .stream()
+                .filter(backup -> backup.getBackupType() == com.cyfuture.dbaas.model.BackupType.FULL)
+                .toList();
         if (candidates.isEmpty() || !completed.getBackupId().equals(candidates.get(0).getBackupId())) {
             // This is an older completion discovered during a restart scan.
             // It must never cause the newer recovery point to be removed.
@@ -84,6 +88,7 @@ public class BackupRetentionService {
         for (BackupMetadata backup : backupRepository.findByStatusInOrderByCreatedAtAsc(
                 List.of(BackupStatus.COMPLETED))) {
             try {
+                if (backup.getBackupType() != com.cyfuture.dbaas.model.BackupType.FULL) continue;
                 BackupRetentionPolicy policy = backup.getRetentionPolicy() == null
                         ? BackupRetentionPolicy.RETAIN_ALL : backup.getRetentionPolicy();
                 if (policy == BackupRetentionPolicy.RETAIN_LATEST) {

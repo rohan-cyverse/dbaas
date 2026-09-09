@@ -99,7 +99,12 @@ public class BackupCatalogService {
             if (query.project() != null) predicates.add(builder.equal(root.get("projectName"), query.project()));
             if (query.databaseId() != null) predicates.add(builder.equal(root.get("databaseId"), query.databaseId()));
             if (query.engine() != null) predicates.add(builder.equal(root.get("engine"), query.engine()));
-            if (completedOnly) predicates.add(builder.equal(root.get("status"), BackupStatus.COMPLETED));
+            if (completedOnly) {
+                // A continuous log segment is history/coverage, not a
+                // standalone Backup Set recovery point.
+                predicates.add(builder.equal(root.get("status"), BackupStatus.COMPLETED));
+                predicates.add(builder.equal(root.get("backupType"), BackupType.FULL));
+            }
             else if (query.status() != null) predicates.add(builder.equal(root.get("status"), query.status()));
             if (query.triggerMethod() != null) {
                 predicates.add(builder.equal(root.get("triggerMethod"), query.triggerMethod()));
@@ -171,7 +176,8 @@ public class BackupCatalogService {
                 restore.getSourceDatabaseId(), restore.getSourceBackupId(), restore.getRestoredDatabaseId(),
                 restore.getRestoredDatabaseName(), restore.getEngine(), restore.getStatus(), restore.getPublicHost(),
                 restore.getPublicPort(), message, restore.getCreatedAt(), restore.getStartedAt(),
-                restore.getCompletedAt());
+                restore.getCompletedAt(), restore.getRestoreMode(), restore.getRestoreTime(),
+                restore.getSourceBackupId());
     }
 
     public record BackupQuery(String project, String databaseId, DatabaseEngine engine, BackupStatus status,

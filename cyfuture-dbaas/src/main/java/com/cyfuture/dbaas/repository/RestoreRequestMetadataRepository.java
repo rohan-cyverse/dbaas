@@ -12,6 +12,8 @@ public interface RestoreRequestMetadataRepository extends JpaRepository<RestoreR
         JpaSpecificationExecutor<RestoreRequestMetadata> {
     Optional<RestoreRequestMetadata> findByProjectNameAndSourceBackupIdAndIdempotencyKey(
             String projectName, String sourceBackupId, String idempotencyKey);
+    Optional<RestoreRequestMetadata> findByProjectNameAndSourceDatabaseIdAndIdempotencyKey(
+            String projectName, String sourceDatabaseId, String idempotencyKey);
     Optional<RestoreRequestMetadata> findByRestoredDatabaseId(String restoredDatabaseId);
     boolean existsByRestoredDatabaseId(String restoredDatabaseId);
     Optional<RestoreRequestMetadata> findByOperationId(String operationId);
