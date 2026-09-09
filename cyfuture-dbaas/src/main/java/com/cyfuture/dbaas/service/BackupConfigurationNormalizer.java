@@ -1,9 +1,8 @@
 package com.cyfuture.dbaas.service;
 
 import com.cyfuture.dbaas.config.DatabaseProperties;
-import com.cyfuture.dbaas.dto.BackupConfigurationRequest;
+import com.cyfuture.dbaas.dto.BackupSettingsRequest;
 import com.cyfuture.dbaas.exception.ApiException;
-import com.cyfuture.dbaas.model.BackupRetentionPolicy;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
@@ -34,20 +33,15 @@ public class BackupConfigurationNormalizer {
         this.properties = properties;
     }
 
-    public NormalizedBackupConfiguration normalize(BackupConfigurationRequest request) {
+    public NormalizedBackupConfiguration normalize(BackupSettingsRequest request) {
         if (request == null) return defaults();
-        String repository = textOr(request.repository(), properties.getBackup().getRepositoryName());
-        if (!properties.getBackup().getRepositoryName().equals(repository)) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "BACKUP_REPOSITORY_NOT_ALLOWED", false,
-                    "Only the platform-approved BackupRepo can be used.");
-        }
         int retentionDays = request.retentionDays() == null
                 ? defaultRetentionDays() : request.retentionDays();
         if (retentionDays < 1 || retentionDays > MAX_RETENTION_DAYS) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_BACKUP_RETENTION", false,
                     "retentionDays must be between 1 and " + MAX_RETENTION_DAYS + ".");
         }
-        boolean enabled = Boolean.TRUE.equals(request.autoBackupEnabled());
+        boolean enabled = Boolean.TRUE.equals(request.scheduled());
         boolean pitrEnabled = Boolean.TRUE.equals(request.pitrEnabled());
         if (pitrEnabled && !enabled) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "PITR_SCHEDULE_REQUIRED", false,
@@ -61,20 +55,17 @@ public class BackupConfigurationNormalizer {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_BACKUP_TIMEZONE", false,
                     "timezone must be a valid IANA timezone or UTC offset.");
         }
-        String cron = blank(request.cronExpression()) ? null : request.cronExpression().trim();
+        String cron = blank(request.schedule()) ? null : request.schedule().trim();
         if (enabled && cron == null) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "BACKUP_CRON_REQUIRED", false,
                     "cronExpression is required when automatic backups are enabled.");
         }
         if (cron != null) cron = normalizeCronToUtc(cron, zone);
-        return new NormalizedBackupConfiguration(repository, enabled, retentionDays, cron, zone.getId(),
-                request.retentionPolicy() == null ? BackupRetentionPolicy.RETAIN_ALL : request.retentionPolicy(),
-                pitrEnabled);
+        return new NormalizedBackupConfiguration(enabled, retentionDays, cron, zone.getId(), pitrEnabled);
     }
 
     public NormalizedBackupConfiguration defaults() {
-        return new NormalizedBackupConfiguration(properties.getBackup().getRepositoryName(), false,
-                defaultRetentionDays(), null, "UTC", BackupRetentionPolicy.RETAIN_ALL, false);
+        return new NormalizedBackupConfiguration(false, defaultRetentionDays(), null, "UTC", false);
     }
 
     public String duration(int days) {
@@ -83,6 +74,11 @@ public class BackupConfigurationNormalizer {
                     "retentionDays must be between 1 and " + MAX_RETENTION_DAYS + ".");
         }
         return days + "d";
+    }
+
+    /** The BackupRepo is platform configuration, never a client setting. */
+    public String repositoryName() {
+        return properties.getBackup().getRepositoryName();
     }
 
     public int retentionDays(String duration) {
@@ -185,12 +181,10 @@ public class BackupConfigurationNormalizer {
     }
 
     public record NormalizedBackupConfiguration(
-            String repository,
             boolean autoBackupEnabled,
             int retentionDays,
             String cronExpression,
             String timezone,
-            BackupRetentionPolicy retentionPolicy,
             boolean pitrEnabled
     ) {}
 }

@@ -22,13 +22,11 @@ public interface BackupMetadataRepository extends JpaRepository<BackupMetadata, 
     Optional<BackupMetadata> findByProjectNameAndDatabaseIdAndIdempotencyKey(
             String projectName, String databaseId, String idempotencyKey);
     Optional<BackupMetadata> findByOperationId(String operationId);
-    Optional<BackupMetadata> findByDeleteOperationId(String deleteOperationId);
     List<BackupMetadata> findByStatusInOrderByCreatedAtAsc(Collection<BackupStatus> statuses);
     List<BackupMetadata> findByProjectNameAndDatabaseIdAndStatusOrderByCompletedAtDesc(
             String projectName, String databaseId, BackupStatus status);
-    Optional<BackupMetadata> findByKubernetesBackupName(String kubernetesBackupName);
-    Optional<BackupMetadata> findByKubernetesNamespaceAndKubernetesBackupName(
-            String kubernetesNamespace, String kubernetesBackupName);
+    Optional<BackupMetadata> findByProjectNameAndDatabaseIdAndKubernetesBackupName(
+            String projectName, String databaseId, String kubernetesBackupName);
     boolean existsByProjectNameAndStatusIn(String projectName, Collection<BackupStatus> statuses);
     boolean existsByProjectNameAndDatabaseIdAndStatusIn(
             String projectName, String databaseId, Collection<BackupStatus> statuses);

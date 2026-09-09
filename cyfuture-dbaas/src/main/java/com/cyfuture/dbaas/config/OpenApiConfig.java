@@ -12,9 +12,8 @@ public class OpenApiConfig {
         return new OpenAPI().info(new Info()
                 .title("Cyfuture DBaaS Provisioning API")
                 .version("1.0")
-                .description("Provision and manage PostgreSQL, MySQL and MongoDB through KubeBlocks, "
-                        + "including asynchronous full backup, scheduled backup, retention, and restore APIs. "
-                        + "PITR is available only after installed-template and continuous-coverage validation; "
-                        + "incremental backups remain unavailable."));
+                .description("Provision and manage PostgreSQL, MySQL, and MongoDB. "
+                        + "Backup and recovery APIs provide manual full and incremental backups, schedules, retention, "
+                        + "point-in-time recovery, and restores into new databases."));
     }
 }

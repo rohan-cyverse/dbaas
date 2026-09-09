@@ -54,7 +54,7 @@ class ProjectServiceTest {
         retention = mock(BackupRetentionService.class);
         service = new ProjectService(projectRepository, databaseRepository, organizationService, friendlyNames,
                 new DatabaseProperties(), kubeBlocksClient, backupRepository, restoreRepository, retention);
-        when(retention.prepareProjectPurge(org.mockito.ArgumentMatchers.anyString())).thenReturn(true);
+        when(retention.prepareProjectBackupDeletion(org.mockito.ArgumentMatchers.anyString())).thenReturn(true);
         when(projectRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
         defaultOrganization = new OrganizationMetadata();
         defaultOrganization.setOrganizationId(OrganizationService.DEFAULT_ORGANIZATION_ID);
@@ -164,7 +164,7 @@ class ProjectServiceTest {
     }
 
     @Test
-    void deletionReconciliationNeverImplicitlyPurgesANewlyRetainedBackup() {
+    void deletionReconciliationDeletesKnownBackupsThroughTheUnifiedPath() {
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-orders0001");
         project.setNamespaceName("dbaas-p-prj-orders0001");
@@ -176,7 +176,7 @@ class ProjectServiceTest {
 
         service.reconcileDeletion(project);
 
-        verify(retention, never()).prepareProjectPurge(project.getProjectId());
+        verify(retention).prepareProjectBackupDeletion(project.getProjectId());
         verify(kubeBlocksClient, never()).deleteProjectNamespace(any(), any());
     }
 

@@ -179,7 +179,7 @@ public class DatabaseStateReconciler {
             if (!backupRetentionService.readyForClusterDeletion(
                     database.getProjectName(), database.getDatabaseId())) {
                 update(database::setMessage,
-                        "Database deletion is waiting for active backup work or DELETE_ALL backup purge");
+                        "Database deletion is waiting for active backup or restore work");
                 finishDeleteOperation(database, OperationStatus.RUNNING,
                         "Waiting for backup retention processing");
                 saveIfChanged(database);

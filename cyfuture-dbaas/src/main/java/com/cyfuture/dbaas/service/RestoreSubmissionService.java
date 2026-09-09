@@ -1,12 +1,14 @@
 package com.cyfuture.dbaas.service;
 
 import com.cyfuture.dbaas.client.KubeBlocksClient;
+import com.cyfuture.dbaas.entity.BackupMetadata;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.RestoreRequestMetadata;
 import com.cyfuture.dbaas.model.OperationStatus;
 import com.cyfuture.dbaas.model.ProvisioningStage;
 import com.cyfuture.dbaas.model.RestoreStatus;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
+import com.cyfuture.dbaas.repository.BackupMetadataRepository;
 import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import com.cyfuture.dbaas.repository.RestoreRequestMetadataRepository;
 import lombok.RequiredArgsConstructor;
@@ -19,6 +21,7 @@ import java.time.Instant;
 @RequiredArgsConstructor
 public class RestoreSubmissionService {
     private final RestoreRequestMetadataRepository restoreRepository;
+    private final BackupMetadataRepository backupRepository;
     private final DatabaseMetadataRepository databaseRepository;
     private final OperationMetadataRepository operationRepository;
     private final KubeBlocksClient kubeBlocksClient;
@@ -34,12 +37,15 @@ public class RestoreSubmissionService {
             fail(restore, "RESTORE_TARGET_METADATA_MISSING", "Restore target metadata is unavailable.");
             return;
         }
+        BackupMetadata backup = backupRepository.findById(restore.getSourceBackupId()).orElse(null);
+        if (backup == null || backup.getKubernetesBackupName() == null || backup.getKubernetesBackupName().isBlank()) {
+            fail(restore, "BACKUP_NOT_AVAILABLE", "Backup correlation is unavailable for restore.");
+            return;
+        }
         try {
             kubeBlocksClient.createRestoreOpsRequest(target.getNamespaceName(), restore.getProjectName(),
                     target.getDatabaseId(), restore.getKubernetesOpsRequestName(),
-                    restore.getSourceKubernetesBackupName() == null ? restore.getSourceBackupId()
-                            : restore.getSourceKubernetesBackupName(),
-                    restore.getSourceBackupNamespace(), restore.getSourceBackupId(), restore.getOperationId(),
+                    backup.getKubernetesBackupName(), null, restore.getSourceBackupId(), restore.getOperationId(),
                     restore.getRestoreTime());
             restore.setStatus(RestoreStatus.RUNNING);
             if (restore.getStartedAt() == null) restore.setStartedAt(Instant.now());

@@ -4,6 +4,7 @@ import com.cyfuture.dbaas.config.DatabaseProperties;
 import com.cyfuture.dbaas.dto.RecoveryWindowResponse;
 import com.cyfuture.dbaas.entity.BackupMetadata;
 import com.cyfuture.dbaas.entity.BackupPolicyMetadata;
+import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.BackupPolicyStatus;
 import com.cyfuture.dbaas.model.BackupStatus;
@@ -11,77 +12,51 @@ import com.cyfuture.dbaas.model.BackupType;
 import com.cyfuture.dbaas.model.PitrStatus;
 import com.cyfuture.dbaas.repository.BackupMetadataRepository;
 import com.cyfuture.dbaas.repository.BackupPolicyMetadataRepository;
+import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 
-/**
- * Computes a conservative PITR window exclusively from persisted KubeBlocks
- * observations. It never treats a desired pitrEnabled flag or a polling time
- * as proof of recoverability.
- */
+/** Computes a conservative PITR window from live-imported KubeBlocks backup history. */
 @Service
 @RequiredArgsConstructor
 public class PitrRecoveryService {
     private final BackupPolicyMetadataRepository policyRepository;
     private final BackupMetadataRepository backupRepository;
+    private final DatabaseMetadataRepository databaseRepository;
     private final ProjectService projectService;
     private final DatabaseProperties properties;
+    private final BackupEngineStrategies strategies;
 
     @Transactional
-    public PitrWindow refresh(BackupPolicyMetadata policy) {
-        PitrWindow window = calculate(policy, Instant.now());
-        boolean changed = policy.getPitrStatus() != window.status()
-                || !Objects.equals(policy.getPitrMessage(), window.message())
-                || !Objects.equals(policy.getRecoverableFrom(), window.recoverableFrom())
-                || !Objects.equals(policy.getRecoverableUntil(), window.recoverableUntil())
-                || policy.getPitrObservedAt() == null
-                || policy.getPitrObservedAt().plusSeconds(30).isBefore(window.observedAt());
-        if (changed) {
-            policy.setPitrStatus(window.status());
-            policy.setPitrMessage(window.message());
-            policy.setRecoverableFrom(window.recoverableFrom());
-            policy.setRecoverableUntil(window.recoverableUntil());
-            policy.setPitrObservedAt(window.observedAt());
-            policyRepository.save(policy);
-        }
-        return window;
+    public PitrWindow refresh(BackupPolicyMetadata settings) {
+        return calculate(settings, Instant.now());
     }
 
     @Transactional
     public PitrWindow window(String project, String databaseId) {
         projectService.requireActiveProject(project);
-        BackupPolicyMetadata policy = policyRepository.findByProjectNameAndDatabaseId(project, databaseId)
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "BACKUP_POLICY_NOT_CONFIGURED", false,
-                        "No backup policy has been configured for this database."));
-        return refresh(policy);
+        BackupPolicyMetadata settings = policyRepository.findByProjectNameAndDatabaseId(project, databaseId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "BACKUP_SETTINGS_NOT_CONFIGURED", false,
+                        "Backup settings have not been configured for this database."));
+        return calculate(settings, Instant.now());
     }
 
     @Transactional
     public PitrWindow requireRestoreWindow(String project, String databaseId) {
-        projectService.requireActiveProject(project);
-        BackupPolicyMetadata policy = policyRepository.findByProjectNameAndDatabaseId(project, databaseId)
-                .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "PITR_NOT_ENABLED", false,
-                        "Point-in-time recovery is not enabled for this database."));
-        PitrWindow window = refresh(policy);
-        if (!window.pitrEnabled()) {
+        PitrWindow window = window(project, databaseId);
+        if (!window.enabled()) {
             throw new ApiException(HttpStatus.CONFLICT, "PITR_NOT_ENABLED", false,
                     "Point-in-time recovery is not enabled for this database.");
-        }
-        if (policy.getPolicyStatus() != BackupPolicyStatus.ACTIVE || !policy.isConfigurationApplied()) {
-            throw new ApiException(HttpStatus.CONFLICT, "BACKUP_POLICY_NOT_READY", true,
-                    "The KubeBlocks backup policy is not ready for point-in-time recovery.");
         }
         if (window.status() == PitrStatus.UNHEALTHY) {
             throw new ApiException(HttpStatus.CONFLICT, "CONTINUOUS_BACKUP_UNHEALTHY", false,
@@ -95,74 +70,78 @@ public class PitrRecoveryService {
     }
 
     public RecoveryWindowResponse response(PitrWindow window) {
-        return new RecoveryWindowResponse(window.project(), window.databaseId(), window.pitrEnabled(),
-                window.status(), window.continuousMethod(), window.recoverableFrom(),
-                window.recoverableUntil(), window.message(), window.observedAt());
+        String errorCode = window.status() == PitrStatus.UNHEALTHY ? "PITR_UNHEALTHY" : null;
+        String errorMessage = window.status() == PitrStatus.UNHEALTHY ? window.message() : null;
+        return new RecoveryWindowResponse(window.databaseId(), window.enabled(), window.status(),
+                window.startsAt(), window.endsAt(), errorCode, errorMessage, window.observedAt());
     }
 
-    private PitrWindow calculate(BackupPolicyMetadata policy, Instant now) {
-        if (!policy.isPitrEnabled()) {
-            return result(policy, PitrStatus.DISABLED, null, null, null, null,
+    private PitrWindow calculate(BackupPolicyMetadata settings, Instant now) {
+        if (!settings.isPitrEnabled()) {
+            return result(settings, PitrStatus.DISABLED, null, null, null, null,
                     "Point-in-time recovery is disabled.", now);
         }
-        if (policy.getPolicyStatus() != BackupPolicyStatus.ACTIVE || !policy.isConfigurationApplied()
-                || blank(policy.getKubernetesPolicyName())) {
-            return result(policy, PitrStatus.PENDING, null, null, null, null,
-                    "Waiting for the KubeBlocks backup policy and schedule to become available.", now);
+        if (settings.getPolicyStatus() != BackupPolicyStatus.ACTIVE || !settings.isConfigurationApplied()
+                || blank(settings.getKubernetesPolicyName())) {
+            return result(settings, PitrStatus.PENDING, null, null, null, null,
+                    "Waiting for scheduled backup settings to become ready.", now);
         }
-        if (blank(policy.getDefaultBackupMethod()) || blank(policy.getContinuousBackupMethod())) {
-            return result(policy, PitrStatus.UNHEALTHY, null, null, null, null,
-                    "The observed backup policy does not expose both full and continuous methods.", now);
+        DatabaseMetadata source = databaseRepository.findByDatabaseIdAndProjectName(
+                settings.getDatabaseId(), settings.getProjectName()).orElse(null);
+        if (source == null) {
+            return result(settings, PitrStatus.UNHEALTHY, null, null, null, null,
+                    "Source database metadata is unavailable.", now);
+        }
+        BackupEngineStrategy strategy = strategies.require(source.getEngine());
+        String fullMethod = strategy.manualFullMethod();
+        String continuousMethod = strategy.continuousMethod();
+        if (blank(continuousMethod)) {
+            return result(settings, PitrStatus.UNHEALTHY, null, null, null, null,
+                    "This database engine does not expose continuous backup coverage.", now);
         }
 
         List<BackupMetadata> all = backupRepository.findByProjectNameAndDatabaseIdOrderByCreatedAtDesc(
-                policy.getProjectName(), policy.getDatabaseId());
+                settings.getProjectName(), settings.getDatabaseId());
         List<BackupMetadata> bases = all.stream()
                 .filter(backup -> backup.getBackupType() == BackupType.FULL)
                 .filter(backup -> backup.getStatus() == BackupStatus.COMPLETED)
-                .filter(backup -> policy.getDefaultBackupMethod().equals(backup.getBackupMethod()))
+                .filter(backup -> fullMethod.equals(backup.getBackupMethod()))
                 .filter(backup -> backup.getCompletedAt() != null)
                 .sorted(Comparator.comparing(BackupMetadata::getCompletedAt).reversed())
                 .toList();
         if (bases.isEmpty()) {
-            return result(policy, PitrStatus.PENDING, null, null, null, null,
+            return result(settings, PitrStatus.PENDING, null, null, null, null,
                     "Waiting for a completed scheduled full backup.", now);
         }
-
         List<BackupMetadata> continuous = all.stream()
                 .filter(backup -> backup.getBackupType() == BackupType.CONTINUOUS)
-                .filter(backup -> policy.getContinuousBackupMethod().equals(backup.getBackupMethod()))
+                .filter(backup -> continuousMethod.equals(backup.getBackupMethod()))
                 .toList();
         if (continuous.isEmpty()) {
-            return result(policy, PitrStatus.PENDING, null, null, bases.get(0), null,
-                    "Waiting for KubeBlocks continuous log backup coverage.", now);
+            return result(settings, PitrStatus.PENDING, null, null, bases.get(0), null,
+                    "Waiting for continuous log backup coverage.", now);
         }
 
         Map<String, BackupMetadata> byId = new HashMap<>();
         Map<String, BackupMetadata> byKubernetesName = new HashMap<>();
         for (BackupMetadata backup : all) {
             byId.put(backup.getBackupId(), backup);
-            if (!blank(backup.getKubernetesBackupName())) {
-                byKubernetesName.put(backup.getKubernetesBackupName(), backup);
-            }
+            if (!blank(backup.getKubernetesBackupName())) byKubernetesName.put(backup.getKubernetesBackupName(), backup);
         }
-
         ChainResult fallback = null;
         for (BackupMetadata base : bases) {
             ChainResult chain = evaluateChain(base, continuous, byId, byKubernetesName, now);
             if (chain.status() == PitrStatus.READY) {
-                return result(policy, chain.status(), chain.from(), chain.until(), base,
+                return result(settings, chain.status(), chain.from(), chain.until(), base,
                         chain.latestContinuous(), chain.message(), now);
             }
             if (fallback == null || rank(chain.status()) > rank(fallback.status())) fallback = chain;
         }
-        BackupMetadata latestBase = bases.get(0);
-        if (fallback == null) {
-            return result(policy, PitrStatus.PENDING, null, null, latestBase, null,
-                    "Waiting for continuous log backup coverage for the completed base backup.", now);
-        }
-        return result(policy, fallback.status(), fallback.from(), fallback.until(), latestBase,
-                fallback.latestContinuous(), fallback.message(), now);
+        ChainResult result = fallback == null
+                ? new ChainResult(PitrStatus.PENDING, null, null, null,
+                "Waiting for continuous log backup coverage.") : fallback;
+        return result(settings, result.status(), result.from(), result.until(), bases.get(0),
+                result.latestContinuous(), result.message(), now);
     }
 
     private ChainResult evaluateChain(BackupMetadata base, List<BackupMetadata> continuous,
@@ -171,15 +150,12 @@ public class PitrRecoveryService {
         List<BackupMetadata> chain = continuous.stream()
                 .filter(backup -> belongsToBase(backup, base, byId, byKubernetesName))
                 .toList();
-        if (chain.isEmpty()) {
-            return new ChainResult(PitrStatus.PENDING, null, null, null,
-                    "Waiting for continuous log backup coverage for the completed base backup.");
-        }
+        if (chain.isEmpty()) return new ChainResult(PitrStatus.PENDING, null, null, null,
+                "Waiting for continuous log backup coverage.");
         if (chain.stream().anyMatch(this::terminalContinuousFailure)) {
             return new ChainResult(PitrStatus.UNHEALTHY, null, null, null,
-                    "A continuous log backup in the recovery chain is no longer healthy.");
+                    "A continuous log backup is no longer healthy.");
         }
-
         List<BackupMetadata> segments = chain.stream()
                 .filter(backup -> backup.getStatus() == BackupStatus.RUNNING
                         || backup.getStatus() == BackupStatus.COMPLETED)
@@ -188,51 +164,39 @@ public class PitrRecoveryService {
                 .sorted(Comparator.comparing(BackupMetadata::getCoverageStart)
                         .thenComparing(BackupMetadata::getCoverageEnd))
                 .toList();
-        if (segments.isEmpty()) {
-            return new ChainResult(PitrStatus.PENDING, null, null, null,
-                    "Continuous backups have not published an actual KubeBlocks time range yet.");
-        }
+        if (segments.isEmpty()) return new ChainResult(PitrStatus.PENDING, null, null, null,
+                "Continuous backups have not published a recovery range yet.");
 
         Instant from = base.getCompletedAt();
         Instant coveredUntil = from;
         BackupMetadata latest = null;
         long maxGapMs = Math.max(0L, properties.getBackup().getContinuousMaxGapMs());
         for (BackupMetadata segment : segments) {
-            Instant start = segment.getCoverageStart();
-            Instant end = segment.getCoverageEnd();
-            if (start.isAfter(coveredUntil.plusMillis(maxGapMs))) {
+            if (segment.getCoverageStart().isAfter(coveredUntil.plusMillis(maxGapMs))) {
                 return new ChainResult(PitrStatus.UNHEALTHY, from, coveredUntil, latest,
-                        "KubeBlocks reported a gap in continuous log coverage.");
+                        "Continuous log coverage contains a gap.");
             }
-            if (end.isAfter(coveredUntil)) {
-                coveredUntil = end;
+            if (segment.getCoverageEnd().isAfter(coveredUntil)) {
+                coveredUntil = segment.getCoverageEnd();
                 latest = segment;
             }
         }
-        if (latest == null || !coveredUntil.isAfter(from)) {
-            return new ChainResult(PitrStatus.PENDING, null, null, null,
-                    "Continuous log coverage does not yet extend beyond the completed base backup.");
-        }
-        if (coveredUntil.isAfter(now)) {
+        if (latest == null || !coveredUntil.isAfter(from)) return new ChainResult(PitrStatus.PENDING,
+                null, null, null, "Continuous log coverage is not ready yet.");
+        if (coveredUntil.isAfter(now) || !coveredUntil.plusMillis(
+                Math.max(1L, properties.getBackup().getContinuousStaleMs())).isAfter(now)) {
             return new ChainResult(PitrStatus.UNHEALTHY, from, coveredUntil, latest,
-                    "KubeBlocks reported an invalid future continuous log coverage timestamp.");
-        }
-        if (!coveredUntil.plusMillis(Math.max(1L, properties.getBackup().getContinuousStaleMs())).isAfter(now)) {
-            return new ChainResult(PitrStatus.UNHEALTHY, from, coveredUntil, latest,
-                    "Continuous log coverage is stale.");
+                    "Continuous log coverage is stale or invalid.");
         }
         return new ChainResult(PitrStatus.READY, from, coveredUntil, latest,
-                "A completed base backup and continuous log coverage are ready for PITR.");
+                "Point-in-time recovery is available.");
     }
 
     private boolean belongsToBase(BackupMetadata candidate, BackupMetadata base,
                                   Map<String, BackupMetadata> byId,
                                   Map<String, BackupMetadata> byKubernetesName) {
         if (base.getBackupId().equals(candidate.getBaseBackupId())
-                || (!blank(candidate.getBaseKubernetesBackupName())
-                && candidate.getBaseKubernetesBackupName().equals(base.getKubernetesBackupName()))) {
-            return true;
-        }
+                || base.getKubernetesBackupName().equals(candidate.getBaseKubernetesBackupName())) return true;
         BackupMetadata cursor = candidate;
         Set<String> visited = new HashSet<>();
         for (int depth = 0; depth < 64 && cursor != null && visited.add(cursor.getBackupId()); depth++) {
@@ -254,37 +218,25 @@ public class PitrRecoveryService {
 
     private int rank(PitrStatus status) {
         return switch (status) {
+            case READY -> 4;
             case UNHEALTHY -> 3;
             case PENDING -> 2;
             case DISABLED -> 1;
-            case READY -> 4;
         };
     }
 
-    private PitrWindow result(BackupPolicyMetadata policy, PitrStatus status, Instant from, Instant until,
+    private PitrWindow result(BackupPolicyMetadata settings, PitrStatus status, Instant from, Instant until,
                               BackupMetadata base, BackupMetadata latestContinuous, String message,
                               Instant observedAt) {
-        return new PitrWindow(policy.getProjectName(), policy.getDatabaseId(), policy.isPitrEnabled(), status,
-                policy.getContinuousBackupMethod(), from, until, base, latestContinuous, message, observedAt);
+        return new PitrWindow(settings.getDatabaseId(), settings.isPitrEnabled(), status, from, until,
+                base, latestContinuous, message, observedAt);
     }
 
-    private boolean blank(String value) {
-        return value == null || value.isBlank();
-    }
+    private boolean blank(String value) { return value == null || value.isBlank(); }
 
-    public record PitrWindow(
-            String project,
-            String databaseId,
-            boolean pitrEnabled,
-            PitrStatus status,
-            String continuousMethod,
-            Instant recoverableFrom,
-            Instant recoverableUntil,
-            BackupMetadata baseBackup,
-            BackupMetadata latestContinuousBackup,
-            String message,
-            Instant observedAt
-    ) {}
+    public record PitrWindow(String databaseId, boolean enabled, PitrStatus status, Instant startsAt,
+                             Instant endsAt, BackupMetadata baseBackup, BackupMetadata latestContinuousBackup,
+                             String message, Instant observedAt) {}
 
     private record ChainResult(PitrStatus status, Instant from, Instant until,
                                BackupMetadata latestContinuous, String message) {}

@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "321fcd7f-040f-4080-86b7-8c66abbfad9f",
     "name": "Cyfuture DBaaS",
-    "description": "DBaaS creates and manages the default organization in the backend. Project responses expose organizationId, and every project is server-bound to that organization. Immutable IDs (org-xxxx, prj-xxxx, db-xxxx) identify resources; database names are human-facing handles. Omit a database name to receive a unique engine-prefixed handle. Keep an Idempotency-Key unchanged only when retrying the exact same infrastructure request. The Backup and Restore folder supports scheduled full backups and PITR after KubeBlocks template validation plus a healthy observed recovery window.",
+    "description": "DBaaS creates and manages the default organization in the backend. Project responses expose organizationId, and every project is server-bound to that organization. Immutable IDs (org-xxxx, prj-xxxx, db-xxxx) identify resources; database names are human-facing handles. Omit a database name to receive a unique engine-prefixed handle. Keep an Idempotency-Key unchanged only when retrying the exact same request. The Backup and Restore folder supports manual full backups, scheduled backups, retention, PITR, and restores into new databases.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "_exporter_id": "56329818",
     "_collection_link": "https://go.postman.co/collection/56329818-321fcd7f-040f-4080-86b7-8c66abbfad9f?source=collection_link"
@@ -333,7 +333,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"pg-replication-{{$randomInt}}\",\"remark\":\"Create PostgreSQL - Replication created from Postman\",\"engine\":\"POSTGRESQL\",\"mode\":\"REPLICATION\",\"version\":\"17.5.0\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":2,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"},\"backup\":{\"repository\":\"cyfuture-dbaas-backuprepo\",\"autoBackupEnabled\":true,\"retentionDays\":7,\"cronExpression\":\"0 2 * * *\",\"timezone\":\"UTC\",\"retentionPolicy\":\"RETAIN_LATEST\",\"pitrEnabled\":false}}"
+              "raw": "{\"name\":\"pg-replication-{{$randomInt}}\",\"remark\":\"Create PostgreSQL - Replication created from Postman\",\"engine\":\"POSTGRESQL\",\"mode\":\"REPLICATION\",\"version\":\"17.5.0\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":2,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"},\"backup\":{\"scheduled\":true,\"retentionDays\":7,\"schedule\":\"0 2 * * *\",\"timezone\":\"UTC\",\"pitrEnabled\":false}}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
@@ -348,7 +348,7 @@
                 "databases"
               ]
             },
-            "description": "Deploys POSTGRESQL in REPLICATION mode and requests automatic full backup during creation. DBaaS converts the backup schedule to UTC and later reports policy ACTIVE only after KubeBlocks generates an Available BackupPolicy and BackupSchedule."
+            "description": "Deploys POSTGRESQL in REPLICATION mode with scheduled full-backup settings."
           },
           "response": []
         },
@@ -1027,19 +1027,19 @@
     },
     {
       "name": "Backup and Restore",
-      "description": "Configure the KubeBlocks-generated backup policy before automatic backups or PITR. PITR requires a scheduled full backup and a READY recovery window backed by completed base backup plus healthy continuous coverage. Full and point-in-time restores always create a new database; they never overwrite the source. Keep each idempotency key only for a retry of the identical request.",
+      "description": "Configure scheduled backups, retention, and PITR. Create manual FULL or INCREMENTAL backups through the same /backups endpoint. PITR requires a scheduled full backup and a READY recovery window. Full and point-in-time restores always create a new database; they never overwrite the source. Keep each idempotency key only for a retry of the identical request.",
       "item": [
         {
-          "name": "Update Backup Policy",
+          "name": "Update Backup Settings",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
-                  "if (pm.response.code === 202) {",
+                  "if (pm.response.code === 200) {",
                   "  const body = pm.response.json();",
-                  "  pm.collectionVariables.set('backupPolicyOperationId', body.operationId);",
-                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.expect(body.databaseId).to.equal(pm.collectionVariables.get('databaseId'));",
+                  "  pm.expect(body.status).to.be.a('string');",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -1052,18 +1052,14 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
-              },
-              {
-                "key": "Idempotency-Key",
-                "value": "{{backupPolicyIdempotencyKey}}"
               }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"repository\": \"cyfuture-dbaas-backuprepo\",\n  \"autoBackupEnabled\": true,\n  \"retentionDays\": 7,\n  \"cronExpression\": \"0 2 * * *\",\n  \"timezone\": \"UTC\",\n  \"retentionPolicy\": \"RETAIN_LATEST\",\n  \"pitrEnabled\": true\n}"
+              "raw": "{\n  \"scheduled\": true,\n  \"retentionDays\": 7,\n  \"schedule\": \"0 2 * * *\",\n  \"timezone\": \"UTC\",\n  \"pitrEnabled\": true\n}"
             },
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/backup-policy",
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/backup-settings",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -1074,20 +1070,20 @@
                 "{{projectId}}",
                 "databases",
                 "{{databaseId}}",
-                "backup-policy"
+                "backup-settings"
               ]
             },
-            "description": "Asynchronously patches Cluster.spec.backup including continuousMethod, pitrEnabled, and incrementalBackupEnabled=false. Cron is five-field and stored in UTC. PITR is accepted only for a supported installed full/continuous template pair."
+            "description": "Updates product-level schedule, retention, timezone, and PITR settings. Cron uses five fields."
           },
           "response": []
         },
         {
-          "name": "Get Backup Policy",
+          "name": "Get Backup Settings",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/backup-policy",
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/backup-settings",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -1098,10 +1094,10 @@
                 "{{projectId}}",
                 "databases",
                 "{{databaseId}}",
-                "backup-policy"
+                "backup-settings"
               ]
             },
-            "description": "Returns safe effective policy state, including observed PITR status and recoverable window. ACTIVE means the generated KubeBlocks policy and schedule are Available; repository credentials and Kubernetes identities are not returned."
+            "description": "Returns product-level scheduled-backup, retention, and PITR settings with current status and safe errors."
           },
           "response": []
         },
@@ -1115,8 +1111,8 @@
                   "pm.test('Recovery window response is available', function () { pm.response.to.have.status(200); });",
                   "if (pm.response.code === 200) {",
                   "  const body = pm.response.json();",
-                  "  if (body.recoverableFrom) pm.collectionVariables.set('recoverableFrom', body.recoverableFrom);",
-                  "  if (body.recoverableUntil) pm.collectionVariables.set('recoverableUntil', body.recoverableUntil);",
+                  "  if (body.startsAt) pm.collectionVariables.set('recoveryWindowStart', body.startsAt);",
+                  "  if (body.endsAt) pm.collectionVariables.set('restoreTime', body.endsAt);",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -1141,7 +1137,7 @@
                 "recovery-window"
               ]
             },
-            "description": "Returns observed PITR health and the actual recoverableFrom/recoverableUntil bounds. Only use POINT_IN_TIME restore when status is READY."
+            "description": "Returns observed PITR health and the startsAt/endsAt recovery bounds. Only use a point-in-time restore when status is READY."
           },
           "response": []
         },
@@ -1154,9 +1150,9 @@
                 "exec": [
                   "if (pm.response.code === 202) {",
                   "  const body = pm.response.json();",
-                  "  pm.collectionVariables.set('backupId', body.resourceId);",
-                  "  pm.collectionVariables.set('backupOperationId', body.operationId);",
-                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('backupId', body.backupId);",
+                  "  pm.expect(body.type).to.equal('FULL');",
+                  "  pm.expect(body.status).to.be.a('string');",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -1177,7 +1173,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"retentionDays\": 7\n}"
+              "raw": "{\n  \"type\": \"FULL\",\n  \"retentionDays\": 7\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/backups",
@@ -1194,7 +1190,7 @@
                 "backups"
               ]
             },
-            "description": "Requires a RUNNING PostgreSQL, MySQL, or MongoDB replica-set database. Returns the common AcceptedOperationResponse and stores resourceId as backupId. FULL is the only currently enabled type; retentionDays is 1-3650."
+            "description": "Creates a manual FULL backup. Set type to INCREMENTAL to create an incremental backup through this same endpoint; it requires a completed base backup. The response contains the backupId, type, status, timestamps, retention expiry, size, and safe errors. retentionDays is optional and must be 1-3650 when supplied."
           },
           "response": []
         },
@@ -1218,104 +1214,7 @@
                 "backups"
               ]
             },
-            "description": "Lists safe backup metadata. Responses deliberately exclude object-storage credentials, encryption material, Kubernetes Secrets, and database passwords."
-          },
-          "response": []
-        },
-        {
-          "name": "List Available Backup Set",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/backups?project={{projectId}}&page=0&size=20&sort=createdAt&order=desc",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "backups"
-              ],
-              "query": [
-                { "key": "project", "value": "{{projectId}}" },
-                { "key": "page", "value": "0" },
-                { "key": "size", "value": "20" },
-                { "key": "sort", "value": "createdAt" },
-                { "key": "order", "value": "desc" }
-              ]
-            },
-            "description": "Lists the currently available/restorable Backup Set in a PageResponse. Optional filters include databaseId, engine, triggerMethod, backupType, from, to, and search."
-          },
-          "response": []
-        },
-        {
-          "name": "List Backup History",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/backup-history?project={{projectId}}&page=0&size=20",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "backup-history"
-              ],
-              "query": [
-                { "key": "project", "value": "{{projectId}}" },
-                { "key": "page", "value": "0" },
-                { "key": "size", "value": "20" }
-              ]
-            },
-            "description": "Lists immutable completed, failed, expired, and deleted backup history without credentials or secret values."
-          },
-          "response": []
-        },
-        {
-          "name": "List Restore History",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/restore-history?project={{projectId}}&page=0&size=20",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "restore-history"
-              ],
-              "query": [
-                { "key": "project", "value": "{{projectId}}" },
-                { "key": "page", "value": "0" },
-                { "key": "size", "value": "20" }
-              ]
-            },
-            "description": "Lists restore attempts, restore mode/time/base backup, and public endpoint readiness metadata without passwords, usernames, Secrets, or private endpoints."
-          },
-          "response": []
-        },
-        {
-          "name": "List Backup Repositories",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/backup-repositories",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "backup-repositories"
-              ]
-            },
-            "description": "Read-only safe BackupRepo summaries: name, provider, default flag, and readiness. Credentials, Secret references, and values are never returned."
+            "description": "Lists the database's full and incremental backup history with product-level status, timestamps, size, expiry, and safe errors."
           },
           "response": []
         },
@@ -1340,46 +1239,17 @@
                 "{{backupId}}"
               ]
             },
-            "description": "Poll until status is COMPLETED or FAILED. DBaaS does not report COMPLETED until KubeBlocks reports the Backup resource successful."
+            "description": "Returns the current product-level backup status and history."
           },
           "response": []
         },
         {
-          "name": "Restore Completed Backup",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "if (pm.response.code === 202) {",
-                  "  const body = pm.response.json();",
-                  "  pm.collectionVariables.set('restoreOperationId', body.operationId);",
-                  "  pm.collectionVariables.set('restoredDatabaseId', body.resourceId);",
-                  "  pm.collectionVariables.set('operationId', body.operationId);",
-                  "}"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
+          "name": "List Restores",
           "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "Idempotency-Key",
-                "value": "{{restoreIdempotencyKey}}"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"name\": \"orders-restore\"\n}"
-            },
+            "method": "GET",
+            "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/backups/{{backupId}}/restore",
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restores",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -1390,17 +1260,15 @@
                 "{{projectId}}",
                 "databases",
                 "{{databaseId}}",
-                "backups",
-                "{{backupId}}",
-                "restore"
+                "restores"
               ]
             },
-            "description": "Backward-compatible full-restore endpoint. It requires an available COMPLETED full backup, creates a new database through a Restore OpsRequest, and never overwrites the source. Use the database-scoped restore requests below for explicit FULL or POINT_IN_TIME mode."
+            "description": "Lists full and point-in-time restore history for this source database. Each item identifies its newly created target database."
           },
           "response": []
         },
         {
-          "name": "Restore Full Backup (Database Endpoint)",
+          "name": "Restore Full Backup",
           "event": [
             {
               "listen": "test",
@@ -1408,9 +1276,9 @@
                 "exec": [
                   "if (pm.response.code === 202) {",
                   "  const body = pm.response.json();",
-                  "  pm.collectionVariables.set('restoreOperationId', body.operationId);",
-                  "  pm.collectionVariables.set('restoredDatabaseId', body.resourceId);",
-                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('restoreId', body.restoreId);",
+                  "  pm.collectionVariables.set('restoredDatabaseId', body.databaseId);",
+                  "  pm.expect(body.mode).to.equal('FULL');",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -1431,7 +1299,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"orders-full-restore\",\n  \"restoreMode\": \"FULL\",\n  \"backupId\": \"{{backupId}}\"\n}"
+              "raw": "{\n  \"mode\": \"FULL\",\n  \"backupId\": \"{{backupId}}\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restores",
@@ -1448,7 +1316,7 @@
                 "restores"
               ]
             },
-            "description": "Creates an asynchronous full restore into a new Cluster. backupId must refer to a completed full backup for this source database."
+            "description": "Creates a full restore into a new database. backupId must refer to a completed full or incremental backup for this source database."
           },
           "response": []
         },
@@ -1461,9 +1329,9 @@
                 "exec": [
                   "if (pm.response.code === 202) {",
                   "  const body = pm.response.json();",
-                  "  pm.collectionVariables.set('restoreOperationId', body.operationId);",
-                  "  pm.collectionVariables.set('restoredDatabaseId', body.resourceId);",
-                  "  pm.collectionVariables.set('operationId', body.operationId);",
+                  "  pm.collectionVariables.set('restoreId', body.restoreId);",
+                  "  pm.collectionVariables.set('restoredDatabaseId', body.databaseId);",
+                  "  pm.expect(body.mode).to.equal('POINT_IN_TIME');",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -1484,7 +1352,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"orders-pitr-restore\",\n  \"restoreMode\": \"POINT_IN_TIME\",\n  \"restoreTime\": \"{{recoverableUntil}}\"\n}"
+              "raw": "{\n  \"mode\": \"POINT_IN_TIME\",\n  \"restoreTime\": \"{{restoreTime}}\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restores",
@@ -1501,38 +1369,17 @@
                 "restores"
               ]
             },
-            "description": "Run Get PITR Recovery Window first. restoreTime must be an observed, past UTC timestamp within a READY recovery window. The restore always targets a new Cluster."
+            "description": "Run Get PITR Recovery Window first. restoreTime must be a past UTC timestamp within a READY recovery window. The restore always targets a new database."
           },
           "response": []
         },
         {
-          "name": "Get Restore Operation",
+          "name": "Get Restore Status",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/operations/{{restoreOperationId}}",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "operations",
-                "{{restoreOperationId}}"
-              ]
-            },
-            "description": "Poll until status is SUCCEEDED or FAILED. A successful restore means the KubeBlocks restore, restored Cluster, managed credentials, and shared public route are all ready."
-          },
-          "response": []
-        },
-        {
-          "name": "Get Restored Database",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{restoredDatabaseId}}",
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restores/{{restoreId}}",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -1542,23 +1389,20 @@
                 "projects",
                 "{{projectId}}",
                 "databases",
-                "{{restoredDatabaseId}}"
+                "{{databaseId}}",
+                "restores",
+                "{{restoreId}}"
               ]
             },
-            "description": "Use this new database ID for normal DBaaS lifecycle and connection requests after the restore operation succeeds."
+            "description": "Returns the current restore status and the ID of the newly created target database."
           },
           "response": []
         },
         {
-          "name": "Delete Backup CR (Preserve Data)",
+          "name": "Delete Backup",
           "request": {
             "method": "DELETE",
-            "header": [
-              {
-                "key": "Idempotency-Key",
-                "value": "{{backupDeleteIdempotencyKey}}"
-              }
-            ],
+            "header": [],
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/backups/{{backupId}}",
               "host": [
@@ -1575,40 +1419,7 @@
                 "{{backupId}}"
               ]
             },
-            "description": "Asynchronously deletes only the known DBaaS-owned Backup CR. Because its KubeBlocks deletionPolicy is Retain, object-storage data is preserved. It is blocked while a restore from this backup is active."
-          },
-          "response": []
-        },
-        {
-          "name": "Purge Backup Data",
-          "request": {
-            "method": "DELETE",
-            "header": [
-              {
-                "key": "Idempotency-Key",
-                "value": "{{backupPurgeIdempotencyKey}}"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/backups/{{backupId}}?purge=true",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "projects",
-                "{{projectId}}",
-                "databases",
-                "{{databaseId}}",
-                "backups",
-                "{{backupId}}"
-              ],
-              "query": [
-                { "key": "purge", "value": "true" }
-              ]
-            },
-            "description": "Explicitly changes only this known Backup CR to KubeBlocks Delete policy and removes it, allowing KubeBlocks to purge its backup content. Never use this while the backup is needed for restore."
+            "description": "Deletes the known backup and its retained backup data. It is blocked while a restore from this backup is active."
           },
           "response": []
         }
@@ -1770,44 +1581,16 @@
       "value": ""
     },
     {
-      "key": "backupOperationId",
-      "value": ""
-    },
-    {
       "key": "backupIdempotencyKey",
       "value": "backup-manual-20260907-001"
-    },
-    {
-      "key": "backupPolicyOperationId",
-      "value": ""
-    },
-    {
-      "key": "backupPolicyIdempotencyKey",
-      "value": "backup-policy-20260907-001"
-    },
-    {
-      "key": "backupDeleteIdempotencyKey",
-      "value": "backup-delete-20260907-001"
-    },
-    {
-      "key": "backupPurgeIdempotencyKey",
-      "value": "backup-purge-20260907-001"
     },
     {
       "key": "restoreId",
       "value": ""
     },
     {
-      "key": "restoreOperationId",
-      "value": ""
-    },
-    {
       "key": "restoredDatabaseId",
       "value": ""
-    },
-    {
-      "key": "restoreIdempotencyKey",
-      "value": "restore-manual-20260907-001"
     },
     {
       "key": "fullRestoreIdempotencyKey",
@@ -1818,11 +1601,11 @@
       "value": "restore-pitr-20260909-001"
     },
     {
-      "key": "recoverableFrom",
+      "key": "recoveryWindowStart",
       "value": ""
     },
     {
-      "key": "recoverableUntil",
+      "key": "restoreTime",
       "value": ""
     },
     {

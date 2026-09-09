@@ -3,7 +3,7 @@ package com.cyfuture.dbaas.service;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.OperationMetadata;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
-import com.cyfuture.dbaas.dto.BackupConfigurationRequest;
+import com.cyfuture.dbaas.dto.BackupSettingsRequest;
 import com.cyfuture.dbaas.entity.BackupPolicyMetadata;
 import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.OperationType;
@@ -33,7 +33,6 @@ public class OperationRecoveryService {
     private final BackupMetadataRepository backupRepository;
     private final RestoreRequestMetadataRepository restoreRepository;
     private final BackupSubmissionService backupSubmissionService;
-    private final BackupPurgeSubmitter backupPurgeSubmitter;
     private final RestoreSubmissionService restoreSubmissionService;
     private final BackupPolicyMetadataRepository backupPolicyRepository;
     private final BackupPolicySubmissionService backupPolicySubmissionService;
@@ -59,9 +58,6 @@ public class OperationRecoveryService {
                         } else if (operation.getType() == OperationType.BACKUP) {
                             backupRepository.findByOperationId(operation.getOperationId())
                                     .ifPresent(backup -> backupSubmissionService.submit(backup.getBackupId()));
-                        } else if (operation.getType() == OperationType.BACKUP_DELETE) {
-                            backupRepository.findByDeleteOperationId(operation.getOperationId())
-                                    .ifPresent(backup -> backupPurgeSubmitter.purge(backup.getBackupId()));
                         } else if (operation.getType() == OperationType.RESTORE) {
                             restoreRepository.findByOperationId(operation.getOperationId())
                                     .ifPresent(restore -> restoreSubmissionService.submit(restore.getRestoreId()));
@@ -82,10 +78,9 @@ public class OperationRecoveryService {
     private CreateDatabaseRequest request(DatabaseMetadata database) {
         BackupPolicyMetadata policy = backupPolicyRepository
                 .findByProjectNameAndDatabaseId(database.getProjectName(), database.getDatabaseId()).orElse(null);
-        BackupConfigurationRequest backup = policy == null ? null : new BackupConfigurationRequest(
-                policy.getBackupRepositoryName(), policy.isAutoBackupEnabled(), policy.getRetentionDays(),
-                policy.getCronExpression(), policy.getTimezone(), policy.getRetentionPolicy(),
-                policy.isPitrEnabled());
+        BackupSettingsRequest backup = policy == null ? null : new BackupSettingsRequest(
+                policy.isAutoBackupEnabled(), policy.getRetentionDays(), policy.getCronExpression(),
+                policy.getTimezone(), policy.isPitrEnabled());
         return new CreateDatabaseRequest(database.getDisplayName(), database.getRemark(),
                 database.getEngine(), database.getMode(), database.getDatabaseVersion(),
                 database.getSizePlan(), database.getStorageGi(), database.getReplicas(),

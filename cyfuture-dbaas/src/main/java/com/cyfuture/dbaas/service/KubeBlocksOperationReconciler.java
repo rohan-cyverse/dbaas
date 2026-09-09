@@ -35,7 +35,6 @@ public class KubeBlocksOperationReconciler {
             if (operation.getType() == OperationType.CREATE
                     || operation.getType() == OperationType.DELETE
                     || operation.getType() == OperationType.BACKUP
-                    || operation.getType() == OperationType.BACKUP_DELETE
                     || operation.getType() == OperationType.RESTORE) continue;
             reconcile(operation);
         }

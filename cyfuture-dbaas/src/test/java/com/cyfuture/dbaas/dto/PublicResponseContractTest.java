@@ -1,25 +1,23 @@
 package com.cyfuture.dbaas.dto;
 
-import com.cyfuture.dbaas.model.DatabaseEngine;
-import com.cyfuture.dbaas.model.DatabaseMode;
-import com.cyfuture.dbaas.model.DatabaseStatus;
-import com.cyfuture.dbaas.model.BackupDeletionMode;
-import com.cyfuture.dbaas.model.BackupPolicyStatus;
-import com.cyfuture.dbaas.model.BackupRetentionPolicy;
 import com.cyfuture.dbaas.model.BackupStatus;
 import com.cyfuture.dbaas.model.BackupTriggerMethod;
 import com.cyfuture.dbaas.model.BackupType;
+import com.cyfuture.dbaas.model.DatabaseEngine;
+import com.cyfuture.dbaas.model.DatabaseMode;
+import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.OperationStatus;
 import com.cyfuture.dbaas.model.OperationType;
 import com.cyfuture.dbaas.model.ProvisioningStage;
 import com.cyfuture.dbaas.model.ResourceStatus;
+import com.cyfuture.dbaas.model.RestoreMode;
 import com.cyfuture.dbaas.model.RestoreStatus;
 import com.cyfuture.dbaas.model.SizePlan;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
 import java.time.Instant;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -69,28 +67,19 @@ class PublicResponseContractTest {
     }
 
     @Test
-    void backupResponsesNeverExposeCredentialsSecretsOrKubernetesIdentity() throws Exception {
+    void backupAndRestoreResponsesExposeOnlyProductFields() throws Exception {
         Instant now = Instant.EPOCH;
-        BackupResponse backup = new BackupResponse("bkp-123456789012", "op-123456789012",
-                "db-123456789012", DatabaseEngine.POSTGRESQL, BackupType.FULL,
-                "pg-basebackup",
-                BackupTriggerMethod.MANUAL, null, "bkp-123456789012", BackupStatus.COMPLETED,
-                "7d", BackupRetentionPolicy.RETAIN_LATEST, BackupDeletionMode.CR_ONLY,
-                1024L, "Backup completed.", now, now, now, null, null);
-        BackupPolicyResponse policy = new BackupPolicyResponse("bpol-123456789", "prj-123456789012",
-                "db-123456789012", DatabaseEngine.POSTGRESQL, "cyfuture-dbaas-backuprepo", true,
-                7, "0 2 * * *", "UTC", BackupRetentionPolicy.RETAIN_LATEST, false,
-                "pg-basebackup", BackupPolicyStatus.ACTIVE, "Backup policy is active.", now);
-        RestoreHistoryResponse restore = new RestoreHistoryResponse("rst-123456789012", "op-123456789012",
-                "prj-123456789012", "db-123456789012", "bkp-123456789012", "db-234567890123",
-                "restored-orders", DatabaseEngine.POSTGRESQL, RestoreStatus.COMPLETED,
-                "203.0.113.10", 31001, "Restore completed.", now, now, now);
+        BackupResponse backup = new BackupResponse("bkp-123456789012", BackupType.FULL,
+                BackupTriggerMethod.MANUAL, BackupStatus.COMPLETED, 1024L,
+                now, now, now, now, null, null, null);
+        BackupSettingsResponse settings = new BackupSettingsResponse("db-123456789012", true,
+                7, "0 2 * * *", "UTC", true, "ACTIVE", now, null, null);
+        RestoreResponse restore = new RestoreResponse("rst-123456789012", "db-234567890123",
+                RestoreMode.FULL, "bkp-123456789012", null, RestoreStatus.COMPLETED,
+                now, now, now, null, null);
+
         String json = objectMapper.writeValueAsString(new PageResponse<>(
-                List.of(backup, policy, restore,
-                        new BackupRepositoryResponse("cyfuture-dbaas-backuprepo", "s3", true, true),
-                        new AcceptedOperationResponse("op-123456789012", "bkp-123456789012",
-                                OperationStatus.PENDING, "/api/v1/operations/op-123456789012", 5)),
-                0, 20, 5, 1));
+                List.of(backup, settings, restore), 0, 20, 3, 1));
 
         assertFalse(json.contains("password"));
         assertFalse(json.contains("username"));
@@ -99,5 +88,10 @@ class PublicResponseContractTest {
         assertFalse(json.contains("encryption"));
         assertFalse(json.contains("kubernetes"));
         assertFalse(json.contains("namespace"));
+        assertFalse(json.contains("backupRepo"));
+        assertFalse(json.contains("operationId"));
+        assertTrue(json.contains("\"mode\":\"FULL\""));
+        assertTrue(json.contains("\"restoreTime\""));
+        assertFalse(json.contains("restorePoint"));
     }
 }

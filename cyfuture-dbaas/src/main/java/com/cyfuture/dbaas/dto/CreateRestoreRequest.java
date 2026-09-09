@@ -1,21 +1,15 @@
 package com.cyfuture.dbaas.dto;
 
 import com.cyfuture.dbaas.model.RestoreMode;
-import jakarta.validation.constraints.Pattern;
+import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
-import java.time.Instant;
-
+/** Supply the mode and only the field required by that mode. */
 public record CreateRestoreRequest(
-        @Pattern(regexp = "^[a-z0-9]([-a-z0-9]{0,30}[a-z0-9])?$",
-                message = "name must be a DNS-compatible database name")
-        String name,
-        RestoreMode restoreMode,
+        @NotNull(message = "mode is required")
+        @Schema(example = "FULL", allowableValues = {"FULL", "POINT_IN_TIME"})
+        RestoreMode mode,
         @Size(max = 32) String backupId,
-        String restoreTime
-) {
-    /** Keeps Java callers of the original backup-specific restore API source-compatible. */
-    public CreateRestoreRequest(String name, Instant restoreTime) {
-        this(name, null, null, restoreTime == null ? null : restoreTime.toString());
-    }
-}
+        @Schema(example = "2026-09-09T08:30:00Z") String restoreTime
+) {}

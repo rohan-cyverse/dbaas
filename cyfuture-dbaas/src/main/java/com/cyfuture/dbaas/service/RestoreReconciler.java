@@ -54,9 +54,9 @@ public class RestoreReconciler {
                     continue;
                 }
                 if (restore.getStatus() == RestoreStatus.PENDING) {
-                    submissionService.submit(restore.getRestoreId());
+                    refresh(restore);
                 } else {
-                    reconcile(restore);
+                    refresh(restore);
                 }
             } catch (Exception exception) {
                 if (timedOut(restore)) {
@@ -72,7 +72,16 @@ public class RestoreReconciler {
         }
     }
 
-    void reconcile(RestoreRequestMetadata restore) {
+    /** Performs one live restore refresh and is used by restore GET endpoints. */
+    public void refresh(RestoreRequestMetadata restore) {
+        if (restore.getStatus() == RestoreStatus.PENDING) {
+            submissionService.submit(restore.getRestoreId());
+            return;
+        }
+        reconcile(restore);
+    }
+
+    private void reconcile(RestoreRequestMetadata restore) {
         DatabaseMetadata target = databaseRepository.findByDatabaseIdAndProjectName(
                 restore.getRestoredDatabaseId(), restore.getProjectName()).orElse(null);
         if (target == null) {
@@ -121,14 +130,8 @@ public class RestoreReconciler {
             updateRunning(restore, observed, 70, "Waiting for restored database replicas");
             return;
         }
-        String restoredLogicalDatabase = restore.getRestoredDatabaseName();
-        if (restoredLogicalDatabase == null || restoredLogicalDatabase.isBlank()) {
-            restoredLogicalDatabase = CredentialLifecycleService.managedDatabaseName(
-                    restore.getSourceDatabaseId());
-            restore.setRestoredDatabaseName(restoredLogicalDatabase);
-            restore.setLastObservedAt(Instant.now());
-            restoreRepository.save(restore);
-        }
+        String restoredLogicalDatabase = CredentialLifecycleService.managedDatabaseName(
+                restore.getSourceDatabaseId());
         String restoredUsername = CredentialLifecycleService.managedUsername(restore.getSourceDatabaseId());
         if (!credentialLifecycleService.readyForRestoredDatabase(target, restoredLogicalDatabase,
                 restoredUsername)) {
@@ -148,9 +151,6 @@ public class RestoreReconciler {
         }
         progressService.ready(target);
         restore.setStatus(RestoreStatus.COMPLETED);
-        restore.setRestoredDatabaseName(actualLogicalDatabase);
-        restore.setPublicHost(endpoint.host());
-        restore.setPublicPort(endpoint.port());
         restore.setCompletedAt(Instant.now());
         restore.setLastObservedAt(Instant.now());
         restore.setFailureCode(null);

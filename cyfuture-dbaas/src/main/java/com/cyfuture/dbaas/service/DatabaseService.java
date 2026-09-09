@@ -262,7 +262,7 @@ public class DatabaseService {
         RestoreRequestMetadata restore = restoreRepository.findByRestoredDatabaseId(databaseId).orElse(null);
         if (restore != null && restore.getStatus() == RestoreStatus.COMPLETED) {
             if (!credentialLifecycleService.readyForRestoredDatabase(database,
-                    restore.getRestoredDatabaseName(),
+                    CredentialLifecycleService.managedDatabaseName(restore.getSourceDatabaseId()),
                     CredentialLifecycleService.managedUsername(restore.getSourceDatabaseId()))) {
                 throw new ApiException(HttpStatus.CONFLICT, "RESTORED_CREDENTIALS_NOT_READY", true,
                         "Restored database credentials are being prepared; retry shortly.");
@@ -330,7 +330,7 @@ public class DatabaseService {
         databaseRepository.save(database);
 
         if (!backupRetentionService.readyForClusterDeletion(project, databaseId)) {
-            database.setMessage("Database deletion is waiting for active backup work or DELETE_ALL backup purge");
+            database.setMessage("Database deletion is waiting for active backup or restore work");
             database.setUpdatedAt(Instant.now());
             databaseRepository.save(database);
             return deletionResponse(database);
@@ -586,7 +586,7 @@ public class DatabaseService {
     }
 
     private CreateDatabaseRequest withBackup(CreateDatabaseRequest request,
-                                             com.cyfuture.dbaas.dto.BackupConfigurationRequest backup) {
+                                             com.cyfuture.dbaas.dto.BackupSettingsRequest backup) {
         return new CreateDatabaseRequest(request.name(), request.remark(), request.engine(), request.mode(),
                 request.version(), request.size(), request.storageGi(), request.replicas(), request.shards(),
                 request.timezone(), request.allowedCidrs(), request.deletionProtection(), request.tags(), backup);
@@ -594,10 +594,9 @@ public class DatabaseService {
 
     private String backupHash(CreateDatabaseRequest request) {
         if (request.backup() == null) return "";
-        return String.valueOf(request.backup().repository()) + "|"
-                + request.backup().autoBackupEnabled() + "|" + request.backup().retentionDays() + "|"
-                + request.backup().cronExpression() + "|" + request.backup().timezone() + "|"
-                + request.backup().retentionPolicy() + "|" + request.backup().pitrEnabled();
+        return String.valueOf(request.backup().scheduled()) + "|" + request.backup().retentionDays() + "|"
+                + request.backup().schedule() + "|" + request.backup().timezone() + "|"
+                + request.backup().pitrEnabled();
     }
 
     private String allocateGeneratedName(String project, DatabaseEngine engine) {

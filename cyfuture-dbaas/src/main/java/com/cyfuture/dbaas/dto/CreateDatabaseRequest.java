@@ -34,8 +34,8 @@ public record CreateDatabaseRequest(
         @Schema(example = "true") boolean deletionProtection,
         @Schema(example = "{\"environment\":\"test\",\"team\":\"orders\"}")
         @Size(max = 20) Map<String, String> tags,
-        @Schema(description = "Optional scheduled full-backup policy. PITR is available only for installed supported engine templates; incremental backups remain unavailable.")
-        @Valid BackupConfigurationRequest backup
+        @Schema(description = "Optional scheduled full-backup settings. PITR is available for supported database configurations.")
+        @Valid BackupSettingsRequest backup
 ) {
     public CreateDatabaseRequest {
         if (allowedCidrs == null) allowedCidrs = List.of();

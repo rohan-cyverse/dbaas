@@ -1,7 +1,6 @@
 package com.cyfuture.dbaas.client;
 
 import com.cyfuture.dbaas.config.DatabaseProperties;
-import com.cyfuture.dbaas.dto.BackupRepositoryResponse;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
 import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.DatabaseEngine;
@@ -63,10 +62,7 @@ public class KubeBlocksClient {
     private static final String DATABASE_LABEL = "dbaas.cyfuture.com/database-id";
     private static final String BACKUP_ID_LABEL = "dbaas.cyfuture.com/backup-id";
     private static final String OPERATION_ID_LABEL = "dbaas.cyfuture.com/operation-id";
-    /*
-     * KubeBlocks 1.0 uses is-default-policy. Keep the earlier spelling as a
-     * compatibility fallback for clusters upgraded from older releases.
-     */
+
     private static final List<String> DEFAULT_BACKUP_POLICY_ANNOTATIONS = List.of(
             "dataprotection.kubeblocks.io/is-default-policy",
             "dataprotection.kubeblocks.io/is-default-backup-policy");
@@ -890,32 +886,6 @@ public class KubeBlocksClient {
         }
     }
 
-    /** Lists safe public BackupRepo state only; no Secret references or values leave this client. */
-    public List<BackupRepositoryResponse> listBackupRepositories() {
-        try {
-            Map<String, Object> list = asMap(customObjectsApi.listClusterCustomObject(
-                    DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, BACKUP_REPOS).execute());
-            List<BackupRepositoryResponse> result = new ArrayList<>();
-            for (Object item : (List<?>) list.getOrDefault("items", List.of())) {
-                Map<String, Object> repository = asMap(item);
-                Map<String, Object> metadata = asMap(repository.get("metadata"));
-                Map<String, Object> spec = asMap(repository.get("spec"));
-                Map<String, Object> status = asMap(repository.get("status"));
-                String name = optionalText(metadata.get("name"));
-                if (name == null) continue;
-                Map<String, Object> provider = asMap(spec.get("storageProviderRef"));
-                String providerName = firstNonBlank(optionalText(provider.get("name")),
-                        optionalText(spec.get("storageProviderRef")), optionalText(spec.get("storageProvider")),
-                        optionalText(status.get("storageProvider")), "unknown");
-                result.add(new BackupRepositoryResponse(name, providerName,
-                        "true".equalsIgnoreCase(String.valueOf(status.get("isDefault"))), ready(status)));
-            }
-            return result;
-        } catch (io.kubernetes.client.openapi.ApiException exception) {
-            throw backupApiFailure("list BackupRepo resources", exception);
-        }
-    }
-
     /** Creates a KubeBlocks Backup CR for a policy that was already validated. */
     public void createBackup(String namespace, String project, String databaseId,
                              String backupName, String policyName, String backupMethod,
@@ -924,7 +894,7 @@ public class KubeBlocksClient {
                 retentionPeriod, parentBackupName, backupName, null);
     }
 
-    /** Creates a labelled manual Backup CR. Retain makes CR deletion distinct from S3 purging. */
+    /** Creates a labelled manual Backup CR with ordinary full-data deletion semantics. */
     public void createBackup(String namespace, String project, String databaseId,
                              String backupName, String policyName, String backupMethod,
                              String retentionPeriod, String parentBackupName,
@@ -932,9 +902,7 @@ public class KubeBlocksClient {
         Map<String, Object> spec = new LinkedHashMap<>();
         spec.put("backupPolicyName", policyName);
         spec.put("backupMethod", backupMethod);
-        // Retain means deleting the CR alone never erases data. A purge is an
-        // explicit two-step operation that first changes this known CR to Delete.
-        spec.put("deletionPolicy", "Retain");
+        spec.put("deletionPolicy", "Delete");
         spec.put("retentionPeriod", retentionPeriod);
         if (parentBackupName != null && !parentBackupName.isBlank()) {
             spec.put("parentBackupName", parentBackupName);
@@ -1010,34 +978,32 @@ public class KubeBlocksClient {
         }
     }
 
-    /**
-     * Deletes a known DBaaS manual Backup or a previously discovered generated
-     * schedule Backup. `purgeData` is the only path that changes deletionPolicy
-     * to Delete before removing the CR.
-     */
+    /** Deletes a known DBaaS Backup and its retained data. */
     public void deleteManagedBackup(String namespace, String project, String databaseId,
                                     String backupId, String operationId, String backupName,
-                                    String expectedUid, String expectedPolicyName,
-                                    boolean purgeData) {
+                                    String expectedUid, String expectedPolicyName) {
         for (int attempt = 0; attempt < 3; attempt++) {
             try {
-                Map<String, Object> backup = asMap(customObjectsApi.getNamespacedCustomObject(
-                        DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS, backupName).execute());
+                Map<String, Object> backup = new LinkedHashMap<>(asMap(
+                        customObjectsApi.getNamespacedCustomObject(
+                                DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS, backupName)
+                                .execute()));
                 if (!ownedBackup(backup, project, databaseId, backupId, operationId,
                         expectedUid, expectedPolicyName)) {
                     throw new ApiException(HttpStatus.CONFLICT, "BACKUP_RESOURCE_NOT_MANAGED", false,
                             "The KubeBlocks Backup resource is not managed by this DBaaS backup.");
                 }
-                if (purgeData) {
-                    mutableChildMap(backup, "spec").put("deletionPolicy", "Delete");
-                    try {
-                        customObjectsApi.replaceNamespacedCustomObject(
-                                DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS,
-                                backupName, backup).execute();
-                    } catch (io.kubernetes.client.openapi.ApiException exception) {
-                        if (exception.getCode() == 409 && attempt < 2) continue;
-                        throw exception;
-                    }
+                // Existing backups may have been created by an older release
+                // with Retain. Switch only this verified DBaaS-owned resource
+                // before deletion so DELETE always has one product meaning.
+                mutableChildMap(backup, "spec").put("deletionPolicy", "Delete");
+                try {
+                    customObjectsApi.replaceNamespacedCustomObject(
+                            DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS,
+                            backupName, backup).execute();
+                } catch (io.kubernetes.client.openapi.ApiException exception) {
+                    if (exception.getCode() == 409 && attempt < 2) continue;
+                    throw exception;
                 }
                 customObjectsApi.deleteNamespacedCustomObject(
                         DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS, backupName).execute();
@@ -1185,11 +1151,6 @@ public class KubeBlocksClient {
                                              CreateDatabaseRequest request) {
         DatabaseProperties.EngineSettings settings = properties.engine(request.engine());
 
-//        Map<String, Object> resources = Map.of(
-//                "requests", Map.of("cpu", request.size().cpu(), "memory", request.size().memory()),
-//                "limits", Map.of("cpu", request.size().cpu(), "memory", request.size().memory()));
-
-
         Map<String, Object> resources = Map.of(
                 "requests", Map.of(
                         "cpu", request.size().getCpuRequest(),
@@ -1246,14 +1207,13 @@ public class KubeBlocksClient {
                     ? 7 : request.backup().retentionDays();
             boolean pitrEnabled = Boolean.TRUE.equals(request.backup().pitrEnabled());
             Map<String, Object> backup = new LinkedHashMap<>();
-            backup.put("enabled", Boolean.TRUE.equals(request.backup().autoBackupEnabled()));
+            backup.put("enabled", Boolean.TRUE.equals(request.backup().scheduled()));
             backup.put("method", backupMethod(request.engine()));
             backup.put("continuousMethod", pitrEnabled ? continuousBackupMethod(request.engine()) : null);
-            backup.put("repoName", request.backup().repository() == null || request.backup().repository().isBlank()
-                    ? properties.getBackup().getRepositoryName() : request.backup().repository());
+            backup.put("repoName", properties.getBackup().getRepositoryName());
             backup.put("retentionPeriod", retentionDays + "d");
-            if (request.backup().cronExpression() != null && !request.backup().cronExpression().isBlank()) {
-                backup.put("cronExpression", request.backup().cronExpression());
+            if (request.backup().schedule() != null && !request.backup().schedule().isBlank()) {
+                backup.put("cronExpression", request.backup().schedule());
             }
             backup.put("pitrEnabled", pitrEnabled);
             backup.put("incrementalBackupEnabled", false);
@@ -2007,8 +1967,7 @@ public class KubeBlocksClient {
                 }
             }
         }
-        // Older v1.0 controllers do not persist a direct template name on the
-        // generated policy. Its backupMethods were already checked above.
+
         if (templateName == null) return;
         try {
             Map<String, Object> template = asMap(customObjectsApi.getClusterCustomObject(

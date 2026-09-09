@@ -10,13 +10,13 @@ import java.util.List;
 public interface BackupEngineStrategy {
     DatabaseEngine engine();
 
-    /** The only method enabled for manual backups in this release. */
+    /** Installed method used when a manual full backup is requested. */
     String manualFullMethod();
 
     /** Installed continuous-log method used only when PITR is explicitly enabled. */
     String continuousMethod();
 
-    /** Reserved method names are surfaced internally, never attempted prematurely. */
+    /** Installed method candidates used when a manual incremental backup is requested. */
     List<String> futureIncrementalMethods();
 
     List<String> futureContinuousMethods();
@@ -29,7 +29,20 @@ public interface BackupEngineStrategy {
         return supportsTopology(mode);
     }
 
+    default String manualIncrementalMethod() {
+        return futureIncrementalMethods().stream().findFirst().orElse(null);
+    }
+
+    default String manualMethod(BackupType type) {
+        return switch (type) {
+            case FULL -> manualFullMethod();
+            case INCREMENTAL -> manualIncrementalMethod();
+            case CONTINUOUS -> null;
+        };
+    }
+
     default boolean supportsNow(BackupType type) {
-        return type == BackupType.FULL;
+        return type == BackupType.FULL
+                || (type == BackupType.INCREMENTAL && manualIncrementalMethod() != null);
     }
 }

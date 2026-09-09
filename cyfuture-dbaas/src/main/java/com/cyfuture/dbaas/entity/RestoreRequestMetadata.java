@@ -1,6 +1,5 @@
 package com.cyfuture.dbaas.entity;
 
-import com.cyfuture.dbaas.model.DatabaseEngine;
 import com.cyfuture.dbaas.model.RestoreMode;
 import com.cyfuture.dbaas.model.RestoreStatus;
 import jakarta.persistence.Column;
@@ -17,9 +16,9 @@ import lombok.Setter;
 import java.time.Instant;
 
 @Entity
-@Table(name = "restore_requests", uniqueConstraints = {
-        @UniqueConstraint(name = "uk_restore_project_backup_idempotency",
-                columnNames = {"project_name", "source_backup_id", "idempotency_key"}),
+@Table(name = "restores", uniqueConstraints = {
+        @UniqueConstraint(name = "uk_restore_project_source_database_idempotency",
+                columnNames = {"project_name", "source_database_id", "idempotency_key"}),
         @UniqueConstraint(name = "uk_restore_target_database",
                 columnNames = "restored_database_id"),
         @UniqueConstraint(name = "uk_restore_ops_request",
@@ -43,29 +42,13 @@ public class RestoreRequestMetadata {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 32)
     private RestoreMode restoreMode;
-    @Column(length = 32)
-    private String continuousBackupId;
-    @Column(length = 63)
-    private String sourceKubernetesBackupName;
-    @Column(length = 63)
-    private String sourceBackupNamespace;
     @Column(nullable = false, length = 32)
     private String restoredDatabaseId;
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 32)
-    private DatabaseEngine engine;
     private Instant restoreTime;
     @Column(nullable = false, length = 63)
     private String kubernetesOpsRequestName;
     @Column(length = 63)
     private String kubernetesRestoreName;
-    @Column(nullable = false, length = 63)
-    private String kubernetesClusterName;
-    @Column(length = 32)
-    private String restoredDatabaseName;
-    @Column(length = 255)
-    private String publicHost;
-    private Integer publicPort;
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 32)
     private RestoreStatus status;

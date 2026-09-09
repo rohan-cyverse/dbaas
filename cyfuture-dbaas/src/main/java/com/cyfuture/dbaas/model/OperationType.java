@@ -4,7 +4,6 @@ public enum OperationType {
     CREATE,
     BACKUP,
     BACKUP_POLICY_UPDATE,
-    BACKUP_DELETE,
     RESTORE,
     ROTATE_CREDENTIALS,
     VERTICAL_SCALING,

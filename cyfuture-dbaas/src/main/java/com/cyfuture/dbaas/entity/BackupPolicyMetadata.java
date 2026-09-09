@@ -1,9 +1,6 @@
 package com.cyfuture.dbaas.entity;
 
 import com.cyfuture.dbaas.model.BackupPolicyStatus;
-import com.cyfuture.dbaas.model.BackupRetentionPolicy;
-import com.cyfuture.dbaas.model.DatabaseEngine;
-import com.cyfuture.dbaas.model.PitrStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -17,9 +14,9 @@ import lombok.Setter;
 
 import java.time.Instant;
 
-/** Observed per-cluster KubeBlocks policy plus reserved schedule configuration. */
+/** Minimal desired settings and internal KubeBlocks correlation for one database. */
 @Entity
-@Table(name = "backup_policies", uniqueConstraints = @UniqueConstraint(
+@Table(name = "backup_settings", uniqueConstraints = @UniqueConstraint(
         name = "uk_backup_policy_project_database",
         columnNames = {"project_name", "database_id"}))
 @Getter
@@ -33,53 +30,23 @@ public class BackupPolicyMetadata {
     private String projectName;
     @Column(nullable = false, length = 32)
     private String databaseId;
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 32)
-    private DatabaseEngine engine;
     @Column(length = 63)
     private String kubernetesPolicyName;
-    @Column(nullable = false, length = 63)
-    private String backupRepositoryName;
-    @Column(nullable = false, length = 63)
-    private String defaultBackupMethod;
-    @Column(length = 63)
-    private String continuousBackupMethod;
-    private boolean encryptionConfigured;
-    private boolean schedulingEnabled;
     @Column(length = 128)
     private String cronExpression;
-    @Column(nullable = false, length = 32)
-    private String defaultRetentionPeriod;
-    @Column(nullable = false, length = 32)
-    private String observedStatus;
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 32)
     private BackupPolicyStatus policyStatus;
     private boolean autoBackupEnabled;
     private int retentionDays;
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 32)
-    private BackupRetentionPolicy retentionPolicy;
     @Column(nullable = false, length = 60)
     private String timezone;
     private boolean pitrEnabled;
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 32)
-    private PitrStatus pitrStatus;
-    @Column(length = 1000)
-    private String pitrMessage;
-    private Instant recoverableFrom;
-    private Instant recoverableUntil;
-    private Instant pitrObservedAt;
     private boolean configurationApplied;
     @Column(length = 63)
     private String kubernetesScheduleName;
     @Column(length = 32)
     private String policyUpdateOperationId;
-    @Column(length = 128)
-    private String idempotencyKey;
-    @Column(length = 64)
-    private String requestHash;
     @Column(length = 64)
     private String failureCode;
     @Column(length = 1000)

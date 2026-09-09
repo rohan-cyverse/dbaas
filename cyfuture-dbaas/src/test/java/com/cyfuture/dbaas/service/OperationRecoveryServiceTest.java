@@ -31,8 +31,8 @@ class OperationRecoveryServiceTest {
         OperationRecoveryService service = new OperationRecoveryService(operationRepository,
                 databaseRepository, provisioningService, submitter,
                 mock(BackupMetadataRepository.class), mock(RestoreRequestMetadataRepository.class),
-                mock(BackupSubmissionService.class), mock(BackupPurgeSubmitter.class),
-                mock(RestoreSubmissionService.class), mock(BackupPolicyMetadataRepository.class),
+                mock(BackupSubmissionService.class), mock(RestoreSubmissionService.class),
+                mock(BackupPolicyMetadataRepository.class),
                 mock(BackupPolicySubmissionService.class));
 
         OperationMetadata operation = OperationMetadata.builder()

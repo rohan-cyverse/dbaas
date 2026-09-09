@@ -2,8 +2,7 @@ package com.cyfuture.dbaas.client;
 
 import com.cyfuture.dbaas.config.DatabaseProperties;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
-import com.cyfuture.dbaas.dto.BackupConfigurationRequest;
-import com.cyfuture.dbaas.model.BackupRetentionPolicy;
+import com.cyfuture.dbaas.dto.BackupSettingsRequest;
 import com.cyfuture.dbaas.model.DatabaseEngine;
 import com.cyfuture.dbaas.model.DatabaseMode;
 import com.cyfuture.dbaas.model.SizePlan;
@@ -56,6 +55,9 @@ class KubeBlocksClientTest {
         when(customObjectsApi.getClusterCustomObject("apiextensions.k8s.io", "v1",
                 "customresourcedefinitions", "opsrequests.operations.kubeblocks.io")
                 .execute()).thenReturn(opsRequestCrd());
+        when(customObjectsApi.getClusterCustomObject("apiextensions.k8s.io", "v1",
+                "customresourcedefinitions", "clusters.apps.kubeblocks.io")
+                .execute()).thenReturn(clusterCrd());
         when(customObjectsApi.createNamespacedCustomObject(eq("operations.kubeblocks.io"),
                 eq("v1alpha1"), eq("dbaas-orders"), eq("opsrequests"), any()).execute())
                 .thenReturn(Map.of());
@@ -392,7 +394,8 @@ class KubeBlocksClientTest {
                 "dbaas.cyfuture.com/database-id", "db-orders0001")));
         cluster.put("spec", new java.util.LinkedHashMap<>(Map.of("backup", Map.of(
                 "enabled", true, "method", "pg-basebackup", "repoName", "cyfuture-dbaas-backuprepo",
-                "retentionPeriod", "7d", "cronExpression", "0 2 * * *", "pitrEnabled", false))));
+                "retentionPeriod", "7d", "cronExpression", "0 2 * * *", "pitrEnabled", false,
+                "incrementalBackupEnabled", false))));
         when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
                 "dbaas-orders", "clusters", "db-orders0001").execute()).thenReturn(cluster);
 
@@ -404,7 +407,7 @@ class KubeBlocksClientTest {
     }
 
     @Test
-    void manualBackupManifestUsesManagedIdentityAndRetainDeletionPolicy() throws Exception {
+    void manualBackupManifestUsesManagedIdentityAndDeleteDeletionPolicy() throws Exception {
         when(customObjectsApi.createNamespacedCustomObject(eq("dataprotection.kubeblocks.io"),
                 eq("v1alpha1"), eq("dbaas-orders"), eq("backups"), any()).execute()).thenReturn(Map.of());
 
@@ -416,7 +419,7 @@ class KubeBlocksClientTest {
         verify(customObjectsApi).createNamespacedCustomObject(eq("dataprotection.kubeblocks.io"),
                 eq("v1alpha1"), eq("dbaas-orders"), eq("backups"), body.capture());
         Map<?, ?> manifest = (Map<?, ?>) body.getValue();
-        assertEquals("Retain", ((Map<?, ?>) manifest.get("spec")).get("deletionPolicy"));
+        assertEquals("Delete", ((Map<?, ?>) manifest.get("spec")).get("deletionPolicy"));
         Map<?, ?> labels = (Map<?, ?>) ((Map<?, ?>) manifest.get("metadata")).get("labels");
         assertEquals("prj-orders", labels.get("dbaas.cyfuture.com/project"));
         assertEquals("db-orders0001", labels.get("dbaas.cyfuture.com/database-id"));
@@ -459,7 +462,7 @@ class KubeBlocksClientTest {
 
         client.deleteManagedBackup("dbaas-orders", "prj-orders", "db-orders0001",
                 "bkp-a-001", "op-a-001", "scheduled-orders-001", "uid-scheduled-001",
-                "db-orders-policy", false);
+                "db-orders-policy");
 
         verify(customObjectsApi).deleteNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
                 "dbaas-orders", "backups", "scheduled-orders-001");
@@ -479,7 +482,7 @@ class KubeBlocksClientTest {
                 com.cyfuture.dbaas.exception.ApiException.class,
                 () -> client.deleteManagedBackup("dbaas-orders", "prj-orders", "db-orders0001",
                         "bkp-a-001", "op-a-001", "scheduled-orders-001", "uid-historic",
-                        "db-orders-policy", true));
+                        "db-orders-policy"));
 
         assertEquals("BACKUP_RESOURCE_NOT_MANAGED", exception.getCode());
         verify(customObjectsApi, never()).deleteNamespacedCustomObject(
@@ -568,8 +571,7 @@ class KubeBlocksClientTest {
         CreateDatabaseRequest backupRequest = new CreateDatabaseRequest("orders-db", null,
                 DatabaseEngine.POSTGRESQL, DatabaseMode.REPLICATION, "test-version", SizePlan.C1G1,
                 10, 2, 0, null, List.of(), false, Map.of(),
-                new BackupConfigurationRequest("cyfuture-dbaas-backuprepo", true, 7,
-                        "30 20 * * *", "Asia/Kolkata", BackupRetentionPolicy.RETAIN_LATEST, false));
+                new BackupSettingsRequest(true, 7, "30 20 * * *", "Asia/Kolkata", false));
 
         client.create("dbaas-orders", "prj-orders", "db-postgres0002", backupRequest);
 
@@ -607,17 +609,39 @@ class KubeBlocksClientTest {
     }
 
     private Map<String, Object> opsRequestCrd() {
+        Map<String, Object> restore = Map.of(
+                "backupName", Map.of("type", "string"),
+                "volumeRestorePolicy", Map.of("type", "string"),
+                "restorePointInTime", Map.of("type", "string"));
+        Map<String, Object> properties = new java.util.LinkedHashMap<>();
+        properties.put("clusterName", Map.of("type", "string"));
+        properties.put("type", Map.of("type", "string"));
+        properties.put("verticalScaling", Map.of("type", "array"));
+        properties.put("horizontalScaling", Map.of("type", "array"));
+        properties.put("volumeExpansion", Map.of("type", "array"));
+        properties.put("restart", Map.of("type", "array"));
+        properties.put("restore", Map.of("type", "object", "properties", restore));
         return Map.of("spec", Map.of("versions", List.of(Map.of(
                 "name", "v1alpha1",
                 "schema", Map.of("openAPIV3Schema", Map.of("properties", Map.of(
+                        "spec", Map.of("properties", properties))))))));
+    }
+
+    private Map<String, Object> clusterCrd() {
+        Map<String, Object> backup = new java.util.LinkedHashMap<>();
+        backup.put("enabled", Map.of("type", "boolean"));
+        backup.put("method", Map.of("type", "string"));
+        backup.put("continuousMethod", Map.of("type", "string"));
+        backup.put("repoName", Map.of("type", "string"));
+        backup.put("retentionPeriod", Map.of("type", "string"));
+        backup.put("cronExpression", Map.of("type", "string"));
+        backup.put("pitrEnabled", Map.of("type", "boolean"));
+        backup.put("incrementalBackupEnabled", Map.of("type", "boolean"));
+        return Map.of("spec", Map.of("versions", List.of(Map.of(
+                "name", "v1",
+                "schema", Map.of("openAPIV3Schema", Map.of("properties", Map.of(
                         "spec", Map.of("properties", Map.of(
-                                "clusterName", Map.of("type", "string"),
-                                "type", Map.of("type", "string"),
-                                "verticalScaling", Map.of("type", "array"),
-                                "horizontalScaling", Map.of("type", "array"),
-                                "volumeExpansion", Map.of("type", "array"),
-                                "restart", Map.of("type", "array"),
-                                "restore", Map.of("type", "object"))))))))));
+                                "backup", Map.of("properties", backup))))))))));
     }
 
     private Map<String, Object> cluster() {

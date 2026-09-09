@@ -18,9 +18,8 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Objects;
 
-/** Restart-safe observer for Cluster.spec.backup and KubeBlocks-generated policy/schedule children. */
+/** Observes live KubeBlocks backup settings and imports scheduled history. */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -32,133 +31,102 @@ public class BackupPolicyReconciler {
     private final BackupPolicySubmissionService submissionService;
     private final ScheduledBackupDiscoveryService discoveryService;
     private final PitrRecoveryService pitrRecoveryService;
+    private final BackupEngineStrategies strategies;
+    private final BackupConfigurationNormalizer normalizer;
 
     @EventListener(ApplicationReadyEvent.class)
-    public void reconcileOnStartup() {
-        reconcile();
-    }
+    public void reconcileOnStartup() { reconcile(); }
 
     @Scheduled(fixedDelayString = "${dbaas.backup.reconcile-ms:5000}")
     public void reconcile() {
         for (BackupPolicyMetadata policy : policyRepository.findByPolicyStatusInOrderByUpdatedAtAsc(
                 List.of(BackupPolicyStatus.PENDING, BackupPolicyStatus.ACTIVE, BackupPolicyStatus.DISABLED))) {
             try {
-                reconcile(policy);
+                refresh(policy);
             } catch (Exception exception) {
                 if (!BackupRestoreSafety.retryable(exception)) {
-                    fail(policy, BackupRestoreSafety.failureCode(exception, "BACKUP_POLICY_RECONCILE_FAILED"),
-                            BackupRestoreSafety.safeMessage(exception, "Backup policy reconciliation failed."));
+                    fail(policy, BackupRestoreSafety.failureCode(exception, "BACKUP_SETTINGS_RECONCILE_FAILED"),
+                            BackupRestoreSafety.safeMessage(exception, "Backup settings reconciliation failed."));
                 }
-                log.debug("Backup policy reconciliation for {} will retry: {}",
-                        policy.getPolicyId(), BackupRestoreSafety.safeMessage(exception,
-                                "Backup policy reconciliation will retry."));
+                log.debug("Backup settings reconciliation for {} will retry", policy.getDatabaseId());
             }
         }
     }
 
-    void reconcile(BackupPolicyMetadata policy) {
+    /** Read-through reconciliation used by GET settings, backup history, and PITR. */
+    public void refresh(BackupPolicyMetadata policy) {
         DatabaseMetadata source = databaseRepository.findByDatabaseIdAndProjectName(
                 policy.getDatabaseId(), policy.getProjectName()).orElse(null);
         if (source == null) {
             fail(policy, "BACKUP_SOURCE_METADATA_MISSING", "Backup source metadata is unavailable.");
             return;
         }
-        if (policy.getPolicyStatus() == BackupPolicyStatus.PENDING
-                || policy.getKubernetesPolicyName() == null) {
-            submissionService.submit(policy.getPolicyId());
-        }
+        if (!policy.isConfigurationApplied()) submissionService.submit(policy.getPolicyId());
+        BackupEngineStrategy strategy = strategies.require(source.getEngine());
         KubeBlocksClient.BackupPolicyInfo observed = kubeBlocksClient.resolveReadyBackupPolicy(
-                source.getNamespaceName(), source.getDatabaseId(), source.getEngine(),
-                policy.getDefaultBackupMethod(), policy.isPitrEnabled()
-                        ? policy.getContinuousBackupMethod() : null,
-                policy.getBackupRepositoryName());
+                source.getNamespaceName(), source.getDatabaseId(), source.getEngine(), strategy.manualFullMethod(),
+                policy.isPitrEnabled() ? strategy.continuousMethod() : null, normalizer.repositoryName());
         if (!"AVAILABLE".equalsIgnoreCase(observed.observedStatus())) {
-            pending(policy, observed, null, "Waiting for generated KubeBlocks BackupPolicy");
+            pending(policy, observed.policyName(), null, "Waiting for backup settings to become available.");
             pitrRecoveryService.refresh(policy);
             return;
         }
-        if (policy.isAutoBackupEnabled()) {
-            KubeBlocksClient.BackupScheduleInfo schedule = kubeBlocksClient.observeGeneratedBackupSchedule(
-                    source.getNamespaceName(), source.getDatabaseId(), observed.policyName());
-            if (!schedule.exists() || !schedule.available()) {
-                pending(policy, observed, schedule, "Waiting for generated KubeBlocks BackupSchedule");
-                return;
-            }
-            activate(policy, observed, schedule, BackupPolicyStatus.ACTIVE,
-                    "Backup policy and schedule are available.");
-            discoveryService.discover(policy);
+        if (!policy.isAutoBackupEnabled()) {
+            activate(policy, observed.policyName(), null, BackupPolicyStatus.DISABLED,
+                    "Scheduled backups are disabled.");
             pitrRecoveryService.refresh(policy);
             return;
         }
-        // A disabled schedule has no generated BackupSchedule to wait for, but
-        // the generated BackupPolicy must still be available before it is stable.
-        activate(policy, observed, null, BackupPolicyStatus.DISABLED,
-                "Automatic backup is disabled.");
+        KubeBlocksClient.BackupScheduleInfo schedule = kubeBlocksClient.observeGeneratedBackupSchedule(
+                source.getNamespaceName(), source.getDatabaseId(), observed.policyName());
+        if (!schedule.exists() || !schedule.available()) {
+            pending(policy, observed.policyName(), schedule.scheduleName(),
+                    "Waiting for scheduled backups to become available.");
+            pitrRecoveryService.refresh(policy);
+            return;
+        }
+        activate(policy, observed.policyName(), schedule.scheduleName(), BackupPolicyStatus.ACTIVE,
+                "Scheduled backups are available.");
+        discoveryService.discover(policy);
         pitrRecoveryService.refresh(policy);
     }
 
-    private void pending(BackupPolicyMetadata policy, KubeBlocksClient.BackupPolicyInfo observed,
-                         KubeBlocksClient.BackupScheduleInfo schedule, String message) {
-        boolean changed = policy.getPolicyStatus() != BackupPolicyStatus.PENDING
-                || !Objects.equals(policy.getKubernetesPolicyName(), observed.policyName())
-                || !Objects.equals(policy.getObservedStatus(), observed.observedStatus())
-                || (schedule != null && !Objects.equals(policy.getKubernetesScheduleName(), schedule.scheduleName()));
-        if (changed) {
-            policy.setPolicyStatus(BackupPolicyStatus.PENDING);
-            policy.setKubernetesPolicyName(observed.policyName());
-            policy.setKubernetesScheduleName(schedule == null ? null : schedule.scheduleName());
-            policy.setObservedStatus(schedule == null ? observed.observedStatus() : schedule.observedStatus());
-            policy.setLastObservedAt(Instant.now());
-            policy.setUpdatedAt(Instant.now());
-            policyRepository.save(policy);
-        }
+    private void pending(BackupPolicyMetadata policy, String policyName, String scheduleName, String message) {
+        policy.setPolicyStatus(BackupPolicyStatus.PENDING);
+        policy.setKubernetesPolicyName(policyName);
+        policy.setKubernetesScheduleName(scheduleName);
+        policy.setLastObservedAt(Instant.now());
+        policy.setUpdatedAt(Instant.now());
+        policyRepository.save(policy);
         updateOperation(policy, OperationStatus.RUNNING, 60, message, false);
     }
 
-    private void activate(BackupPolicyMetadata policy, KubeBlocksClient.BackupPolicyInfo observed,
-                          KubeBlocksClient.BackupScheduleInfo schedule, BackupPolicyStatus status,
-                          String message) {
-        boolean changed = policy.getPolicyStatus() != status
-                || !Objects.equals(policy.getKubernetesPolicyName(), observed.policyName())
-                || !Objects.equals(policy.getObservedStatus(), observed.observedStatus())
-                || !Objects.equals(policy.getKubernetesScheduleName(),
-                        schedule == null ? null : schedule.scheduleName())
-                || policy.getFailureCode() != null || policy.getFailureMessage() != null;
-        if (changed) {
-            policy.setPolicyStatus(status);
-            policy.setKubernetesPolicyName(observed.policyName());
-            policy.setKubernetesScheduleName(schedule == null ? null : schedule.scheduleName());
-            policy.setObservedStatus(observed.observedStatus());
-            if (observed.continuousMethod() != null && !observed.continuousMethod().isBlank()) {
-                policy.setContinuousBackupMethod(observed.continuousMethod());
-            }
-            policy.setFailureCode(null);
-            policy.setFailureMessage(null);
-            policy.setLastObservedAt(Instant.now());
-            policy.setUpdatedAt(Instant.now());
-            policyRepository.save(policy);
-        }
+    private void activate(BackupPolicyMetadata policy, String policyName, String scheduleName,
+                          BackupPolicyStatus status, String message) {
+        policy.setPolicyStatus(status);
+        policy.setKubernetesPolicyName(policyName);
+        policy.setKubernetesScheduleName(scheduleName);
+        policy.setFailureCode(null);
+        policy.setFailureMessage(null);
+        policy.setLastObservedAt(Instant.now());
+        policy.setUpdatedAt(Instant.now());
+        policyRepository.save(policy);
         updateOperation(policy, OperationStatus.SUCCEEDED, 100, message, true);
     }
 
     private void fail(BackupPolicyMetadata policy, String code, String message) {
-        if (policy.getPolicyStatus() == BackupPolicyStatus.FAILED
-                && Objects.equals(policy.getFailureCode(), code)
-                && Objects.equals(policy.getFailureMessage(), message)) return;
         policy.setPolicyStatus(BackupPolicyStatus.FAILED);
         policy.setFailureCode(code);
         policy.setFailureMessage(message);
         policy.setUpdatedAt(Instant.now());
         policyRepository.save(policy);
-        updateOperation(policy, OperationStatus.FAILED, 100, "Backup policy update failed.", true);
+        updateOperation(policy, OperationStatus.FAILED, 100, "Backup settings update failed.", true);
     }
 
     private void updateOperation(BackupPolicyMetadata policy, OperationStatus status,
                                  int progress, String message, boolean terminal) {
         if (policy.getPolicyUpdateOperationId() == null) return;
         operationRepository.findById(policy.getPolicyUpdateOperationId()).ifPresent(operation -> {
-            if (operation.getStatus() == status && operation.getProgress() == progress
-                    && Objects.equals(operation.getMessage(), message)) return;
             operation.setStatus(status);
             operation.setProvisioningStage(terminal && status == OperationStatus.SUCCEEDED
                     ? ProvisioningStage.READY : terminal ? ProvisioningStage.FAILED

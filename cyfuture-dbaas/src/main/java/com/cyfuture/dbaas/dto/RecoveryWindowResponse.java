@@ -4,15 +4,14 @@ import com.cyfuture.dbaas.model.PitrStatus;
 
 import java.time.Instant;
 
-/** Safe, observed PITR coverage. It never contains object-store or Secret data. */
+/** Product-level observed PITR coverage. */
 public record RecoveryWindowResponse(
-        String project,
         String databaseId,
-        boolean pitrEnabled,
+        boolean enabled,
         PitrStatus status,
-        String continuousMethod,
-        Instant recoverableFrom,
-        Instant recoverableUntil,
-        String message,
+        Instant startsAt,
+        Instant endsAt,
+        String errorCode,
+        String errorMessage,
         Instant observedAt
 ) {}

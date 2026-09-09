@@ -84,21 +84,12 @@ public class ProjectService {
     }
 
     public DeleteProjectResponse delete(String project) {
-        return delete(project, false);
-    }
-
-    public DeleteProjectResponse delete(String project, boolean purgeBackups) {
         ProjectMetadata metadata = requireOwnedProject(project);
         if (metadata.getStatus() == ResourceStatus.DELETED) return deletionResponse(metadata);
         if (backupRepository.existsByProjectNameAndStatusIn(project,
                 List.of(BackupStatus.PENDING, BackupStatus.RUNNING, BackupStatus.DELETING))) {
             throw new ApiException(HttpStatus.CONFLICT, "PROJECT_BACKUP_OPERATION_IN_PROGRESS", false,
                     "Project deletion is blocked while a backup operation is active.");
-        }
-        if (backupRepository.existsByProjectNameAndStatusIn(project,
-                List.of(BackupStatus.COMPLETED, BackupStatus.FAILED)) && !purgeBackups) {
-            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_BACKUPS_RETAINED", false,
-                    "Project deletion is blocked while retained backups exist. Retry with purgeBackups=true to explicitly purge them.");
         }
         if (restoreRepository.existsByProjectNameAndStatusIn(project,
                 List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))) {
@@ -107,9 +98,9 @@ public class ProjectService {
         }
         List<DatabaseMetadata> databases = databaseRepository
                 .findByProjectNameOrderByCreatedAtDesc(project);
-        if (purgeBackups && !backupRetentionService.prepareProjectPurge(project)) {
+        if (!backupRetentionService.prepareProjectBackupDeletion(project)) {
             // Desired project deletion is durable; the reconciler waits until
-            // every explicitly purged Backup CR has reached a terminal state.
+            // every known backup has reached a terminal state.
             markDatabasesDeleting(databases);
             metadata.setStatus(ResourceStatus.DELETING);
             metadata.setUpdatedAt(Instant.now());
@@ -143,14 +134,12 @@ public class ProjectService {
     /** Continues an asynchronous project deletion without revalidating user input. */
     void reconcileDeletion(ProjectMetadata metadata) {
         if (metadata.getStatus() != ResourceStatus.DELETING) return;
+        if (!backupRetentionService.prepareProjectBackupDeletion(metadata.getProjectId())) return;
         advanceDeletion(metadata, databaseRepository
                 .findByProjectNameOrderByCreatedAtDesc(metadata.getProjectId()));
     }
 
     private void advanceDeletion(ProjectMetadata metadata, List<DatabaseMetadata> databases) {
-        // Purging project backups is an explicit user choice. Reconciliation
-        // must never turn a later scheduled/completed backup into a purge just
-        // because project deletion was already requested.
         if (backupRepository.existsByProjectNameAndStatusIn(metadata.getProjectId(),
                 List.of(BackupStatus.PENDING, BackupStatus.RUNNING, BackupStatus.DELETING))
                 || backupRepository.existsByProjectNameAndStatusIn(metadata.getProjectId(),
