@@ -186,6 +186,18 @@ public class KubeBlocksClient {
 
     public void requestDelete(String namespace, String databaseId) {
         try {
+            Map<String, Object> cluster = new LinkedHashMap<>(asMap(
+                    customObjectsApi.getNamespacedCustomObject(
+                            GROUP, VERSION, namespace, CLUSTERS, databaseId).execute()));
+            // KubeBlocks' Delete policy removes the Cluster but deliberately
+            // retains its PVCs. A DBaaS database delete is destructive, so use
+            // WipeOut to remove the cluster-owned storage as well.
+            mutableChildMap(cluster, "spec").put("terminationPolicy", "WipeOut");
+            Map<String, Object> metadata = mutableChildMap(cluster, "metadata");
+            Map<String, Object> annotations = mutableChildMap(metadata, "annotations");
+            annotations.put("dbaas.cyfuture.com/deletion-protection", "false");
+            customObjectsApi.replaceNamespacedCustomObject(
+                    GROUP, VERSION, namespace, CLUSTERS, databaseId, cluster).execute();
             customObjectsApi.deleteNamespacedCustomObject(
                     GROUP, VERSION, namespace, CLUSTERS, databaseId).execute();
         } catch (io.kubernetes.client.openapi.ApiException exception) {
@@ -320,14 +332,7 @@ public class KubeBlocksClient {
      * finalizer can remove the Cluster instead of holding namespace deletion.
      */
     public void prepareProjectDatabaseDeletion(String namespace, String databaseId) {
-        try {
-            updateDeletionProtection(namespace, databaseId, false);
-            requestDelete(namespace, databaseId);
-        } catch (io.kubernetes.client.openapi.ApiException exception) {
-            if (exception.getCode() == 404) return;
-            throw new ApiException(HttpStatus.BAD_GATEWAY,
-                    "Could not prepare database for project deletion: " + kubernetesMessage(exception));
-        }
+        requestDelete(namespace, databaseId);
     }
 
     /** Ensures the namespace for a DBaaS project exists and is owned by that project. */

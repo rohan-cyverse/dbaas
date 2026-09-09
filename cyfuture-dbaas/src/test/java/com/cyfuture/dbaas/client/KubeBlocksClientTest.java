@@ -284,10 +284,27 @@ class KubeBlocksClientTest {
         verify(customObjectsApi).replaceNamespacedCustomObject(eq("apps.kubeblocks.io"), eq("v1"),
                 eq("dbaas-orders"), eq("clusters"), eq("db-orders0001"), replacement.capture());
         Map<?, ?> body = (Map<?, ?>) replacement.getValue();
-        assertEquals("Delete", ((Map<?, ?>) body.get("spec")).get("terminationPolicy"));
+        assertEquals("WipeOut", ((Map<?, ?>) body.get("spec")).get("terminationPolicy"));
         Map<?, ?> annotations = (Map<?, ?>) ((Map<?, ?>) body.get("metadata"))
                 .get("annotations");
         assertEquals("false", annotations.get("dbaas.cyfuture.com/deletion-protection"));
+        verify(customObjectsApi).deleteNamespacedCustomObject(
+                "apps.kubeblocks.io", "v1", "dbaas-orders", "clusters", "db-orders0001");
+    }
+
+    @Test
+    void databaseDeletionUsesWipeOutSoClusterPvcsAreRemoved() throws Exception {
+        when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
+                "dbaas-orders", "clusters", "db-orders0001").execute())
+                .thenReturn(observableCluster());
+
+        client.requestDelete("dbaas-orders", "db-orders0001");
+
+        ArgumentCaptor<Object> replacement = ArgumentCaptor.forClass(Object.class);
+        verify(customObjectsApi).replaceNamespacedCustomObject(eq("apps.kubeblocks.io"), eq("v1"),
+                eq("dbaas-orders"), eq("clusters"), eq("db-orders0001"), replacement.capture());
+        Map<?, ?> body = (Map<?, ?>) replacement.getValue();
+        assertEquals("WipeOut", ((Map<?, ?>) body.get("spec")).get("terminationPolicy"));
         verify(customObjectsApi).deleteNamespacedCustomObject(
                 "apps.kubeblocks.io", "v1", "dbaas-orders", "clusters", "db-orders0001");
     }
