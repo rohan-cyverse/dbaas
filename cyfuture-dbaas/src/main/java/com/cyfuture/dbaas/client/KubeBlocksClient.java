@@ -1473,6 +1473,43 @@ public class KubeBlocksClient {
         }
     }
 
+    /**
+     * Fails closed for destructive work while KubeBlocks still has an in-flight
+     * Backup CR for this Cluster. This covers a scheduled backup during the
+     * short interval before DBaaS imports it into metadata.
+     */
+    public boolean hasActiveBackup(String namespace, String databaseId) {
+        try {
+            Map<String, Object> policies = asMap(customObjectsApi.listNamespacedCustomObject(
+                    DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace,
+                    BACKUP_POLICIES).execute());
+            Set<String> policyNames = new HashSet<>();
+            for (Object item : (List<?>) policies.getOrDefault("items", List.of())) {
+                Map<String, Object> policy = asMap(item);
+                Map<String, Object> metadata = asMap(policy.get("metadata"));
+                if (!belongsToCluster(metadata, asMap(policy.get("spec")), databaseId)) continue;
+                String name = optionalText(metadata.get("name"));
+                if (name != null) policyNames.add(name);
+            }
+
+            Map<String, Object> backups = asMap(customObjectsApi.listNamespacedCustomObject(
+                    DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS).execute());
+            for (Object item : (List<?>) backups.getOrDefault("items", List.of())) {
+                Map<String, Object> backup = asMap(item);
+                Map<String, Object> metadata = asMap(backup.get("metadata"));
+                Map<String, Object> spec = asMap(backup.get("spec"));
+                String policyName = optionalText(spec.get("backupPolicyName"));
+                boolean belongs = belongsToCluster(metadata, spec, databaseId)
+                        || policyNames.contains(policyName)
+                        || hasOwnerWithAnyName(metadata, "BackupPolicy", policyNames);
+                if (belongs && backupIsActive(metadata, asMap(backup.get("status")))) return true;
+            }
+            return false;
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw backupApiFailure("check for active Backup resources", exception);
+        }
+    }
+
     /** Ensures the installed Restore OpsRequest supports PITR's restorePointInTime field. */
     private void ensureRestoreSchemaSupports(boolean pointInTime) {
         String cacheKey = pointInTime ? "point-in-time" : "full";
@@ -2002,6 +2039,20 @@ public class KubeBlocksClient {
                 .map(this::asMap)
                 .anyMatch(owner -> kind.equals(String.valueOf(owner.get("kind")))
                 && name.equals(String.valueOf(owner.get("name"))));
+    }
+
+    private boolean hasOwnerWithAnyName(Map<String, Object> metadata, String kind, Set<String> names) {
+        return ((List<?>) metadata.getOrDefault("ownerReferences", List.of())).stream()
+                .map(this::asMap)
+                .anyMatch(owner -> kind.equals(String.valueOf(owner.get("kind")))
+                        && names.contains(optionalText(owner.get("name"))));
+    }
+
+    private boolean backupIsActive(Map<String, Object> metadata, Map<String, Object> status) {
+        if (optionalText(metadata.get("deletionTimestamp")) != null) return true;
+        String phase = optionalText(status.get("phase"));
+        return phase == null || !("Completed".equalsIgnoreCase(phase)
+                || "Failed".equalsIgnoreCase(phase) || "Expired".equalsIgnoreCase(phase));
     }
 
     /** KubeBlocks versions differ in whether generated children copy the instance label. */

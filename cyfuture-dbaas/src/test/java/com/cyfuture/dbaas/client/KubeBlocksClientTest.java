@@ -402,6 +402,32 @@ class KubeBlocksClientTest {
     }
 
     @Test
+    void detectsAnActiveGeneratedBackupBeforeMetadataDiscovery() throws Exception {
+        when(customObjectsApi.listNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backuppolicies").execute())
+                .thenReturn(Map.of("items", List.of(backupPolicy(
+                        "dataprotection.kubeblocks.io/is-default-policy", null))));
+        when(customObjectsApi.listNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backups").execute()).thenReturn(Map.of("items", List.of(
+                generatedBackup("Running"))));
+
+        assertTrue(client.hasActiveBackup("dbaas-orders", "db-orders0001"));
+    }
+
+    @Test
+    void treatsCompletedGeneratedBackupAsInactiveForDeletion() throws Exception {
+        when(customObjectsApi.listNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backuppolicies").execute())
+                .thenReturn(Map.of("items", List.of(backupPolicy(
+                        "dataprotection.kubeblocks.io/is-default-policy", null))));
+        when(customObjectsApi.listNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backups").execute()).thenReturn(Map.of("items", List.of(
+                generatedBackup("Completed"))));
+
+        assertFalse(client.hasActiveBackup("dbaas-orders", "db-orders0001"));
+    }
+
+    @Test
     void disablingPitrDisablesTheContinuousSchedule() throws Exception {
         readyBackupRepository(true);
         when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
@@ -688,6 +714,18 @@ class KubeBlocksClientTest {
                                 Map.of("name", "archive-wal", "backupMethod", "archive-wal",
                                         "cronExpression", "*/5 * * * *", "enabled", continuousEnabled,
                                         "retentionPeriod", "8d"))));
+    }
+
+    private Map<String, Object> generatedBackup(String phase) {
+        return Map.of(
+                "metadata", Map.of(
+                        "name", "scheduled-backup-001",
+                        "ownerReferences", List.of(Map.of("kind", "BackupSchedule",
+                                "name", "db-orders0001-postgresql-backup-schedule"))),
+                "spec", Map.of(
+                        "backupPolicyName", "db-orders0001-postgresql-backup-policy",
+                        "backupMethod", "pg-basebackup"),
+                "status", Map.of("phase", phase));
     }
 
     private Map<String, Object> backupScheduleCrd() {

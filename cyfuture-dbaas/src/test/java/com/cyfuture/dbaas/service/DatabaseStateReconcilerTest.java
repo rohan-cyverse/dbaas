@@ -174,6 +174,23 @@ class DatabaseStateReconcilerTest {
     }
 
     @Test
+    void deletionWaitsForAnActiveKubernetesBackupBeforeRequestingClusterDeletion() {
+        DatabaseMetadata database = database(DatabaseStatus.DELETING);
+        OperationMetadata operation = deleteOperation();
+        when(kubeBlocksClient.hasActiveBackup("dbaas-orders", "db-orders0001")).thenReturn(true);
+        when(operationRepository.findByDatabaseIdAndProjectNameAndStatusIn(
+                "db-orders0001", "orders", List.of(OperationStatus.PENDING, OperationStatus.RUNNING)))
+                .thenReturn(List.of(operation));
+
+        reconciler.reconcile(database);
+
+        assertEquals(DatabaseStatus.DELETING, database.getStatus());
+        assertEquals("Database deletion is waiting for active backup or restore work", database.getMessage());
+        verify(kubeBlocksClient, never()).requestDelete("dbaas-orders", "db-orders0001");
+        verify(gateway, never()).removeRoute(database);
+    }
+
+    @Test
     void deletionWaitsForDatabaseSpecificCredentialHelpersBeforeMarkingDeleted() {
         DatabaseMetadata database = database(DatabaseStatus.DELETING);
         OperationMetadata operation = deleteOperation();

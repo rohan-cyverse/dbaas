@@ -146,6 +146,51 @@ class ProjectServiceTest {
     }
 
     @Test
+    void projectDeletionBlocksAnActiveKubernetesBackupBeforeNamespaceDeletionStarts() {
+        ProjectMetadata project = new ProjectMetadata();
+        project.setProjectId("prj-orders0001");
+        project.setOrganizationId(OrganizationService.DEFAULT_ORGANIZATION_ID);
+        project.setNamespaceName("dbaas-p-prj-orders0001");
+        project.setStatus(ResourceStatus.ACTIVE);
+        DatabaseMetadata database = new DatabaseMetadata();
+        database.setDatabaseId("db-orders0001");
+        database.setNamespaceName("dbaas-p-prj-orders0001");
+        when(projectRepository.findById(project.getProjectId())).thenReturn(Optional.of(project));
+        when(databaseRepository.findByProjectNameOrderByCreatedAtDesc(project.getProjectId()))
+                .thenReturn(java.util.List.of(database));
+        when(kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), database.getDatabaseId()))
+                .thenReturn(true);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.delete(project.getProjectId()));
+
+        assertEquals("PROJECT_BACKUP_OPERATION_IN_PROGRESS", exception.getCode());
+        assertEquals(ResourceStatus.ACTIVE, project.getStatus());
+        verify(kubeBlocksClient, never()).prepareProjectDatabaseDeletion(any(), any());
+        verify(kubeBlocksClient, never()).deleteProjectNamespace(any(), any());
+    }
+
+    @Test
+    void deletionReconciliationWaitsForAnActiveKubernetesBackup() {
+        ProjectMetadata project = new ProjectMetadata();
+        project.setProjectId("prj-orders0001");
+        project.setNamespaceName("dbaas-p-prj-orders0001");
+        project.setStatus(ResourceStatus.DELETING);
+        DatabaseMetadata database = new DatabaseMetadata();
+        database.setDatabaseId("db-orders0001");
+        database.setNamespaceName("dbaas-p-prj-orders0001");
+        when(databaseRepository.findByProjectNameOrderByCreatedAtDesc(project.getProjectId()))
+                .thenReturn(java.util.List.of(database));
+        when(kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), database.getDatabaseId()))
+                .thenReturn(true);
+
+        service.reconcileDeletion(project);
+
+        verify(kubeBlocksClient, never()).prepareProjectDatabaseDeletion(any(), any());
+        verify(kubeBlocksClient, never()).deleteProjectNamespace(any(), any());
+    }
+
+    @Test
     void deletionReconciliationMarksProjectDeletedAfterNamespaceIsGone() {
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-orders0001");

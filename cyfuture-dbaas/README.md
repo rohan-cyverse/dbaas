@@ -55,6 +55,10 @@ request uses this shape:
 }
 ```
 
+Database and project deletion are blocked while DBaaS metadata or KubeBlocks
+reports an active backup or restore. Wait for that work to complete before
+retrying deletion.
+
 Create a full backup with an optional retention override:
 
 ```json

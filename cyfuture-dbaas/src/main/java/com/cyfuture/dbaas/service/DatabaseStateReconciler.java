@@ -177,7 +177,8 @@ public class DatabaseStateReconciler {
                 update(database::setDeleteRequestedAt, Instant.now());
             }
             if (!backupRetentionService.readyForClusterDeletion(
-                    database.getProjectName(), database.getDatabaseId())) {
+                    database.getProjectName(), database.getDatabaseId())
+                    || kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), database.getDatabaseId())) {
                 update(database::setMessage,
                         "Database deletion is waiting for active backup or restore work");
                 finishDeleteOperation(database, OperationStatus.RUNNING,

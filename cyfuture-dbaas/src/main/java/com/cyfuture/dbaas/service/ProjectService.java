@@ -98,6 +98,10 @@ public class ProjectService {
         }
         List<DatabaseMetadata> databases = databaseRepository
                 .findByProjectNameOrderByCreatedAtDesc(project);
+        if (hasActiveKubernetesBackup(databases)) {
+            throw new ApiException(HttpStatus.CONFLICT, "PROJECT_BACKUP_OPERATION_IN_PROGRESS", false,
+                    "Project deletion is blocked while a backup operation is active.");
+        }
         if (!backupRetentionService.prepareProjectBackupDeletion(project)) {
             // Desired project deletion is durable; the reconciler waits until
             // every known backup has reached a terminal state.
@@ -148,6 +152,7 @@ public class ProjectService {
                 List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))) {
             return;
         }
+        if (hasActiveKubernetesBackup(databases)) return;
         for (DatabaseMetadata database : databases) {
             kubeBlocksClient.prepareProjectDatabaseDeletion(
                     database.getNamespaceName(), database.getDatabaseId());
@@ -163,6 +168,11 @@ public class ProjectService {
             metadata.setUpdatedAt(Instant.now());
             projectRepository.save(metadata);
         }
+    }
+
+    private boolean hasActiveKubernetesBackup(List<DatabaseMetadata> databases) {
+        return databases.stream().anyMatch(database -> kubeBlocksClient.hasActiveBackup(
+                database.getNamespaceName(), database.getDatabaseId()));
     }
 
     private DeleteProjectResponse deletionResponse(ProjectMetadata metadata) {

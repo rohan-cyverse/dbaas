@@ -305,7 +305,8 @@ public class DatabaseService {
                 || restoreRepository.existsByProjectNameAndSourceDatabaseIdAndStatusIn(project, databaseId,
                 List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))
                 || restoreRepository.existsByRestoredDatabaseIdAndStatusIn(databaseId,
-                List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))) {
+                List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))
+                || kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), databaseId)) {
             throw new ApiException(HttpStatus.CONFLICT, "BACKUP_OR_RESTORE_IN_PROGRESS", false,
                     "Database deletion is blocked while a backup or restore is active.");
         }
@@ -328,7 +329,8 @@ public class DatabaseService {
         database.setUpdatedAt(Instant.now());
         databaseRepository.save(database);
 
-        if (!backupRetentionService.readyForClusterDeletion(project, databaseId)) {
+        if (!backupRetentionService.readyForClusterDeletion(project, databaseId)
+                || kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), databaseId)) {
             database.setMessage("Database deletion is waiting for active backup or restore work");
             database.setUpdatedAt(Instant.now());
             databaseRepository.save(database);

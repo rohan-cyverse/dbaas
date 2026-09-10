@@ -35,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -192,6 +193,27 @@ class DatabaseServiceTest {
         assertEquals("DELETION_PROTECTION_ENABLED", exception.getCode());
         assertEquals("Deletion protection is enabled for db-orders0001. Disable it before deleting.",
                 exception.getMessage());
+    }
+
+    @Test
+    void blocksDeletionWhenKubernetesReportsAnUnimportedActiveBackup() {
+        DatabaseMetadata database = new DatabaseMetadata();
+        database.setDatabaseId("db-orders0001");
+        database.setProjectName("orders");
+        database.setNamespaceName("dbaas-orders");
+        database.setStatus(DatabaseStatus.RUNNING);
+        database.setProvisioningStage(ProvisioningStage.READY);
+        database.setDeletionProtection(false);
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(kubeBlocksClient.hasActiveBackup("dbaas-orders", "db-orders0001")).thenReturn(true);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.delete("orders", "db-orders0001"));
+
+        assertEquals(HttpStatus.CONFLICT, exception.getStatus());
+        assertEquals("BACKUP_OR_RESTORE_IN_PROGRESS", exception.getCode());
+        verify(kubeBlocksClient, never()).requestDelete("dbaas-orders", "db-orders0001");
     }
 
     @Test
