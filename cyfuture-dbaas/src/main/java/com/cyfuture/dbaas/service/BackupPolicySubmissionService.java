@@ -40,7 +40,7 @@ public class BackupPolicySubmissionService {
             BackupEngineStrategy strategy = strategies.require(database.getEngine());
             kubeBlocksClient.configureScheduledBackup(database.getNamespaceName(), policy.getProjectName(),
                     database.getDatabaseId(), strategy.manualFullMethod(),
-                    policy.isPitrEnabled() ? strategy.continuousMethod() : null, normalizer.repositoryName(),
+                    strategy.continuousMethod(), normalizer.repositoryName(),
                     normalizer.duration(policy.getRetentionDays()), policy.getCronExpression(),
                     policy.isAutoBackupEnabled(), policy.isPitrEnabled());
             if (!policy.isConfigurationApplied()) {

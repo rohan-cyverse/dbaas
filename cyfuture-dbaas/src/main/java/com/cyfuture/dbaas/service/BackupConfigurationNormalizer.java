@@ -15,9 +15,9 @@ import java.util.regex.Pattern;
 
 /**
  * Validates client backup configuration and converts a safe subset of five-field
- * cron expressions to the UTC format persisted in Cluster.spec.backup.
+ * cron expressions to the UTC format persisted in KubeBlocks BackupSchedule.
  *
- * KubeBlocks has no timezone field on Cluster.spec.backup. A DST-aware cron
+ * KubeBlocks has no timezone field on BackupSchedule. A DST-aware cron
  * cannot be converted once without changing its meaning, so it is rejected
  * rather than being scheduled at a wrong hour.
  */

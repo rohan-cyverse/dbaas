@@ -42,7 +42,6 @@ public class KubeBlocksClient {
     private static final String GROUP = "apps.kubeblocks.io";
     private static final String VERSION = "v1";
     private static final String CLUSTERS = "clusters";
-    private static final String CLUSTER_CRD = "clusters.apps.kubeblocks.io";
     private static final String CLUSTER_DEFINITIONS = "clusterdefinitions";
     private static final String OPS_GROUP = "operations.kubeblocks.io";
     private static final String OPS_VERSION = "v1alpha1";
@@ -55,6 +54,7 @@ public class KubeBlocksClient {
     private static final String BACKUP_POLICIES = "backuppolicies";
     private static final String BACKUP_POLICY_TEMPLATES = "backuppolicytemplates";
     private static final String BACKUP_SCHEDULES = "backupschedules";
+    private static final String BACKUP_SCHEDULE_CRD = "backupschedules.dataprotection.kubeblocks.io";
     private static final String BACKUP_REPOS = "backuprepos";
     private static final String APP_INSTANCE_LABEL = "app.kubernetes.io/instance";
     private static final String MANAGED_BY_LABEL = "app.kubernetes.io/managed-by";
@@ -83,7 +83,7 @@ public class KubeBlocksClient {
     private final StorageV1Api storageV1Api;
     private final Set<String> verifiedOpsRequestFields = new HashSet<>();
     private final Set<String> verifiedRestoreFields = new HashSet<>();
-    private boolean clusterBackupSchemaVerified;
+    private boolean backupScheduleSchemaVerified;
 
     @Autowired
     public KubeBlocksClient(ApiClient apiClient, DatabaseProperties properties) {
@@ -618,8 +618,8 @@ public class KubeBlocksClient {
     }
 
     /**
-     * Updates only Cluster.spec.backup. The shared BackupRepo is read and
-     * validated but never created, changed, or removed by this client.
+     * Updates the KubeBlocks-generated BackupSchedule. The shared BackupRepo
+     * is read and validated but never created, changed, or removed by this client.
      */
     public void configureScheduledBackup(String namespace, String project, String databaseId,
                                         String method, String repositoryName,
@@ -634,7 +634,7 @@ public class KubeBlocksClient {
                                         String retentionPeriod, String cronExpression,
                                         boolean enabled, boolean pitrEnabled) {
         requireReadyBackupRepository(repositoryName);
-        ensureClusterBackupSchemaSupports();
+        ensureBackupScheduleSchemaSupports();
         if (pitrEnabled && (continuousMethod == null || continuousMethod.isBlank())) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "PITR_NOT_SUPPORTED", false,
                     "The selected database engine has no installed continuous backup method.");
@@ -652,34 +652,48 @@ public class KubeBlocksClient {
                     throw new ApiException(HttpStatus.CONFLICT, "DATABASE_RESOURCE_NOT_MANAGED", false,
                             "The KubeBlocks Cluster is not owned by this DBaaS database.");
                 }
-                Map<String, Object> currentBackup = asMap(asMap(cluster.get("spec")).get("backup"));
-                // Send a merge patch containing only fields owned by this
-                // version. This avoids rewriting unrelated Cluster fields or
-                // future KubeBlocks backup fields during every reconciliation.
-                Map<String, Object> backup = new LinkedHashMap<>();
-                backup.put("enabled", enabled);
-                backup.put("method", method);
-                // A null is an intentional merge-patch removal when PITR is
-                // disabled; existing recovery points are never touched.
-                backup.put("continuousMethod", pitrEnabled ? continuousMethod : null);
-                backup.put("repoName", repositoryName);
-                backup.put("retentionPeriod", retentionPeriod);
-                if (cronExpression != null && !cronExpression.isBlank()) {
-                    backup.put("cronExpression", cronExpression);
-                } else {
-                    // JSON merge-patch null removes a previously configured
-                    // schedule when automatic backups are disabled.
-                    backup.put("cronExpression", null);
+                Map<String, Object> schedule = generatedBackupSchedule(namespace, databaseId);
+                Map<String, Object> scheduleMetadata = asMap(schedule.get("metadata"));
+                String scheduleName = optionalText(scheduleMetadata.get("name"));
+                List<?> currentSchedules = (List<?>) asMap(schedule.get("spec"))
+                        .getOrDefault("schedules", List.of());
+                List<Map<String, Object>> desiredSchedules = new ArrayList<>();
+                boolean fullMethodFound = false;
+                boolean continuousMethodFound = continuousMethod == null || continuousMethod.isBlank();
+                for (Object item : currentSchedules) {
+                    Map<String, Object> desired = new LinkedHashMap<>(asMap(item));
+                    String configuredMethod = optionalText(desired.get("backupMethod"));
+                    if (method.equals(configuredMethod)) {
+                        desired.put("enabled", enabled);
+                        if (cronExpression != null && !cronExpression.isBlank()) {
+                            desired.put("cronExpression", cronExpression);
+                        }
+                        desired.put("retentionPeriod", retentionPeriod);
+                        fullMethodFound = true;
+                    }
+                    if (continuousMethod != null && continuousMethod.equals(configuredMethod)) {
+                        // A continuous schedule has its own controller-provided
+                        // cadence. Preserve it while toggling PITR on or off.
+                        desired.put("enabled", enabled && pitrEnabled);
+                        continuousMethodFound = true;
+                    }
+                    desiredSchedules.add(desired);
                 }
-                backup.put("pitrEnabled", pitrEnabled);
-                backup.put("incrementalBackupEnabled", false);
-                // A reconciler may revisit a waiting KubeBlocks policy often.
-                // Do not generate needless Cluster writes once desired state is
-                // already present.
-                if (backupSettingsMatch(currentBackup, backup)) return;
-                Map<String, Object> patch = Map.of("spec", Map.of("backup", backup));
+                if (!fullMethodFound) {
+                    throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "BACKUP_METHOD_NOT_SUPPORTED", false,
+                            "The generated BackupSchedule does not support the selected full backup method.");
+                }
+                if (pitrEnabled && !continuousMethodFound) {
+                    throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "PITR_NOT_SUPPORTED", false,
+                            "The generated BackupSchedule does not support the selected continuous backup method.");
+                }
+                // Patch only the generated schedule list. KubeBlocks owns the
+                // BackupSchedule lifecycle and may add fields outside this list.
+                if (Objects.equals(currentSchedules, desiredSchedules)) return;
+                Map<String, Object> patch = Map.of("spec", Map.of("schedules", desiredSchedules));
                 customObjectsApi.patchNamespacedCustomObject(
-                                GROUP, VERSION, namespace, CLUSTERS, databaseId, patch)
+                                DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace,
+                                BACKUP_SCHEDULES, scheduleName, patch)
                         .fieldManager("cyfuture-dbaas")
                         .execute();
                 return;
@@ -690,16 +704,27 @@ public class KubeBlocksClient {
         }
     }
 
-    private boolean backupSettingsMatch(Map<String, Object> current, Map<String, Object> desired) {
-        for (Map.Entry<String, Object> setting : desired.entrySet()) {
-            Object expected = setting.getValue();
-            if (expected == null) {
-                if (current.containsKey(setting.getKey()) && current.get(setting.getKey()) != null) return false;
-            } else if (!Objects.equals(expected, current.get(setting.getKey()))) {
-                return false;
+    private Map<String, Object> generatedBackupSchedule(String namespace, String databaseId) {
+        try {
+            Map<String, Object> list = asMap(customObjectsApi.listNamespacedCustomObject(
+                    DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace,
+                    BACKUP_SCHEDULES).execute());
+            List<Map<String, Object>> matches = new ArrayList<>();
+            for (Object item : (List<?>) list.getOrDefault("items", List.of())) {
+                Map<String, Object> candidate = asMap(item);
+                Map<String, Object> metadata = asMap(candidate.get("metadata"));
+                if (belongsToCluster(metadata, asMap(candidate.get("spec")), databaseId)) {
+                    matches.add(candidate);
+                }
             }
+            if (matches.size() != 1) {
+                throw new ApiException(HttpStatus.CONFLICT, "BACKUP_SCHEDULE_NOT_READY", true,
+                        "The KubeBlocks BackupSchedule is not available yet.");
+            }
+            return matches.get(0);
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw backupApiFailure("read the generated BackupSchedule", exception);
         }
-        return true;
     }
 
     /** Reads the generated BackupSchedule without creating or mutating it. */
@@ -1201,25 +1226,6 @@ public class KubeBlocksClient {
         spec.put("clusterDef", settings.getClusterDefinition());
         spec.put("topology", request.mode() == DatabaseMode.SHARDING ? "sharding" : settings.getTopology());
         spec.put("terminationPolicy", request.deletionProtection() ? "DoNotTerminate" : "Delete");
-        if (request.backup() != null) {
-            ensureClusterBackupSchemaSupports();
-            int retentionDays = request.backup().retentionDays() == null
-                    ? 7 : request.backup().retentionDays();
-            boolean pitrEnabled = Boolean.TRUE.equals(request.backup().pitrEnabled());
-            Map<String, Object> backup = new LinkedHashMap<>();
-            backup.put("enabled", Boolean.TRUE.equals(request.backup().scheduled()));
-            backup.put("method", backupMethod(request.engine()));
-            backup.put("continuousMethod", pitrEnabled ? continuousBackupMethod(request.engine()) : null);
-            backup.put("repoName", properties.getBackup().getRepositoryName());
-            backup.put("retentionPeriod", retentionDays + "d");
-            if (request.backup().schedule() != null && !request.backup().schedule().isBlank()) {
-                backup.put("cronExpression", request.backup().schedule());
-            }
-            backup.put("pitrEnabled", pitrEnabled);
-            backup.put("incrementalBackupEnabled", false);
-            spec.put("backup", backup);
-        }
-
         if (request.mode() == DatabaseMode.SHARDING) {
             Map<String, Object> shard = new LinkedHashMap<>();
             shard.put("name", "shard");
@@ -1313,22 +1319,6 @@ public class KubeBlocksClient {
                     * number(asMap(sharding.get("template")).get("replicas"));
         }
         return expected;
-    }
-
-    private String backupMethod(DatabaseEngine engine) {
-        return switch (engine) {
-            case POSTGRESQL -> "pg-basebackup";
-            case MYSQL -> "xtrabackup";
-            case MONGODB -> "dump";
-        };
-    }
-
-    private String continuousBackupMethod(DatabaseEngine engine) {
-        return switch (engine) {
-            case POSTGRESQL -> "archive-wal";
-            case MYSQL -> "archive-binlog";
-            case MONGODB -> "archive-oplog";
-        };
     }
 
     private boolean serviceReady(String namespace, String databaseId, Map<String, Object> cluster) {
@@ -1459,27 +1449,27 @@ public class KubeBlocksClient {
         return Map.of();
     }
 
-    /** Verifies the exact installed Cluster v1 backup schema before any patch/create uses it. */
-    private void ensureClusterBackupSchemaSupports() {
+    /** Verifies the generated BackupSchedule schema before changing a schedule. */
+    private void ensureBackupScheduleSchemaSupports() {
         synchronized (this) {
-            if (clusterBackupSchemaVerified) return;
+            if (backupScheduleSchemaVerified) return;
         }
         try {
             Map<String, Object> crd = asMap(customObjectsApi.getClusterCustomObject(
-                    "apiextensions.k8s.io", "v1", "customresourcedefinitions", CLUSTER_CRD).execute());
-            Map<String, Object> properties = crdSpecProperties(crd, VERSION);
-            Map<String, Object> backup = asMap(asMap(properties.get("backup")).get("properties"));
-            List<String> required = List.of("enabled", "method", "continuousMethod", "repoName",
-                    "retentionPeriod", "cronExpression", "pitrEnabled", "incrementalBackupEnabled");
-            if (!backup.keySet().containsAll(required)) {
-                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "PITR_NOT_SUPPORTED", false,
-                        "The installed KubeBlocks Cluster CRD does not expose the required backup fields.");
+                    "apiextensions.k8s.io", "v1", "customresourcedefinitions", BACKUP_SCHEDULE_CRD).execute());
+            Map<String, Object> properties = crdSpecProperties(crd, DATA_PROTECTION_VERSION);
+            Map<String, Object> schedules = asMap(asMap(properties.get("schedules")).get("items"));
+            Map<String, Object> fields = asMap(schedules.get("properties"));
+            List<String> required = List.of("backupMethod", "cronExpression", "enabled", "retentionPeriod");
+            if (!fields.keySet().containsAll(required)) {
+                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "BACKUP_SCHEDULE_NOT_SUPPORTED", false,
+                        "The installed KubeBlocks BackupSchedule CRD does not expose the required schedule fields.");
             }
             synchronized (this) {
-                clusterBackupSchemaVerified = true;
+                backupScheduleSchemaVerified = true;
             }
         } catch (io.kubernetes.client.openapi.ApiException exception) {
-            throw backupApiFailure("inspect the Cluster backup CRD", exception);
+            throw backupApiFailure("inspect the BackupSchedule CRD", exception);
         }
     }
 

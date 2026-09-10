@@ -56,8 +56,8 @@ class KubeBlocksClientTest {
                 "customresourcedefinitions", "opsrequests.operations.kubeblocks.io")
                 .execute()).thenReturn(opsRequestCrd());
         when(customObjectsApi.getClusterCustomObject("apiextensions.k8s.io", "v1",
-                "customresourcedefinitions", "clusters.apps.kubeblocks.io")
-                .execute()).thenReturn(clusterCrd());
+                "customresourcedefinitions", "backupschedules.dataprotection.kubeblocks.io")
+                .execute()).thenReturn(backupScheduleCrd());
         when(customObjectsApi.createNamespacedCustomObject(eq("operations.kubeblocks.io"),
                 eq("v1alpha1"), eq("dbaas-orders"), eq("opsrequests"), any()).execute())
                 .thenReturn(Map.of());
@@ -359,51 +359,91 @@ class KubeBlocksClientTest {
     }
 
     @Test
-    void scheduledBackupConfigurationPatchesOnlyClusterSpecBackup() throws Exception {
+    void scheduledBackupConfigurationPatchesGeneratedBackupSchedule() throws Exception {
         readyBackupRepository(true);
-        Map<String, Object> cluster = new java.util.LinkedHashMap<>();
-        cluster.put("metadata", Map.of("name", "db-orders0001", "labels", Map.of(
-                "app.kubernetes.io/managed-by", "cyfuture-dbaas",
-                "dbaas.cyfuture.com/project", "prj-orders",
-                "dbaas.cyfuture.com/database-id", "db-orders0001")));
-        cluster.put("spec", new java.util.LinkedHashMap<>(Map.of("componentSpecs", List.of())));
+        Map<String, Object> cluster = managedCluster();
         when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
                 "dbaas-orders", "clusters", "db-orders0001").execute()).thenReturn(cluster);
+        when(customObjectsApi.listNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backupschedules").execute())
+                .thenReturn(Map.of("items", List.of(backupSchedule(false, false))));
         client.configureScheduledBackup("dbaas-orders", "prj-orders", "db-orders0001",
                 "pg-basebackup", "cyfuture-dbaas-backuprepo", "7d", "0 2 * * *", true);
 
         ArgumentCaptor<Object> body = ArgumentCaptor.forClass(Object.class);
-        verify(customObjectsApi).patchNamespacedCustomObject(eq("apps.kubeblocks.io"), eq("v1"),
-                eq("dbaas-orders"), eq("clusters"), eq("db-orders0001"), body.capture());
-        Map<?, ?> backup = (Map<?, ?>) ((Map<?, ?>) ((Map<?, ?>) body.getValue()).get("spec")).get("backup");
-        assertEquals(true, backup.get("enabled"));
-        assertEquals("pg-basebackup", backup.get("method"));
-        assertEquals("cyfuture-dbaas-backuprepo", backup.get("repoName"));
-        assertEquals("7d", backup.get("retentionPeriod"));
-        assertEquals("0 2 * * *", backup.get("cronExpression"));
-        assertEquals(false, backup.get("pitrEnabled"));
+        verify(customObjectsApi).patchNamespacedCustomObject(eq("dataprotection.kubeblocks.io"),
+                eq("v1alpha1"), eq("dbaas-orders"), eq("backupschedules"),
+                eq("db-orders0001-postgresql-backup-schedule"), body.capture());
+        List<?> schedules = (List<?>) ((Map<?, ?>) ((Map<?, ?>) body.getValue()).get("spec"))
+                .get("schedules");
+        Map<?, ?> full = (Map<?, ?>) schedules.get(0);
+        assertEquals(true, full.get("enabled"));
+        assertEquals("pg-basebackup", full.get("backupMethod"));
+        assertEquals("7d", full.get("retentionPeriod"));
+        assertEquals("0 2 * * *", full.get("cronExpression"));
     }
 
     @Test
-    void scheduledBackupConfigurationDoesNotRewriteAnUnchangedCluster() throws Exception {
+    void scheduledBackupConfigurationDoesNotRewriteAnUnchangedSchedule() throws Exception {
         readyBackupRepository(true);
-        Map<String, Object> cluster = new java.util.LinkedHashMap<>();
-        cluster.put("metadata", Map.of("name", "db-orders0001", "labels", Map.of(
-                "app.kubernetes.io/managed-by", "cyfuture-dbaas",
-                "dbaas.cyfuture.com/project", "prj-orders",
-                "dbaas.cyfuture.com/database-id", "db-orders0001")));
-        cluster.put("spec", new java.util.LinkedHashMap<>(Map.of("backup", Map.of(
-                "enabled", true, "method", "pg-basebackup", "repoName", "cyfuture-dbaas-backuprepo",
-                "retentionPeriod", "7d", "cronExpression", "0 2 * * *", "pitrEnabled", false,
-                "incrementalBackupEnabled", false))));
+        Map<String, Object> cluster = managedCluster();
         when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
                 "dbaas-orders", "clusters", "db-orders0001").execute()).thenReturn(cluster);
+        when(customObjectsApi.listNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backupschedules").execute())
+                .thenReturn(Map.of("items", List.of(backupSchedule(true, false))));
 
         client.configureScheduledBackup("dbaas-orders", "prj-orders", "db-orders0001",
                 "pg-basebackup", "cyfuture-dbaas-backuprepo", "7d", "0 2 * * *", true);
 
-        verify(customObjectsApi, never()).patchNamespacedCustomObject(eq("apps.kubeblocks.io"), eq("v1"),
-                eq("dbaas-orders"), eq("clusters"), eq("db-orders0001"), any());
+        verify(customObjectsApi, never()).patchNamespacedCustomObject(eq("dataprotection.kubeblocks.io"),
+                eq("v1alpha1"), eq("dbaas-orders"), eq("backupschedules"),
+                eq("db-orders0001-postgresql-backup-schedule"), any());
+    }
+
+    @Test
+    void disablingPitrDisablesTheContinuousSchedule() throws Exception {
+        readyBackupRepository(true);
+        when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
+                "dbaas-orders", "clusters", "db-orders0001").execute()).thenReturn(managedCluster());
+        when(customObjectsApi.listNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backupschedules").execute())
+                .thenReturn(Map.of("items", List.of(backupSchedule(true, true))));
+
+        client.configureScheduledBackup("dbaas-orders", "prj-orders", "db-orders0001",
+                "pg-basebackup", "archive-wal", "cyfuture-dbaas-backuprepo", "7d",
+                "0 2 * * *", true, false);
+
+        ArgumentCaptor<Object> body = ArgumentCaptor.forClass(Object.class);
+        verify(customObjectsApi).patchNamespacedCustomObject(eq("dataprotection.kubeblocks.io"),
+                eq("v1alpha1"), eq("dbaas-orders"), eq("backupschedules"),
+                eq("db-orders0001-postgresql-backup-schedule"), body.capture());
+        List<?> schedules = (List<?>) ((Map<?, ?>) ((Map<?, ?>) body.getValue()).get("spec"))
+                .get("schedules");
+        assertEquals(false, ((Map<?, ?>) schedules.get(1)).get("enabled"));
+    }
+
+    @Test
+    void enablingPitrEnablesTheContinuousScheduleWithoutChangingItsCadence() throws Exception {
+        readyBackupRepository(true);
+        when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
+                "dbaas-orders", "clusters", "db-orders0001").execute()).thenReturn(managedCluster());
+        when(customObjectsApi.listNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backupschedules").execute())
+                .thenReturn(Map.of("items", List.of(backupSchedule(false, false))));
+
+        client.configureScheduledBackup("dbaas-orders", "prj-orders", "db-orders0001",
+                "pg-basebackup", "archive-wal", "cyfuture-dbaas-backuprepo", "7d",
+                "0 2 * * *", true, true);
+
+        ArgumentCaptor<Object> body = ArgumentCaptor.forClass(Object.class);
+        verify(customObjectsApi).patchNamespacedCustomObject(eq("dataprotection.kubeblocks.io"),
+                eq("v1alpha1"), eq("dbaas-orders"), eq("backupschedules"),
+                eq("db-orders0001-postgresql-backup-schedule"), body.capture());
+        List<?> schedules = (List<?>) ((Map<?, ?>) ((Map<?, ?>) body.getValue()).get("spec"))
+                .get("schedules");
+        assertEquals(true, ((Map<?, ?>) schedules.get(1)).get("enabled"));
+        assertEquals("*/5 * * * *", ((Map<?, ?>) schedules.get(1)).get("cronExpression"));
     }
 
     @Test
@@ -567,7 +607,7 @@ class KubeBlocksClientTest {
     }
 
     @Test
-    void databaseCreationCarriesNormalizedBackupSpecWhenConfigured() throws Exception {
+    void databaseCreationDefersBackupScheduleUntilKubeBlocksGeneratesIt() throws Exception {
         CreateDatabaseRequest backupRequest = new CreateDatabaseRequest("orders-db", null,
                 DatabaseEngine.POSTGRESQL, DatabaseMode.REPLICATION, "test-version", SizePlan.C1G1,
                 10, 2, 0, null, List.of(), false, Map.of(),
@@ -578,10 +618,8 @@ class KubeBlocksClientTest {
         ArgumentCaptor<Object> body = ArgumentCaptor.forClass(Object.class);
         verify(customObjectsApi).createNamespacedCustomObject(eq("apps.kubeblocks.io"), eq("v1"),
                 eq("dbaas-orders"), eq("clusters"), body.capture());
-        Map<?, ?> backup = (Map<?, ?>) ((Map<?, ?>) ((Map<?, ?>) body.getValue()).get("spec")).get("backup");
-        assertEquals("pg-basebackup", backup.get("method"));
-        assertEquals("30 20 * * *", backup.get("cronExpression"));
-        assertEquals(false, backup.get("pitrEnabled"));
+        Map<?, ?> spec = (Map<?, ?>) ((Map<?, ?>) body.getValue()).get("spec");
+        assertFalse(spec.containsKey("backup"));
     }
 
     private void readyBackupRepository(boolean defaultRepository) throws Exception {
@@ -627,21 +665,44 @@ class KubeBlocksClientTest {
                         "spec", Map.of("properties", properties))))))));
     }
 
-    private Map<String, Object> clusterCrd() {
-        Map<String, Object> backup = new java.util.LinkedHashMap<>();
-        backup.put("enabled", Map.of("type", "boolean"));
-        backup.put("method", Map.of("type", "string"));
-        backup.put("continuousMethod", Map.of("type", "string"));
-        backup.put("repoName", Map.of("type", "string"));
-        backup.put("retentionPeriod", Map.of("type", "string"));
-        backup.put("cronExpression", Map.of("type", "string"));
-        backup.put("pitrEnabled", Map.of("type", "boolean"));
-        backup.put("incrementalBackupEnabled", Map.of("type", "boolean"));
+    private Map<String, Object> managedCluster() {
+        return Map.of("metadata", Map.of("name", "db-orders0001", "labels", Map.of(
+                "app.kubernetes.io/managed-by", "cyfuture-dbaas",
+                "dbaas.cyfuture.com/project", "prj-orders",
+                "dbaas.cyfuture.com/database-id", "db-orders0001")),
+                "spec", Map.of("componentSpecs", List.of()));
+    }
+
+    private Map<String, Object> backupSchedule(boolean fullEnabled, boolean continuousEnabled) {
+        return Map.of(
+                "metadata", Map.of(
+                        "name", "db-orders0001-postgresql-backup-schedule",
+                        "labels", Map.of("app.kubernetes.io/instance", "db-orders0001"),
+                        "ownerReferences", List.of(Map.of("kind", "Cluster", "name", "db-orders0001"))),
+                "spec", Map.of(
+                        "backupPolicyName", "db-orders0001-postgresql-backup-policy",
+                        "schedules", List.of(
+                                Map.of("name", "pg-basebackup", "backupMethod", "pg-basebackup",
+                                        "cronExpression", "0 2 * * *", "enabled", fullEnabled,
+                                        "retentionPeriod", "7d"),
+                                Map.of("name", "archive-wal", "backupMethod", "archive-wal",
+                                        "cronExpression", "*/5 * * * *", "enabled", continuousEnabled,
+                                        "retentionPeriod", "8d"))));
+    }
+
+    private Map<String, Object> backupScheduleCrd() {
+        Map<String, Object> schedule = new java.util.LinkedHashMap<>();
+        schedule.put("backupMethod", Map.of("type", "string"));
+        schedule.put("cronExpression", Map.of("type", "string"));
+        schedule.put("enabled", Map.of("type", "boolean"));
+        schedule.put("retentionPeriod", Map.of("type", "string"));
+        Map<String, Object> scheduleList = Map.of(
+                "type", "array", "items", Map.of("properties", schedule));
+        Map<String, Object> spec = Map.of("properties", Map.of("schedules", scheduleList));
+        Map<String, Object> root = Map.of("properties", Map.of("spec", spec));
         return Map.of("spec", Map.of("versions", List.of(Map.of(
-                "name", "v1",
-                "schema", Map.of("openAPIV3Schema", Map.of("properties", Map.of(
-                        "spec", Map.of("properties", Map.of(
-                                "backup", Map.of("properties", backup))))))))));
+                "name", "v1alpha1",
+                "schema", Map.of("openAPIV3Schema", root)))));
     }
 
     private Map<String, Object> cluster() {
