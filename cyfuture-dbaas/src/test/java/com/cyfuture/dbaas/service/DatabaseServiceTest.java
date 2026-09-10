@@ -3,7 +3,9 @@ package com.cyfuture.dbaas.service;
 import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.client.DatabaseObservation;
 import com.cyfuture.dbaas.config.DatabaseProperties;
+import com.cyfuture.dbaas.dto.BackupSettingsRequest;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
+import com.cyfuture.dbaas.entity.BackupPolicyMetadata;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.OperationMetadata;
 import com.cyfuture.dbaas.entity.ProjectMetadata;
@@ -20,6 +22,7 @@ import com.cyfuture.dbaas.repository.RestoreRequestMetadataRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.http.HttpStatus;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
@@ -42,6 +45,7 @@ class DatabaseServiceTest {
     private ProjectService projects;
     private FriendlyNameGenerator friendlyNames;
     private KubeBlocksClient kubeBlocksClient;
+    private BackupPolicyService backupPolicyService;
     private DatabaseService service;
 
     @BeforeEach
@@ -60,11 +64,17 @@ class DatabaseServiceTest {
         when(repository.findByProjectNameAndIdempotencyKey(anyString(), anyString()))
                 .thenReturn(Optional.empty());
         kubeBlocksClient = mock(KubeBlocksClient.class);
+        backupPolicyService = mock(BackupPolicyService.class);
+        when(backupPolicyService.normalizeForCreation(any(BackupSettingsRequest.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(backupPolicyService.initialPolicy(any(DatabaseMetadata.class),
+                any(BackupSettingsRequest.class), anyString()))
+                .thenReturn(new BackupPolicyMetadata());
         service = new DatabaseService(kubeBlocksClient, properties, repository,
                 provisioning, metadataCreation, mock(CredentialLifecycleService.class),
                 projects, mock(SharedGatewayService.class), mock(OperationMetadataRepository.class), friendlyNames,
                 mock(BackupMetadataRepository.class), mock(RestoreRequestMetadataRepository.class),
-                mock(BackupPolicyService.class), mock(BackupRetentionService.class));
+                backupPolicyService, mock(BackupRetentionService.class));
     }
 
     @Test
@@ -73,7 +83,7 @@ class DatabaseServiceTest {
 
         ArgumentCaptor<DatabaseMetadata> database = ArgumentCaptor.forClass(DatabaseMetadata.class);
         ArgumentCaptor<OperationMetadata> operation = ArgumentCaptor.forClass(OperationMetadata.class);
-        verify(metadataCreation).save(database.capture(), operation.capture());
+        verify(metadataCreation).save(database.capture(), operation.capture(), any(BackupPolicyMetadata.class));
         assertEquals("orders", database.getValue().getProjectName());
         assertEquals("dbaas-orders", database.getValue().getNamespaceName());
         assertEquals("orders", operation.getValue().getProjectName());
@@ -93,12 +103,12 @@ class DatabaseServiceTest {
                 .thenReturn("pg-quiet-mango-a7k9");
         CreateDatabaseRequest unnamed = new CreateDatabaseRequest(null, "Orders", DatabaseEngine.POSTGRESQL,
                 DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2, 10, 1, 0,
-                "Asia/Kolkata", null, true, Map.of("env", "test"));
+                "Asia/Kolkata", null, true, Map.of("env", "test"), backup());
 
         var response = service.create("orders", "create-orders-003", unnamed, "157.37.137.185");
 
         ArgumentCaptor<DatabaseMetadata> database = ArgumentCaptor.forClass(DatabaseMetadata.class);
-        verify(metadataCreation).save(database.capture(), any());
+        verify(metadataCreation).save(database.capture(), any(OperationMetadata.class), any(BackupPolicyMetadata.class));
         assertEquals("pg-quiet-mango-a7k9", database.getValue().getDisplayName());
         assertEquals("pg-quiet-mango-a7k9", response.name());
     }
@@ -111,7 +121,7 @@ class DatabaseServiceTest {
         var response = service.create("orders", "create-orders-004", request(), "157.37.137.185");
 
         ArgumentCaptor<DatabaseMetadata> database = ArgumentCaptor.forClass(DatabaseMetadata.class);
-        verify(metadataCreation).save(database.capture(), any());
+        verify(metadataCreation).save(database.capture(), any(OperationMetadata.class), any(BackupPolicyMetadata.class));
         assertEquals("orders-db-m4p7", database.getValue().getDisplayName());
         assertEquals("orders-db-m4p7", response.name());
     }
@@ -184,9 +194,40 @@ class DatabaseServiceTest {
                 exception.getMessage());
     }
 
+    @Test
+    void createRequiresBackupConfiguration() {
+        CreateDatabaseRequest missingBackup = new CreateDatabaseRequest("orders-db", "Orders",
+                DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2,
+                10, 1, 0, "Asia/Kolkata", null, true, Map.of("env", "test"));
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.create("orders", "create-orders-005", missingBackup, "157.37.137.185"));
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatus());
+        assertEquals("BACKUP_SETTINGS_REQUIRED", exception.getCode());
+    }
+
+    @Test
+    void createRequiresCompleteBackupConfiguration() {
+        CreateDatabaseRequest incompleteBackup = new CreateDatabaseRequest("orders-db", "Orders",
+                DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2,
+                10, 1, 0, "Asia/Kolkata", null, true, Map.of("env", "test"),
+                new BackupSettingsRequest(true, null, "0 2 * * *", "UTC", false));
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.create("orders", "create-orders-006", incompleteBackup, "157.37.137.185"));
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatus());
+        assertEquals("BACKUP_SETTINGS_INCOMPLETE", exception.getCode());
+    }
+
     private CreateDatabaseRequest request() {
         return new CreateDatabaseRequest("orders-db", "Orders", DatabaseEngine.POSTGRESQL,
                 DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2, 10, 1, 0,
-                "Asia/Kolkata", null, true, Map.of("env", "test"));
+                "Asia/Kolkata", null, true, Map.of("env", "test"), backup());
+    }
+
+    private BackupSettingsRequest backup() {
+        return new BackupSettingsRequest(true, 7, "0 2 * * *", "UTC", false);
     }
 }

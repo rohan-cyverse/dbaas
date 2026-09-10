@@ -17,18 +17,12 @@ public class MetadataCreationService {
     private final OperationMetadataRepository operationRepository;
     private final BackupPolicyMetadataRepository backupPolicyRepository;
 
-    @Transactional
-    public void save(DatabaseMetadata database, OperationMetadata operation) {
-        databaseRepository.save(database);
-        operationRepository.save(operation);
-    }
-
-    /** Persists database creation and optional desired backup policy atomically. */
+    /** Persists database creation and its required desired backup policy atomically. */
     @Transactional
     public void save(DatabaseMetadata database, OperationMetadata operation,
                      BackupPolicyMetadata backupPolicy) {
         databaseRepository.save(database);
-        if (backupPolicy != null) backupPolicyRepository.save(backupPolicy);
+        backupPolicyRepository.save(backupPolicy);
         operationRepository.save(operation);
     }
 }

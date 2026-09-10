@@ -275,7 +275,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"remark\":\"Create PostgreSQL - Standalone created from Postman\",\"engine\":\"POSTGRESQL\",\"mode\":\"STANDALONE\",\"version\":\"17.5.0\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":1,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
+              "raw": "{\"remark\":\"Create PostgreSQL - Standalone created from Postman\",\"engine\":\"POSTGRESQL\",\"mode\":\"STANDALONE\",\"version\":\"17.5.0\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":1,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"},\"backup\":{\"scheduled\":true,\"retentionDays\":7,\"schedule\":\"0 2 * * *\",\"timezone\":\"UTC\",\"pitrEnabled\":false}}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
@@ -391,7 +391,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"mysql-standalone-{{$randomInt}}\",\"remark\":\"Create MySQL - Standalone created from Postman\",\"engine\":\"MYSQL\",\"mode\":\"STANDALONE\",\"version\":\"8.0.44\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":1,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
+              "raw": "{\"name\":\"mysql-standalone-{{$randomInt}}\",\"remark\":\"Create MySQL - Standalone created from Postman\",\"engine\":\"MYSQL\",\"mode\":\"STANDALONE\",\"version\":\"8.0.44\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":1,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"},\"backup\":{\"scheduled\":true,\"retentionDays\":7,\"schedule\":\"0 2 * * *\",\"timezone\":\"UTC\",\"pitrEnabled\":false}}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
@@ -449,7 +449,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"mysql-replication-{{$randomInt}}\",\"remark\":\"Create MySQL - Replication created from Postman\",\"engine\":\"MYSQL\",\"mode\":\"REPLICATION\",\"version\":\"8.0.44\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":2,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
+              "raw": "{\"name\":\"mysql-replication-{{$randomInt}}\",\"remark\":\"Create MySQL - Replication created from Postman\",\"engine\":\"MYSQL\",\"mode\":\"REPLICATION\",\"version\":\"8.0.44\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":2,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"},\"backup\":{\"scheduled\":true,\"retentionDays\":7,\"schedule\":\"0 2 * * *\",\"timezone\":\"UTC\",\"pitrEnabled\":false}}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
@@ -507,7 +507,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"mongo-standalone-{{$randomInt}}\",\"remark\":\"Create MongoDB - Standalone created from Postman\",\"engine\":\"MONGODB\",\"mode\":\"STANDALONE\",\"version\":\"8.0.17\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":1,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
+              "raw": "{\"name\":\"mongo-standalone-{{$randomInt}}\",\"remark\":\"Create MongoDB - Standalone created from Postman\",\"engine\":\"MONGODB\",\"mode\":\"STANDALONE\",\"version\":\"8.0.17\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":1,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"},\"backup\":{\"scheduled\":true,\"retentionDays\":7,\"schedule\":\"0 2 * * *\",\"timezone\":\"UTC\",\"pitrEnabled\":false}}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
@@ -565,7 +565,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"mongo-replicaset-{{$randomInt}}\",\"remark\":\"Create MongoDB - Replica Set created from Postman\",\"engine\":\"MONGODB\",\"mode\":\"REPLICA_SET\",\"version\":\"8.0.17\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":3,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
+              "raw": "{\"name\":\"mongo-replicaset-{{$randomInt}}\",\"remark\":\"Create MongoDB - Replica Set created from Postman\",\"engine\":\"MONGODB\",\"mode\":\"REPLICA_SET\",\"version\":\"8.0.17\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":3,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"},\"backup\":{\"scheduled\":true,\"retentionDays\":7,\"schedule\":\"0 2 * * *\",\"timezone\":\"UTC\",\"pitrEnabled\":false}}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
@@ -623,7 +623,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"name\":\"mongo-sharding-{{$randomInt}}\",\"remark\":\"Create MongoDB - Sharding created from Postman\",\"engine\":\"MONGODB\",\"mode\":\"SHARDING\",\"version\":\"8.0.17\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":3,\"shards\":2,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"}}"
+              "raw": "{\"name\":\"mongo-sharding-{{$randomInt}}\",\"remark\":\"Create MongoDB - Sharding created from Postman\",\"engine\":\"MONGODB\",\"mode\":\"SHARDING\",\"version\":\"8.0.17\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":3,\"shards\":2,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"},\"backup\":{\"scheduled\":true,\"retentionDays\":7,\"schedule\":\"0 2 * * *\",\"timezone\":\"UTC\",\"pitrEnabled\":false}}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",
@@ -643,7 +643,7 @@
           "response": []
         }
       ],
-      "description": "Create examples for all engine/mode combinations supported by the backend. Name is optional: omitted names receive a unique engine-prefixed handle. Each successful request stores databaseId and operationId for the lifecycle requests below."
+      "description": "Create examples for all engine/mode combinations supported by the backend. Backup configuration is required at creation; edit each backup object to choose the desired schedule, retention, timezone, and PITR setting. Name is optional: omitted names receive a unique engine-prefixed handle. Each successful request stores databaseId and operationId for the lifecycle requests below."
     },
     {
       "name": "Scaling & Expansion",

@@ -4,6 +4,7 @@ import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.client.DatabaseObservation;
 import com.cyfuture.dbaas.config.DatabaseProperties;
 import com.cyfuture.dbaas.dto.ConnectionResponse;
+import com.cyfuture.dbaas.dto.BackupSettingsRequest;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
 import com.cyfuture.dbaas.dto.CreateDatabaseResponse;
 import com.cyfuture.dbaas.dto.DatabaseResponse;
@@ -83,9 +84,8 @@ public class DatabaseService {
                 .getNamespaceName();
         validateIdempotencyKey(idempotencyKey);
         request = publicRequest(request, clientIp);
-        if (request.backup() != null) {
-            request = withBackup(request, backupPolicyService.normalizeForCreation(request.backup()));
-        }
+        validateBackupConfigurationForCreation(request.backup());
+        request = withBackup(request, backupPolicyService.normalizeForCreation(request.backup()));
         String requestHash = requestHash(request);
         DatabaseMetadata existing = databaseRepository
                 .findByProjectNameAndIdempotencyKey(project, idempotencyKey)
@@ -137,14 +137,13 @@ public class DatabaseService {
         database.setMessage("Provisioning request queued");
         database.setCreatedAt(now);
         database.setUpdatedAt(now);
-        BackupPolicyMetadata backupPolicy = request.backup() == null ? null
-                : backupPolicyService.initialPolicy(database, request.backup(), operationId);
+        BackupPolicyMetadata backupPolicy = backupPolicyService.initialPolicy(database, request.backup(), operationId);
+        if (backupPolicy == null) {
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "BACKUP_POLICY_INITIALIZATION_FAILED", true,
+                    "Backup configuration could not be initialized. Retry the database creation request.");
+        }
         try {
-            if (backupPolicy == null) {
-                metadataCreationService.save(database, operationFor(operationId, databaseId, project, now));
-            } else {
-                metadataCreationService.save(database, operationFor(operationId, databaseId, project, now), backupPolicy);
-            }
+            metadataCreationService.save(database, operationFor(operationId, databaseId, project, now), backupPolicy);
         } catch (DataIntegrityViolationException exception) {
             DatabaseMetadata duplicate = databaseRepository
                     .findByProjectNameAndIdempotencyKey(project, idempotencyKey)
@@ -555,6 +554,25 @@ public class DatabaseService {
         if (cidrs.contains("0.0.0.0/0"))
             throw new ApiException(HttpStatus.BAD_REQUEST,
                     "0.0.0.0/0 is not allowed. Restrict access to customer IP ranges");
+    }
+
+    /** New database requests must make backup behavior an explicit customer choice. */
+    private void validateBackupConfigurationForCreation(BackupSettingsRequest backup) {
+        if (backup == null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "BACKUP_SETTINGS_REQUIRED", false,
+                    "backup configuration is required when creating a database.");
+        }
+        if (backup.scheduled() == null || backup.retentionDays() == null
+                || backup.timezone() == null || backup.timezone().isBlank()
+                || backup.pitrEnabled() == null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "BACKUP_SETTINGS_INCOMPLETE", false,
+                    "backup must explicitly set scheduled, retentionDays, timezone, and pitrEnabled.");
+        }
+        if (Boolean.TRUE.equals(backup.scheduled())
+                && (backup.schedule() == null || backup.schedule().isBlank())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "BACKUP_CRON_REQUIRED", false,
+                    "schedule is required when scheduled backups are enabled.");
+        }
     }
 
     private List<String> safeCidrs(List<String> cidrs) {

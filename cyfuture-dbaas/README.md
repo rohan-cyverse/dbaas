@@ -39,7 +39,11 @@ completed full backup first. `POST /backups` and `POST /restores` require an
 `Idempotency-Key` header. Reuse the same key only when retrying the same
 request.
 
-Backup settings configure scheduled backups, retention, and PITR:
+Backup configuration is mandatory when creating a database: the customer must
+explicitly choose scheduled backups, retention, timezone, and PITR. When
+`scheduled` is `true`, `schedule` is also required. Use `scheduled: false` to
+explicitly opt out of automatic backups. The `backup` field in the create
+request uses this shape:
 
 ```json
 {

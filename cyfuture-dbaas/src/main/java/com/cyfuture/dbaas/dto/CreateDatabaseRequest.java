@@ -34,14 +34,21 @@ public record CreateDatabaseRequest(
         @Schema(example = "true") boolean deletionProtection,
         @Schema(example = "{\"environment\":\"test\",\"team\":\"orders\"}")
         @Size(max = 20) Map<String, String> tags,
-        @Schema(description = "Optional scheduled full-backup settings. PITR is available for supported database configurations.")
+        @Schema(
+                description = "Required scheduled-backup configuration. Explicitly set scheduled, retentionDays, timezone, and pitrEnabled; schedule is required when scheduled is true. PITR is available for supported database configurations.",
+                requiredMode = Schema.RequiredMode.REQUIRED
+        )
+        @NotNull(message = "backup configuration is required when creating a database")
         @Valid BackupSettingsRequest backup
 ) {
     public CreateDatabaseRequest {
         if (allowedCidrs == null) allowedCidrs = List.of();
     }
 
-    /** Keeps Java callers compiled against the original database-create payload. */
+    /**
+     * Keeps Java callers compiled against the original database-create payload.
+     * DatabaseService rejects this legacy form because new databases require backup settings.
+     */
     public CreateDatabaseRequest(String name, String remark, DatabaseEngine engine, DatabaseMode mode,
                                  String version, SizePlan size, int storageGi, int replicas, int shards,
                                  String timezone, List<String> allowedCidrs,
