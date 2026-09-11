@@ -4,7 +4,6 @@ import com.cyfuture.dbaas.config.DatabaseProperties;
 import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.dto.CreateProjectRequest;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
-import com.cyfuture.dbaas.entity.OrganizationMetadata;
 import com.cyfuture.dbaas.entity.ProjectMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.BackupStatus;
@@ -33,37 +32,30 @@ import static org.mockito.Mockito.when;
 class ProjectServiceTest {
     private ProjectMetadataRepository projectRepository;
     private DatabaseMetadataRepository databaseRepository;
-    private OrganizationService organizationService;
     private FriendlyNameGenerator friendlyNames;
     private KubeBlocksClient kubeBlocksClient;
     private BackupMetadataRepository backupRepository;
     private RestoreRequestMetadataRepository restoreRepository;
     private BackupRetentionService retention;
     private ProjectService service;
-    private OrganizationMetadata defaultOrganization;
 
     @BeforeEach
     void setUp() {
         projectRepository = mock(ProjectMetadataRepository.class);
         databaseRepository = mock(DatabaseMetadataRepository.class);
-        organizationService = mock(OrganizationService.class);
         friendlyNames = mock(FriendlyNameGenerator.class);
         kubeBlocksClient = mock(KubeBlocksClient.class);
         backupRepository = mock(BackupMetadataRepository.class);
         restoreRepository = mock(RestoreRequestMetadataRepository.class);
         retention = mock(BackupRetentionService.class);
-        service = new ProjectService(projectRepository, databaseRepository, organizationService, friendlyNames,
+        service = new ProjectService(projectRepository, databaseRepository, friendlyNames,
                 new DatabaseProperties(), kubeBlocksClient, backupRepository, restoreRepository, retention);
         when(retention.prepareProjectBackupDeletion(org.mockito.ArgumentMatchers.anyString())).thenReturn(true);
         when(projectRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
-        defaultOrganization = new OrganizationMetadata();
-        defaultOrganization.setOrganizationId(OrganizationService.DEFAULT_ORGANIZATION_ID);
-        defaultOrganization.setStatus(ResourceStatus.ACTIVE);
-        when(organizationService.requireDefaultOrganization()).thenReturn(defaultOrganization);
     }
 
     @Test
-    void createsProjectsWithinTheBackendManagedOrganizationUsingImmutableNamespaceIdentity() {
+    void createsProjectsUsingImmutableNamespaceIdentity() {
         var orders = service.create(new CreateProjectRequest("Orders", null));
         var billing = service.create(new CreateProjectRequest("Billing", null));
 
@@ -73,19 +65,14 @@ class ProjectServiceTest {
         verify(projectRepository, times(4)).save(saved.capture());
         assertTrue(saved.getAllValues().get(0).getNamespaceName()
                 .matches("dbaas-p-prj-[a-f0-9]{12}"));
-        assertEquals(OrganizationService.DEFAULT_ORGANIZATION_ID,
-                saved.getAllValues().get(0).getOrganizationId());
-        assertEquals(OrganizationService.DEFAULT_ORGANIZATION_ID, orders.organizationId());
         assertEquals(ResourceStatus.ACTIVE, orders.status());
         assertEquals(ResourceStatus.ACTIVE, billing.status());
-        verify(organizationService, times(2)).requireDefaultOrganization();
     }
 
     @Test
     void projectDeletionRequestsNamespaceRemovalAndCanBeRetried() {
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-orders0001");
-        project.setOrganizationId(OrganizationService.DEFAULT_ORGANIZATION_ID);
         project.setNamespaceName("dbaas-p-prj-orders0001");
         project.setStatus(ResourceStatus.ACTIVE);
         DatabaseMetadata database = new DatabaseMetadata();
@@ -124,7 +111,6 @@ class ProjectServiceTest {
     void projectDeletionWaitsForClusterFinalizersBeforeDeletingNamespace() {
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-orders0001");
-        project.setOrganizationId(OrganizationService.DEFAULT_ORGANIZATION_ID);
         project.setNamespaceName("dbaas-p-prj-orders0001");
         project.setStatus(ResourceStatus.ACTIVE);
         DatabaseMetadata database = new DatabaseMetadata();
@@ -149,7 +135,6 @@ class ProjectServiceTest {
     void projectDeletionBlocksAnActiveKubernetesBackupBeforeNamespaceDeletionStarts() {
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-orders0001");
-        project.setOrganizationId(OrganizationService.DEFAULT_ORGANIZATION_ID);
         project.setNamespaceName("dbaas-p-prj-orders0001");
         project.setStatus(ResourceStatus.ACTIVE);
         DatabaseMetadata database = new DatabaseMetadata();
@@ -235,35 +220,27 @@ class ProjectServiceTest {
     }
 
     @Test
-    void listsOnlyProjectsOwnedByTheBackendManagedOrganization() {
+    void listsProjectsNewestFirst() {
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-123456789abc");
-        project.setOrganizationId(OrganizationService.DEFAULT_ORGANIZATION_ID);
         project.setDisplayName("orders");
         project.setNamespaceName("dbaas-p-" + project.getProjectId());
         project.setStatus(ResourceStatus.ACTIVE);
-        when(projectRepository.findByOrganizationIdOrderByCreatedAtDesc(
-                OrganizationService.DEFAULT_ORGANIZATION_ID)).thenReturn(java.util.List.of(project));
+        when(projectRepository.findAllByOrderByCreatedAtDesc()).thenReturn(java.util.List.of(project));
 
         var projects = service.list();
 
         assertEquals(1, projects.size());
         assertEquals(project.getProjectId(), projects.get(0).projectId());
-        assertEquals(OrganizationService.DEFAULT_ORGANIZATION_ID, projects.get(0).organizationId());
-        verify(projectRepository).findByOrganizationIdOrderByCreatedAtDesc(
-                OrganizationService.DEFAULT_ORGANIZATION_ID);
+        verify(projectRepository).findAllByOrderByCreatedAtDesc();
     }
 
     @Test
-    void rejectsAProjectOutsideTheBackendManagedOrganization() {
-        ProjectMetadata project = new ProjectMetadata();
-        project.setProjectId("prj-another0001");
-        project.setOrganizationId("org-abcdef123456");
-        project.setStatus(ResourceStatus.ACTIVE);
-        when(projectRepository.findById(project.getProjectId())).thenReturn(Optional.of(project));
+    void explainsWhenAProjectDoesNotExist() {
+        when(projectRepository.findById("prj-missing0001")).thenReturn(Optional.empty());
 
         ApiException exception = assertThrows(ApiException.class,
-                () -> service.requireActiveProject(project.getProjectId()));
+                () -> service.requireActiveProject("prj-missing0001"));
 
         assertEquals(org.springframework.http.HttpStatus.NOT_FOUND, exception.getStatus());
         assertEquals("PROJECT_NOT_FOUND", exception.getCode());
@@ -275,7 +252,6 @@ class ProjectServiceTest {
     void activatesAnExistingProvisioningProjectBeforeItIsUsed() {
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-orders0001");
-        project.setOrganizationId(OrganizationService.DEFAULT_ORGANIZATION_ID);
         project.setNamespaceName("dbaas-p-prj-orders0001");
         project.setStatus(ResourceStatus.PROVISIONING);
         when(projectRepository.findById(project.getProjectId())).thenReturn(Optional.of(project));
@@ -291,7 +267,6 @@ class ProjectServiceTest {
     void explainsWhyADeletingProjectCannotAcceptDatabaseRequests() {
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-orders0001");
-        project.setOrganizationId(OrganizationService.DEFAULT_ORGANIZATION_ID);
         project.setStatus(ResourceStatus.DELETING);
         when(projectRepository.findById(project.getProjectId())).thenReturn(Optional.of(project));
 
