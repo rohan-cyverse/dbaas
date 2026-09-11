@@ -6,6 +6,7 @@ import com.cyfuture.dbaas.dto.BackupSettingsRequest;
 import com.cyfuture.dbaas.model.DatabaseEngine;
 import com.cyfuture.dbaas.model.DatabaseMode;
 import com.cyfuture.dbaas.model.SizePlan;
+import io.kubernetes.client.openapi.ApiClient;
 import io.kubernetes.client.openapi.apis.CoreV1Api;
 import io.kubernetes.client.openapi.apis.CustomObjectsApi;
 import io.kubernetes.client.openapi.apis.StorageV1Api;
@@ -44,14 +45,17 @@ import static org.mockito.Mockito.when;
 class KubeBlocksClientTest {
     private CustomObjectsApi customObjectsApi;
     private CoreV1Api coreV1Api;
+    private ApiClient apiClient;
     private KubeBlocksClient client;
 
     @BeforeEach
     void setUp() throws Exception {
         customObjectsApi = mock(CustomObjectsApi.class, RETURNS_DEEP_STUBS);
         coreV1Api = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        apiClient = mock(ApiClient.class);
+        when(apiClient.escapeString(any())).thenAnswer(invocation -> invocation.getArgument(0));
         client = new KubeBlocksClient(new DatabaseProperties(), customObjectsApi,
-                coreV1Api, mock(StorageV1Api.class));
+                coreV1Api, mock(StorageV1Api.class), apiClient);
         when(customObjectsApi.getClusterCustomObject("apiextensions.k8s.io", "v1",
                 "customresourcedefinitions", "opsrequests.operations.kubeblocks.io")
                 .execute()).thenReturn(opsRequestCrd());
@@ -61,6 +65,21 @@ class KubeBlocksClientTest {
         when(customObjectsApi.createNamespacedCustomObject(eq("operations.kubeblocks.io"),
                 eq("v1alpha1"), eq("dbaas-orders"), eq("opsrequests"), any()).execute())
                 .thenReturn(Map.of());
+    }
+
+    @SuppressWarnings("rawtypes")
+    private Map<?, ?> capturedGeneratedBackupSchedulePatch() throws Exception {
+        ArgumentCaptor<String> path = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Object> body = ArgumentCaptor.forClass(Object.class);
+        ArgumentCaptor<Map> headers = ArgumentCaptor.forClass(Map.class);
+        verify(apiClient).buildCall(any(), path.capture(), eq("PATCH"), any(), any(), body.capture(),
+                headers.capture(), any(), any(), any(), any());
+        assertEquals("/apis/dataprotection.kubeblocks.io/v1alpha1/namespaces/dbaas-orders"
+                        + "/backupschedules/db-orders0001-postgresql-backup-schedule",
+                path.getValue());
+        assertEquals("application/merge-patch+json", headers.getValue().get("Content-Type"));
+        assertEquals("application/json", headers.getValue().get("Accept"));
+        return (Map<?, ?>) body.getValue();
     }
 
     @Test
@@ -370,11 +389,7 @@ class KubeBlocksClientTest {
         client.configureScheduledBackup("dbaas-orders", "prj-orders", "db-orders0001",
                 "pg-basebackup", "cyfuture-dbaas-backuprepo", "7d", "0 2 * * *", true);
 
-        ArgumentCaptor<Object> body = ArgumentCaptor.forClass(Object.class);
-        verify(customObjectsApi).patchNamespacedCustomObject(eq("dataprotection.kubeblocks.io"),
-                eq("v1alpha1"), eq("dbaas-orders"), eq("backupschedules"),
-                eq("db-orders0001-postgresql-backup-schedule"), body.capture());
-        List<?> schedules = (List<?>) ((Map<?, ?>) ((Map<?, ?>) body.getValue()).get("spec"))
+        List<?> schedules = (List<?>) ((Map<?, ?>) capturedGeneratedBackupSchedulePatch().get("spec"))
                 .get("schedules");
         Map<?, ?> full = (Map<?, ?>) schedules.get(0);
         assertEquals(true, full.get("enabled"));
@@ -396,9 +411,25 @@ class KubeBlocksClientTest {
         client.configureScheduledBackup("dbaas-orders", "prj-orders", "db-orders0001",
                 "pg-basebackup", "cyfuture-dbaas-backuprepo", "7d", "0 2 * * *", true);
 
-        verify(customObjectsApi, never()).patchNamespacedCustomObject(eq("dataprotection.kubeblocks.io"),
-                eq("v1alpha1"), eq("dbaas-orders"), eq("backupschedules"),
-                eq("db-orders0001-postgresql-backup-schedule"), any());
+        verify(apiClient, never()).buildCall(any(), any(), eq("PATCH"), any(), any(), any(), any(),
+                any(), any(), any(), any());
+    }
+
+    @Test
+    void disabledScheduledBackupLeavesTheGeneratedFullScheduleDisabled() throws Exception {
+        readyBackupRepository(true);
+        when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
+                "dbaas-orders", "clusters", "db-orders0001").execute()).thenReturn(managedCluster());
+        when(customObjectsApi.listNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "backupschedules").execute())
+                .thenReturn(Map.of("items", List.of(backupSchedule(true, false))));
+
+        client.configureScheduledBackup("dbaas-orders", "prj-orders", "db-orders0001",
+                "pg-basebackup", "cyfuture-dbaas-backuprepo", "7d", "0 2 * * *", false);
+
+        List<?> schedules = (List<?>) ((Map<?, ?>) capturedGeneratedBackupSchedulePatch().get("spec"))
+                .get("schedules");
+        assertFalse((Boolean) ((Map<?, ?>) schedules.get(0)).get("enabled"));
     }
 
     @Test
@@ -440,11 +471,7 @@ class KubeBlocksClientTest {
                 "pg-basebackup", "archive-wal", "cyfuture-dbaas-backuprepo", "7d",
                 "0 2 * * *", true, false);
 
-        ArgumentCaptor<Object> body = ArgumentCaptor.forClass(Object.class);
-        verify(customObjectsApi).patchNamespacedCustomObject(eq("dataprotection.kubeblocks.io"),
-                eq("v1alpha1"), eq("dbaas-orders"), eq("backupschedules"),
-                eq("db-orders0001-postgresql-backup-schedule"), body.capture());
-        List<?> schedules = (List<?>) ((Map<?, ?>) ((Map<?, ?>) body.getValue()).get("spec"))
+        List<?> schedules = (List<?>) ((Map<?, ?>) capturedGeneratedBackupSchedulePatch().get("spec"))
                 .get("schedules");
         assertEquals(false, ((Map<?, ?>) schedules.get(1)).get("enabled"));
     }
@@ -462,11 +489,7 @@ class KubeBlocksClientTest {
                 "pg-basebackup", "archive-wal", "cyfuture-dbaas-backuprepo", "7d",
                 "0 2 * * *", true, true);
 
-        ArgumentCaptor<Object> body = ArgumentCaptor.forClass(Object.class);
-        verify(customObjectsApi).patchNamespacedCustomObject(eq("dataprotection.kubeblocks.io"),
-                eq("v1alpha1"), eq("dbaas-orders"), eq("backupschedules"),
-                eq("db-orders0001-postgresql-backup-schedule"), body.capture());
-        List<?> schedules = (List<?>) ((Map<?, ?>) ((Map<?, ?>) body.getValue()).get("spec"))
+        List<?> schedules = (List<?>) ((Map<?, ?>) capturedGeneratedBackupSchedulePatch().get("spec"))
                 .get("schedules");
         assertEquals(true, ((Map<?, ?>) schedules.get(1)).get("enabled"));
         assertEquals("*/5 * * * *", ((Map<?, ?>) schedules.get(1)).get("cronExpression"));

@@ -22,8 +22,8 @@ public class OperationService {
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND,
                         "Operation " + operationId + " was not found"));
         // Completed/failed backup and restore operations remain pollable while
-        // a source database or project is deleting; ownership still applies.
-        projectService.requireProjectOwnership(operation.getProjectName());
+        // a source database or project is deleting; its history remains available.
+        projectService.requireExistingProject(operation.getProjectName());
         return operationMapper.toResponse(operation);
     }
 

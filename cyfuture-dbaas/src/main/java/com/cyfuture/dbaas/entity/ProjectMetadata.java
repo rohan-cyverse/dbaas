@@ -23,9 +23,6 @@ public class ProjectMetadata {
     @Column(length = 32)
     private String projectId;
 
-    @Column(nullable = false, length = 32)
-    private String organizationId;
-
     @Column(nullable = false, length = 64)
     private String displayName;
 

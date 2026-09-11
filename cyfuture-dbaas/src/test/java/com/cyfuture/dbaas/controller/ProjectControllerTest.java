@@ -19,7 +19,7 @@ class ProjectControllerTest {
         ProjectService projectService = mock(ProjectService.class);
         ProjectController controller = new ProjectController(projectService);
         ProjectResponse project = new ProjectResponse(
-                "prj-123456789abc", "org-000000000000", "Orders", "Production databases",
+                "prj-123456789abc", "Orders", "Production databases",
                 ResourceStatus.ACTIVE, Instant.EPOCH, Instant.EPOCH);
         when(projectService.create(new CreateProjectRequest("Orders", "Production databases")))
                 .thenReturn(project);

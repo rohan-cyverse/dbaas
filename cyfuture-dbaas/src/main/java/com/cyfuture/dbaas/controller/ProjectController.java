@@ -32,7 +32,7 @@ public class ProjectController {
     private final ProjectService projectService;
 
     @PostMapping
-    @Operation(summary = "Create a project bound to the backend-managed organization")
+    @Operation(summary = "Create a project")
     public ResponseEntity<ProjectResponse> create(
             @Valid @RequestBody CreateProjectRequest request) {
         ProjectResponse project = projectService.create(request);

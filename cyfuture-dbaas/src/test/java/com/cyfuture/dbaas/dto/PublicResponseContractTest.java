@@ -48,7 +48,7 @@ class PublicResponseContractTest {
     @Test
     void projectAndOperationResponsesDoNotRepeatRouteScope() throws Exception {
         String projectJson = objectMapper.writeValueAsString(new ProjectResponse(
-                "prj-123456789012", "org-000000000000", "Orders", "Production databases",
+                "prj-123456789012", "Orders", "Production databases",
                 ResourceStatus.ACTIVE, Instant.EPOCH, Instant.EPOCH));
         String operationJson = objectMapper.writeValueAsString(new OperationResponse(
                 "op-123456789012", OperationType.CREATE, OperationStatus.RUNNING,
@@ -57,7 +57,7 @@ class PublicResponseContractTest {
         String projectDeletionJson = objectMapper.writeValueAsString(new DeleteProjectResponse(
                 "prj-123456789012", ResourceStatus.DELETING, "Project deletion is in progress."));
 
-        assertTrue(projectJson.contains("organizationId"));
+        assertFalse(projectJson.contains("organizationId"));
         assertFalse(projectJson.contains("namespace"));
         assertFalse(operationJson.contains("databaseId"));
         assertFalse(operationJson.contains("project"));

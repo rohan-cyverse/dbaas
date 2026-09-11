@@ -8,6 +8,7 @@ import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.DatabaseMode;
 import com.cyfuture.dbaas.model.SizePlan;
 import io.kubernetes.client.openapi.ApiClient;
+import io.kubernetes.client.openapi.Pair;
 import io.kubernetes.client.custom.Quantity;
 import io.kubernetes.client.openapi.apis.CoreV1Api;
 import io.kubernetes.client.openapi.apis.CustomObjectsApi;
@@ -22,6 +23,7 @@ import io.kubernetes.client.openapi.models.V1Taint;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
+import okhttp3.Call;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -78,6 +80,7 @@ public class KubeBlocksClient {
     private static final String PREFER_IN_PLACE = "PreferInPlace";
 
     private final DatabaseProperties properties;
+    private final ApiClient apiClient;
     private final CustomObjectsApi customObjectsApi;
     private final CoreV1Api coreV1Api;
     private final StorageV1Api storageV1Api;
@@ -88,6 +91,7 @@ public class KubeBlocksClient {
     @Autowired
     public KubeBlocksClient(ApiClient apiClient, DatabaseProperties properties) {
         this.properties = properties;
+        this.apiClient = apiClient;
         this.customObjectsApi = new CustomObjectsApi(apiClient);
         this.coreV1Api = new CoreV1Api(apiClient);
         this.storageV1Api = new StorageV1Api(apiClient);
@@ -95,7 +99,15 @@ public class KubeBlocksClient {
 
     KubeBlocksClient(DatabaseProperties properties, CustomObjectsApi customObjectsApi,
                      CoreV1Api coreV1Api, StorageV1Api storageV1Api) {
+        this(properties, customObjectsApi, coreV1Api, storageV1Api,
+                customObjectsApi.getApiClient());
+    }
+
+    KubeBlocksClient(DatabaseProperties properties, CustomObjectsApi customObjectsApi,
+                     CoreV1Api coreV1Api, StorageV1Api storageV1Api,
+                     ApiClient apiClient) {
         this.properties = properties;
+        this.apiClient = apiClient;
         this.customObjectsApi = customObjectsApi;
         this.coreV1Api = coreV1Api;
         this.storageV1Api = storageV1Api;
@@ -691,11 +703,7 @@ public class KubeBlocksClient {
                 // BackupSchedule lifecycle and may add fields outside this list.
                 if (Objects.equals(currentSchedules, desiredSchedules)) return;
                 Map<String, Object> patch = Map.of("spec", Map.of("schedules", desiredSchedules));
-                customObjectsApi.patchNamespacedCustomObject(
-                                DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace,
-                                BACKUP_SCHEDULES, scheduleName, patch)
-                        .fieldManager("cyfuture-dbaas")
-                        .execute();
+                mergePatchGeneratedBackupSchedule(namespace, scheduleName, patch);
                 return;
             } catch (io.kubernetes.client.openapi.ApiException exception) {
                 if (exception.getCode() == 409 && attempt < 2) continue;
@@ -725,6 +733,29 @@ public class KubeBlocksClient {
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             throw backupApiFailure("read the generated BackupSchedule", exception);
         }
+    }
+
+    /**
+     * CustomObjectsApi currently sends {@code application/json} for PATCH,
+     * which Kubernetes rejects for custom resources. Use an explicit merge
+     * patch so enabling a generated BackupSchedule lets KubeBlocks create its
+     * controller-owned CronJob; disabling it removes that trigger.
+     */
+    private void mergePatchGeneratedBackupSchedule(String namespace, String scheduleName,
+                                                    Map<String, Object> patch)
+            throws io.kubernetes.client.openapi.ApiException {
+        String path = "/apis/" + apiClient.escapeString(DATA_PROTECTION_GROUP)
+                + "/" + apiClient.escapeString(DATA_PROTECTION_VERSION)
+                + "/namespaces/" + apiClient.escapeString(namespace)
+                + "/" + apiClient.escapeString(BACKUP_SCHEDULES)
+                + "/" + apiClient.escapeString(scheduleName);
+        Map<String, String> headers = Map.of(
+                "Accept", "application/json",
+                "Content-Type", "application/merge-patch+json");
+        Call call = apiClient.buildCall(null, path, "PATCH",
+                List.of(new Pair("fieldManager", "cyfuture-dbaas")), List.of(), patch,
+                headers, Map.of(), Map.of(), new String[]{"BearerToken"}, null);
+        apiClient.execute(call);
     }
 
     /** Reads the generated BackupSchedule without creating or mutating it. */

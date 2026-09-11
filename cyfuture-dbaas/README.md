@@ -55,6 +55,13 @@ request uses this shape:
 }
 ```
 
+When `scheduled` is `true`, DBaaS waits for KubeBlocks to generate the
+database's `BackupSchedule`, then enables the selected full-backup entry with
+the requested cron expression and retention. KubeBlocks owns the resulting
+Kubernetes `CronJob`. When `scheduled` is `false`, that entry remains disabled
+and no scheduled-backup CronJob is created. The schedule can appear a few
+seconds after the database Cluster because it is controller-generated.
+
 Database and project deletion are blocked while DBaaS metadata or KubeBlocks
 reports an active backup or restore. Wait for that work to complete before
 retrying deletion.

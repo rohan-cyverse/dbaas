@@ -61,7 +61,16 @@ public class BackupPolicyReconciler {
             fail(policy, "BACKUP_SOURCE_METADATA_MISSING", "Backup source metadata is unavailable.");
             return;
         }
-        if (!policy.isConfigurationApplied()) submissionService.submit(policy.getPolicyId());
+        // A create request persists its desired backup settings before the
+        // Cluster and its controller-owned BackupSchedule exist. Submit the
+        // settings asynchronously, then wait for that write to succeed before
+        // treating the generated schedule as active. This prevents a merely
+        // available (but still disabled) BackupSchedule from being reported as
+        // an enabled scheduled backup.
+        if (!policy.isConfigurationApplied()) {
+            submissionService.submit(policy.getPolicyId());
+            return;
+        }
         BackupEngineStrategy strategy = strategies.require(source.getEngine());
         KubeBlocksClient.BackupPolicyInfo observed = kubeBlocksClient.resolveReadyBackupPolicy(
                 source.getNamespaceName(), source.getDatabaseId(), source.getEngine(), strategy.manualFullMethod(),

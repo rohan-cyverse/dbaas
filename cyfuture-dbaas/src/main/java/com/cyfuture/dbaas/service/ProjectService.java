@@ -29,7 +29,6 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -37,7 +36,6 @@ import java.util.UUID;
 public class ProjectService {
     private final ProjectMetadataRepository projectRepository;
     private final DatabaseMetadataRepository databaseRepository;
-    private final OrganizationService organizationService;
     private final FriendlyNameGenerator friendlyNameGenerator;
     private final DatabaseProperties properties;
     private final KubeBlocksClient kubeBlocksClient;
@@ -46,11 +44,9 @@ public class ProjectService {
     private final BackupRetentionService backupRetentionService;
 
     public ProjectResponse create(CreateProjectRequest request) {
-        String organizationId = organizationService.requireDefaultOrganization().getOrganizationId();
         Instant now = Instant.now();
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-" + shortId());
-        project.setOrganizationId(organizationId);
         project.setDisplayName(blank(request.displayName()) ? friendlyNameGenerator.next() : request.displayName().trim());
         project.setDescription(request.description());
         project.setNamespaceName(namespaceFor(project.getProjectId()));
@@ -67,7 +63,7 @@ public class ProjectService {
     }
 
     public List<ProjectResponse> list() {
-        return projectRepository.findByOrganizationIdOrderByCreatedAtDesc(currentOrganizationId())
+        return projectRepository.findAllByOrderByCreatedAtDesc()
                 .stream().map(this::toResponse).toList();
     }
 
@@ -84,7 +80,7 @@ public class ProjectService {
     }
 
     public DeleteProjectResponse delete(String project) {
-        ProjectMetadata metadata = requireOwnedProject(project);
+        ProjectMetadata metadata = requireProject(project);
         if (metadata.getStatus() == ResourceStatus.DELETED) return deletionResponse(metadata);
         if (backupRepository.existsByProjectNameAndStatusIn(project,
                 List.of(BackupStatus.PENDING, BackupStatus.RUNNING, BackupStatus.DELETING))) {
@@ -185,7 +181,7 @@ public class ProjectService {
     }
 
     public ProjectMetadata requireActiveProject(String project) {
-        ProjectMetadata metadata = requireOwnedProject(project);
+        ProjectMetadata metadata = requireProject(project);
         if (metadata.getStatus() == ResourceStatus.PROVISIONING) {
             metadata = activateNamespace(metadata);
         }
@@ -200,28 +196,15 @@ public class ProjectService {
         return metadata;
     }
 
-    private ProjectMetadata requireOwnedProject(String project) {
-        String organizationId = currentOrganizationId();
-        ProjectMetadata metadata = projectRepository
+    private ProjectMetadata requireProject(String project) {
+        return projectRepository
                 .findById(project)
                 .orElseThrow(this::projectNotFound);
-        if (!organizationId.equals(metadata.getOrganizationId())) {
-            // Do not disclose whether another organization's immutable project ID exists.
-            throw projectNotFound();
-        }
-        return metadata;
     }
 
-    /** Ownership check for immutable history, including a project that is deleting or deleted. */
-    public ProjectMetadata requireProjectOwnership(String project) {
-        return requireOwnedProject(project);
-    }
-
-    /** Limits global backup/restore catalog responses to projects owned by the current organization. */
-    public Set<String> ownedProjectIds() {
-        return projectRepository.findByOrganizationIdOrderByCreatedAtDesc(currentOrganizationId()).stream()
-                .map(ProjectMetadata::getProjectId)
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    /** Includes a project that is deleting or deleted, for immutable history lookups. */
+    public ProjectMetadata requireExistingProject(String project) {
+        return requireProject(project);
     }
 
     private ApiException projectNotFound() {
@@ -235,10 +218,6 @@ public class ProjectService {
         project.setStatus(ResourceStatus.ACTIVE);
         project.setUpdatedAt(Instant.now());
         return projectRepository.save(project);
-    }
-
-    private String currentOrganizationId() {
-        return organizationService.requireDefaultOrganization().getOrganizationId();
     }
 
     private String namespaceFor(String project) {
@@ -271,7 +250,6 @@ public class ProjectService {
     private ProjectResponse toResponse(ProjectMetadata metadata) {
         return new ProjectResponse(
                 metadata.getProjectId(),
-                metadata.getOrganizationId(),
                 metadata.getDisplayName(),
                 metadata.getDescription(),
                 metadata.getStatus(),

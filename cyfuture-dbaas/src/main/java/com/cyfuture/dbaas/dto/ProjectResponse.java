@@ -6,7 +6,6 @@ import java.time.Instant;
 
 public record ProjectResponse(
         String projectId,
-        String organizationId,
         String displayName,
         String description,
         ResourceStatus status,
