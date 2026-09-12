@@ -2,81 +2,15 @@
   "info": {
     "_postman_id": "321fcd7f-040f-4080-86b7-8c66abbfad9f",
     "name": "Cyfuture DBaaS",
-    "description": "DBaaS creates and manages the default organization in the backend. Project responses expose organizationId, and every project is server-bound to that organization. Immutable IDs (org-xxxx, prj-xxxx, db-xxxx) identify resources; database names are human-facing handles. Omit a database name to receive a unique engine-prefixed handle. Keep an Idempotency-Key unchanged only when retrying the exact same request. The Backup and Restore folder supports manual full backups, scheduled backups, retention, PITR, and restores into new databases.",
+    "description": "DBaaS manages projects and databases. Immutable IDs (prj-xxxx, db-xxxx) identify resources; database names are human-facing handles. Omit a database name to receive a unique engine-prefixed handle. Keep an Idempotency-Key unchanged only when retrying the exact same request. The Backup and Restore folder supports manual full backups, scheduled backups, retention, PITR, and restores into new databases.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "_exporter_id": "56329818",
     "_collection_link": "https://go.postman.co/collection/56329818-321fcd7f-040f-4080-86b7-8c66abbfad9f?source=collection_link"
   },
   "item": [
     {
-      "name": "Organization and Project",
+      "name": "Projects",
       "item": [
-        {
-          "name": "Get Organization",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "pm.test('Organization is available', function () { pm.response.to.have.status(200); });",
-                  "if (pm.response.code === 200) {",
-                  "  const body = pm.response.json();",
-                  "  pm.expect(body.organizationId).to.match(/^org-/);",
-                  "  pm.expect(body.displayName).to.be.a('string').and.not.empty;",
-                  "  pm.collectionVariables.set('organizationId', body.organizationId);",
-                  "}"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/organization",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "organization"
-              ]
-            },
-            "description": "Returns the backend-managed default organization. If the seed has not yet run, the backend creates it with an immutable ID and a friendly display name."
-          },
-          "response": []
-        },
-        {
-          "name": "Update Organization",
-          "request": {
-            "method": "PUT",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"displayName\": \"Customer Platform\",\n  \"description\": \"Updated tenant details\"\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/organization",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "organization"
-              ]
-            },
-            "description": "Only displayName and description are accepted. The backend-managed organization ID, status, and project ownership cannot be changed by this API."
-          },
-          "response": []
-        },
         {
           "name": "Create Project",
           "event": [
@@ -88,7 +22,6 @@
                   "if (pm.response.code === 201) {",
                   "  const body = pm.response.json();",
                   "  pm.expect(body.projectId).to.match(/^prj-/);",
-                  "  pm.expect(body.organizationId).to.equal(pm.collectionVariables.get('organizationId'));",
                   "  pm.collectionVariables.set('projectId', body.projectId);",
                   "}"
                 ],
@@ -119,7 +52,7 @@
                 "projects"
               ]
             },
-            "description": "Only displayName and description are accepted. The backend assigns the default organization, projectId, and namespace internally. Omit displayName if you want a generated friendly name."
+            "description": "Only displayName and description are accepted. The backend assigns projectId and namespace internally. Omit displayName if you want a generated friendly name."
           },
           "response": []
         },
@@ -230,7 +163,7 @@
           "response": []
         }
       ],
-      "description": "The organization is created and selected by the backend. There is no user-facing create, list, or organization-selection request. Users may only update its display name and description; projects are always bound to its immutable organizationId."
+      "description": "Create, list, update, get, and delete DBaaS projects. Projects are top-level resources; there is no organization selection or organization API."
     },
     {
       "name": "Database Provisioning",
@@ -1562,10 +1495,6 @@
     },
     {
       "key": "projectId",
-      "value": ""
-    },
-    {
-      "key": "organizationId",
       "value": ""
     },
     {

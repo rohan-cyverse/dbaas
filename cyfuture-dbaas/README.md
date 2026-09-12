@@ -7,7 +7,7 @@ backup, recovery, credentials, and public connection APIs.
 ## Resource model
 
 ```text
-Organization -> Projects -> Databases
+Projects -> Databases
 ```
 
 Each project owns its database resources. Database IDs and project IDs are
@@ -104,7 +104,6 @@ meaning: remove the known backup and its retained data.
 
 ## Other API areas
 
-- Organization: `GET`/`PUT /api/v1/organization`
 - Projects: `/api/v1/projects`
 - Databases: `/api/v1/projects/{projectId}/databases`
 - Database connection and credentials: database-scoped connection and rotation routes
