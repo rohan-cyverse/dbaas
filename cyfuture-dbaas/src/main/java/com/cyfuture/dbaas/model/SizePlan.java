@@ -22,7 +22,7 @@ public enum SizePlan {
     C1G1("250m", "1", "1Gi", "1Gi"),
     C1G2("500m", "1", "2Gi", "2Gi"),
     C2G4("1", "2", "4Gi", "4Gi"),
-    C4G8("2", "4", "8Gi", "8Gi")
+    C4G8("2", "4", "8Gi", "8Gi");
 
 
     private final String cpuRequest;
