@@ -62,7 +62,8 @@ public class PitrRecoveryService {
             throw new ApiException(HttpStatus.CONFLICT, "CONTINUOUS_BACKUP_UNHEALTHY", false,
                     "Continuous backup coverage is not healthy for point-in-time recovery.");
         }
-        if (window.status() != PitrStatus.READY || window.baseBackup() == null) {
+        if (window.status() != PitrStatus.READY || window.baseBackup() == null
+                || window.latestContinuousBackup() == null) {
             throw new ApiException(HttpStatus.CONFLICT, "PITR_WINDOW_UNAVAILABLE", true,
                     "A recoverable point-in-time window is not available yet.");
         }

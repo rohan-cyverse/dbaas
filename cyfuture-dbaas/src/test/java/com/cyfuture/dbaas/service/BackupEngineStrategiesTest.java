@@ -7,7 +7,6 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BackupEngineStrategiesTest {
@@ -22,10 +21,13 @@ class BackupEngineStrategiesTest {
     }
 
     @Test
-    void allowsMongoStandaloneAndReplicaSetForDumpBackup() {
+    void allowsCurrentMongoTopologiesForBackupAndPitr() {
         var mongo = strategies.require(DatabaseEngine.MONGODB);
         assertTrue(mongo.supportsTopology(DatabaseMode.STANDALONE));
         assertTrue(mongo.supportsTopology(DatabaseMode.REPLICA_SET));
-        assertFalse(mongo.supportsTopology(DatabaseMode.SHARDING));
+        assertTrue(mongo.supportsTopology(DatabaseMode.SHARDING));
+        assertTrue(mongo.supportsPitrTopology(DatabaseMode.STANDALONE));
+        assertTrue(mongo.supportsPitrTopology(DatabaseMode.REPLICA_SET));
+        assertTrue(mongo.supportsPitrTopology(DatabaseMode.SHARDING));
     }
 }
