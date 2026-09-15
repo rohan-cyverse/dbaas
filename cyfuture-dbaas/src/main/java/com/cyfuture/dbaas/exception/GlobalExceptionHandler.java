@@ -51,6 +51,9 @@ public class GlobalExceptionHandler {
             case "PROJECT_NOT_FOUND" -> exception.getMessage();
             case "DATABASE_NOT_READY" -> "Database is not ready.";
             case "PUBLIC_ENDPOINT_NOT_READY" -> "Public endpoint is not ready.";
+            case "PITR_NOT_SUPPORTED", "PITR_NOT_ENABLED", "PITR_WINDOW_UNAVAILABLE",
+                    "CONTINUOUS_BACKUP_UNHEALTHY", "RESTORE_TIME_OUTSIDE_WINDOW" ->
+                    exception.getMessage();
             case "DELETION_PROTECTION_ENABLED" ->
                     "Deletion protection is enabled for this database. Disable it before deleting.";
             case "RESTART_REQUEST_BODY_NOT_ALLOWED" ->

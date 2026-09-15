@@ -25,10 +25,15 @@ import io.kubernetes.client.openapi.models.V1PodList;
 import io.kubernetes.client.openapi.models.V1PodStatus;
 import io.kubernetes.client.openapi.models.V1Secret;
 import io.kubernetes.client.openapi.models.V1SecretList;
+import io.kubernetes.client.openapi.models.V1Service;
+import io.kubernetes.client.openapi.models.V1ServiceList;
+import io.kubernetes.client.openapi.models.V1ServicePort;
+import io.kubernetes.client.openapi.models.V1ServiceSpec;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.time.Instant;
+import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +50,63 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class CredentialLifecycleServiceTest {
+    @Test
+    void mongoReplicaSetCredentialJobConnectsToPrimaryService() throws Exception {
+        CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        BatchV1Api batch = mock(BatchV1Api.class, RETURNS_DEEP_STUBS);
+        KubeBlocksClient kubeBlocks = mock(KubeBlocksClient.class);
+        DatabaseProperties properties = new DatabaseProperties();
+        properties.getMongodb().setCredentialImage("mongo:8.0");
+        CredentialLifecycleService service = new CredentialLifecycleService(
+                kubeBlocks, properties, mock(OperationMetadataRepository.class),
+                new OperationMapper(), core, batch);
+        DatabaseMetadata target = database();
+        target.setEngine(DatabaseEngine.MONGODB);
+        target.setMode(DatabaseMode.REPLICA_SET);
+        when(kubeBlocks.get("dbaas-orders", "db-orders0001")).thenReturn(new DatabaseObservation(
+                "db-orders0001", "orders", DatabaseEngine.MONGODB, DatabaseMode.REPLICA_SET,
+                "8.0.17", SizePlan.C1G1, 10, false, DatabaseStatus.RUNNING,
+                3, 3, 3, true, "db-orders0001-mongodb.dbaas-orders.svc.cluster.local",
+                27017, "ready"));
+        when(kubeBlocks.clusterOwnerReference("dbaas-orders", "db-orders0001"))
+                .thenReturn(new io.kubernetes.client.openapi.models.V1OwnerReference().kind("Cluster"));
+        when(kubeBlocks.adminCredentialSecretName("dbaas-orders", "db-orders0001", DatabaseEngine.MONGODB))
+                .thenReturn("admin-credentials");
+        when(core.readNamespacedSecret("db-orders0001-managed-credentials", "dbaas-orders")
+                .execute()).thenThrow(new io.kubernetes.client.openapi.ApiException(404, "missing"));
+        V1Secret created = new V1Secret().metadata(new V1ObjectMeta()
+                .name("db-orders0001-managed-credentials")
+                .annotations(new LinkedHashMap<>(Map.of(
+                        "dbaas.cyfuture.com/credential-status", "PENDING",
+                        "dbaas.cyfuture.com/credential-generation", "1"))));
+        when(core.createNamespacedSecret(org.mockito.ArgumentMatchers.eq("dbaas-orders"), any()).execute())
+                .thenReturn(created);
+        when(batch.readNamespacedJob("db-orders0001-credentials-1", "dbaas-orders")
+                .execute()).thenThrow(new io.kubernetes.client.openapi.ApiException(404, "missing"));
+        when(core.readNamespacedService("db-orders0001-mongodb-primary", "dbaas-orders").execute())
+                .thenThrow(new io.kubernetes.client.openapi.ApiException(404, "missing"));
+        V1Service base = new V1Service()
+                .metadata(new V1ObjectMeta().name("db-orders0001-mongodb"))
+                .spec(new V1ServiceSpec().clusterIP("10.0.0.4")
+                        .selector(Map.of("app.kubernetes.io/instance", "db-orders0001"))
+                        .ports(List.of(new V1ServicePort().port(27017))));
+        when(core.listNamespacedService("dbaas-orders").execute())
+                .thenReturn(new V1ServiceList().items(List.of(base)));
+        V1Service primary = new V1Service()
+                .metadata(new V1ObjectMeta().name("db-orders0001-mongodb-primary"));
+        when(core.createNamespacedService(org.mockito.ArgumentMatchers.eq("dbaas-orders"), any()).execute())
+                .thenReturn(primary);
+
+        service.reconcile(target);
+
+        ArgumentCaptor<V1Job> job = ArgumentCaptor.forClass(V1Job.class);
+        verify(batch).createNamespacedJob(org.mockito.ArgumentMatchers.eq("dbaas-orders"), job.capture());
+        var environment = job.getValue().getSpec().getTemplate().getSpec().getContainers().get(0).getEnv();
+        assertEquals("db-orders0001-mongodb-primary.dbaas-orders.svc.cluster.local",
+                environment.stream().filter(value -> "DB_HOST".equals(value.getName()))
+                        .findFirst().orElseThrow().getValue());
+    }
+
     @Test
     void restoredCredentialSecretTargetsTheSourceLogicalDatabaseAndUser() throws Exception {
         CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
@@ -178,7 +240,8 @@ class CredentialLifecycleServiceTest {
                 .ownerReferences(List.of(new io.kubernetes.client.openapi.models.V1OwnerReference()
                         .kind("Cluster")))
                 .annotations(new LinkedHashMap<>(Map.of(
-                        "dbaas.cyfuture.com/credential-status", "READY"))));
+                        "dbaas.cyfuture.com/credential-status", "READY",
+                        "dbaas.cyfuture.com/credential-setup-version", "5"))));
         V1Pod completed = new V1Pod()
                 .metadata(new V1ObjectMeta().name("db-orders0001-credentials-1-done").labels(labels))
                 .status(new V1PodStatus().phase("Succeeded"));
@@ -196,6 +259,27 @@ class CredentialLifecycleServiceTest {
         service.reconcile(database);
 
         verify(core).deleteNamespacedPod("db-orders0001-credentials-1-done", "dbaas-orders");
+    }
+
+    @Test
+    void verifiesManagedCredentialsForEveryEngineBeforeMarkingThemReady() throws Exception {
+        CredentialLifecycleService service = new CredentialLifecycleService(
+                mock(KubeBlocksClient.class), new DatabaseProperties(),
+                mock(OperationMetadataRepository.class), new OperationMapper(),
+                mock(CoreV1Api.class), mock(BatchV1Api.class));
+        Method scriptMethod = CredentialLifecycleService.class
+                .getDeclaredMethod("script", DatabaseEngine.class);
+        scriptMethod.setAccessible(true);
+
+        String postgres = (String) scriptMethod.invoke(service, DatabaseEngine.POSTGRESQL);
+        String mysql = (String) scriptMethod.invoke(service, DatabaseEngine.MYSQL);
+        String mongo = (String) scriptMethod.invoke(service, DatabaseEngine.MONGODB);
+
+        assertTrue(postgres.contains("PGPASSWORD=\"$MANAGED_PASSWORD\""));
+        assertTrue(postgres.contains("-U \"$MANAGED_USERNAME\""));
+        assertTrue(mysql.contains("-u\"$MANAGED_USERNAME\" -p\"$MANAGED_PASSWORD\""));
+        assertTrue(mongo.contains("--username \"$MANAGED_USERNAME\""));
+        assertTrue(mongo.contains("--authenticationDatabase \"$MANAGED_DATABASE\""));
     }
 
     private DatabaseMetadata database() {

@@ -135,7 +135,9 @@ public class RestoreService {
             throw new ApiException(HttpStatus.CONFLICT, "RESTORE_TIME_OUTSIDE_WINDOW", false,
                     "restoreTime is outside the currently recoverable window.");
         }
-        return createRestore(project, source, idempotencyKey, window.baseBackup(),
+        // KubeBlocks PITR restores from the continuous backup resource. That
+        // resource references the qualifying full backup used as its base.
+        return createRestore(project, source, idempotencyKey, window.latestContinuousBackup(),
                 RestoreMode.POINT_IN_TIME, restoreTime, requestHash);
     }
 

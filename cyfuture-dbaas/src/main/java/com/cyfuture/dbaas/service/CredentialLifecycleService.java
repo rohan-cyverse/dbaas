@@ -8,6 +8,7 @@ import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.OperationMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.DatabaseEngine;
+import com.cyfuture.dbaas.model.DatabaseMode;
 import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.DesiredState;
 import com.cyfuture.dbaas.model.OperationStatus;
@@ -29,6 +30,7 @@ import io.kubernetes.client.openapi.models.V1PodSpec;
 import io.kubernetes.client.openapi.models.V1PodTemplateSpec;
 import io.kubernetes.client.openapi.models.V1Secret;
 import io.kubernetes.client.openapi.models.V1SecretKeySelector;
+import io.kubernetes.client.openapi.models.V1Service;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -47,6 +49,8 @@ public class CredentialLifecycleService {
     private static final String STATUS = "dbaas.cyfuture.com/credential-status";
     private static final String GENERATION = "dbaas.cyfuture.com/credential-generation";
     private static final String OPERATION_ID = "dbaas.cyfuture.com/credential-operation-id";
+    private static final String SETUP_VERSION = "dbaas.cyfuture.com/credential-setup-version";
+    private static final String CURRENT_SETUP_VERSION = "5";
     private static final String READY = "READY";
     private static final String PENDING = "PENDING";
     private static final String FAILED = "FAILED";
@@ -345,6 +349,14 @@ public class CredentialLifecycleService {
         try {
             V1Secret secret = ensureSecretMetadata(metadata,
                     coreV1Api.readNamespacedSecret(name, metadata.getNamespaceName()).execute());
+            Map<String, String> annotations = annotations(secret);
+            if (!CURRENT_SETUP_VERSION.equals(annotations.get(SETUP_VERSION))) {
+                int generation = Integer.parseInt(annotations.getOrDefault(GENERATION, "1"));
+                annotations.put(GENERATION, String.valueOf(generation + 1));
+                annotations.put(STATUS, PENDING);
+                annotations.put(SETUP_VERSION, CURRENT_SETUP_VERSION);
+                replaceSecret(metadata.getNamespaceName(), secret);
+            }
             byte[] database = secret.getData() == null ? null : secret.getData().get("database");
             byte[] username = secret.getData() == null ? null : secret.getData().get("username");
             if (logicalDatabaseName != null && !logicalDatabaseName.isBlank() && database != null
@@ -370,7 +382,8 @@ public class CredentialLifecycleService {
                             .ownerReferences(ownerReferences(metadata))
                             .annotations(new LinkedHashMap<>(Map.of(
                                     STATUS, PENDING,
-                                    GENERATION, "1"))))
+                                    GENERATION, "1",
+                                    SETUP_VERSION, CURRENT_SETUP_VERSION))))
                     .type("Opaque")
                     .stringData(Map.of(
                             "username", requestedUsername,
@@ -397,7 +410,7 @@ public class CredentialLifecycleService {
                 .command(List.of("sh", "-ec"))
                 .args(List.of(script(metadata.getEngine())))
                 .env(List.of(
-                        value("DB_HOST", database.privateHost()),
+                        value("DB_HOST", credentialHost(metadata, database)),
                         value("REQUIRE_EXISTING_DATABASE", String.valueOf(requireExistingDatabase)),
                         secret("ADMIN_USERNAME", adminSecret, "username"),
                         secret("ADMIN_PASSWORD", adminSecret, "password"),
@@ -425,6 +438,18 @@ public class CredentialLifecycleService {
                                         .restartPolicy("Never")
                                         .containers(List.of(container)))));
         batchV1Api.createNamespacedJob(metadata.getNamespaceName(), job).execute();
+    }
+
+    private String credentialHost(DatabaseMetadata metadata, DatabaseObservation database)
+            throws io.kubernetes.client.openapi.ApiException {
+        if (metadata.getEngine() != DatabaseEngine.MONGODB
+                || metadata.getMode() != DatabaseMode.REPLICA_SET) {
+            return database.privateHost();
+        }
+        V1Service primary = DatabaseBackendResolver.ensureMongoPrimaryService(
+                coreV1Api, metadata, database.privatePort());
+        return primary.getMetadata().getName() + "." + metadata.getNamespaceName()
+                + ".svc.cluster.local";
     }
 
     /**
@@ -630,6 +655,7 @@ public class CredentialLifecycleService {
                       psql -v ON_ERROR_STOP=1 -h "$DB_HOST" -U "$ADMIN_USERNAME" -d postgres -c "CREATE DATABASE \"$MANAGED_DATABASE\" OWNER \"$MANAGED_USERNAME\""
                     fi
                     psql -v ON_ERROR_STOP=1 -h "$DB_HOST" -U "$ADMIN_USERNAME" -d "$MANAGED_DATABASE" -c "GRANT ALL ON SCHEMA public TO \"$MANAGED_USERNAME\""
+                    PGPASSWORD="$MANAGED_PASSWORD" psql -v ON_ERROR_STOP=1 -h "$DB_HOST" -U "$MANAGED_USERNAME" -d "$MANAGED_DATABASE" -tAc "SELECT 1" | grep -qx 1
                     """;
             case MYSQL -> """
                     if [ "$REQUIRE_EXISTING_DATABASE" = "true" ]; then
@@ -638,12 +664,14 @@ public class CredentialLifecycleService {
                       mysql --protocol=TCP -h "$DB_HOST" -u"$ADMIN_USERNAME" -p"$ADMIN_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS $MANAGED_DATABASE"
                     fi
                     mysql --protocol=TCP -h "$DB_HOST" -u"$ADMIN_USERNAME" -p"$ADMIN_PASSWORD" -e "CREATE USER IF NOT EXISTS '$MANAGED_USERNAME'@'%' IDENTIFIED BY '$MANAGED_PASSWORD'; ALTER USER '$MANAGED_USERNAME'@'%' IDENTIFIED BY '$MANAGED_PASSWORD'; GRANT ALL PRIVILEGES ON $MANAGED_DATABASE.* TO '$MANAGED_USERNAME'@'%'; FLUSH PRIVILEGES;"
+                    mysql --protocol=TCP -h "$DB_HOST" -u"$MANAGED_USERNAME" -p"$MANAGED_PASSWORD" "$MANAGED_DATABASE" -Nse "SELECT 1" | grep -qx 1
                     """;
             case MONGODB -> """
                     if [ "$REQUIRE_EXISTING_DATABASE" = "true" ]; then
                       mongosh --quiet --host "$DB_HOST" --username "$ADMIN_USERNAME" --password "$ADMIN_PASSWORD" --authenticationDatabase admin --eval "if (!db.adminCommand({listDatabases:1}).databases.some(function(item){ return item.name === '$MANAGED_DATABASE'; })) { quit(42); }"
                     fi
                     mongosh --quiet --host "$DB_HOST" --username "$ADMIN_USERNAME" --password "$ADMIN_PASSWORD" --authenticationDatabase admin --eval "const target=db.getSiblingDB('$MANAGED_DATABASE'); if (target.getUser('$MANAGED_USERNAME')) { target.updateUser('$MANAGED_USERNAME',{pwd:'$MANAGED_PASSWORD',roles:[{role:'readWrite',db:'$MANAGED_DATABASE'}]}); } else { target.createUser({user:'$MANAGED_USERNAME',pwd:'$MANAGED_PASSWORD',roles:[{role:'readWrite',db:'$MANAGED_DATABASE'}]}); }"
+                    mongosh --quiet --host "$DB_HOST" --username "$MANAGED_USERNAME" --password "$MANAGED_PASSWORD" --authenticationDatabase "$MANAGED_DATABASE" "$MANAGED_DATABASE" --eval "if (db.runCommand({ping:1}).ok !== 1) { quit(43); }"
                     """;
         };
     }

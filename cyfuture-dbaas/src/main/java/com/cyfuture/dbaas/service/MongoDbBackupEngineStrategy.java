@@ -14,14 +14,14 @@ public class MongoDbBackupEngineStrategy implements BackupEngineStrategy {
     @Override public List<String> futureIncrementalMethods() { return List.of("pbm-physical"); }
     @Override public List<String> futureContinuousMethods() { return List.of("archive-oplog", "pbm-pitr"); }
     @Override public boolean supportsTopology(DatabaseMode mode) {
-        // KubeBlocks' logical dump method is available for both standalone and
-        // replica-set MongoDB clusters. Sharded backups need a topology-aware
-        // method and remain explicitly unsupported here.
-        return mode == DatabaseMode.STANDALONE || mode == DatabaseMode.REPLICA_SET;
+        // Current KubeBlocks MongoDB addons publish dump and archive-oplog for
+        // both the regular and sharded BackupPolicyTemplates. Runtime template
+        // validation remains authoritative for the installed addon version.
+        return mode == DatabaseMode.STANDALONE || mode == DatabaseMode.REPLICA_SET
+                || mode == DatabaseMode.SHARDING;
     }
 
     @Override public boolean supportsPitrTopology(DatabaseMode mode) {
-        // The installed archive-oplog template is supported only for a replica set.
-        return mode == DatabaseMode.REPLICA_SET;
+        return supportsTopology(mode);
     }
 }
