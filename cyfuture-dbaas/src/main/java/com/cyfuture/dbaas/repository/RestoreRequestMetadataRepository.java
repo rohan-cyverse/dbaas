@@ -3,6 +3,7 @@ package com.cyfuture.dbaas.repository;
 import com.cyfuture.dbaas.entity.RestoreRequestMetadata;
 import com.cyfuture.dbaas.model.RestoreStatus;
 import java.util.Collection;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -18,12 +19,16 @@ public interface RestoreRequestMetadataRepository extends JpaRepository<RestoreR
             String projectName, String sourceDatabaseId);
     Optional<RestoreRequestMetadata> findByRestoreIdAndProjectNameAndSourceDatabaseId(
             String restoreId, String projectName, String sourceDatabaseId);
+    Optional<RestoreRequestMetadata> findFirstByProjectNameAndSourceDatabaseIdAndTemporaryTrueAndPromotedAtIsNullAndDeletedAtIsNullAndStatusInOrderByCreatedAtDesc(
+            String projectName, String sourceDatabaseId, Collection<RestoreStatus> statuses);
     Optional<RestoreRequestMetadata> findByRestoredDatabaseId(String restoredDatabaseId);
     boolean existsByRestoredDatabaseId(String restoredDatabaseId);
     Optional<RestoreRequestMetadata> findByOperationId(String operationId);
     boolean existsByProjectNameAndSourceBackupIdAndStatusIn(
             String projectName, String sourceBackupId, Collection<RestoreStatus> statuses);
     List<RestoreRequestMetadata> findByStatusInOrderByCreatedAtAsc(Collection<RestoreStatus> statuses);
+    List<RestoreRequestMetadata> findByTemporaryTrueAndPromotedAtIsNullAndDeletedAtIsNullAndExpiresAtBeforeAndStatusInOrderByExpiresAtAsc(
+            Instant expiresAt, Collection<RestoreStatus> statuses);
     boolean existsByProjectNameAndSourceDatabaseIdAndStatusIn(
             String projectName, String sourceDatabaseId, Collection<RestoreStatus> statuses);
     boolean existsByRestoredDatabaseIdAndStatusIn(String restoredDatabaseId,

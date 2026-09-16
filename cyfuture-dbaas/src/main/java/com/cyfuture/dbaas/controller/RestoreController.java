@@ -9,6 +9,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -53,5 +54,25 @@ public class RestoreController {
     public RestoreResponse get(@PathVariable String projectId, @PathVariable String databaseId,
                                @PathVariable String restoreId) {
         return restoreService.get(projectId, databaseId, restoreId);
+    }
+
+    @GetMapping("/active")
+    @Operation(summary = "Get active temporary restore")
+    public RestoreResponse active(@PathVariable String projectId, @PathVariable String databaseId) {
+        return restoreService.active(projectId, databaseId);
+    }
+
+    @PostMapping("/{restoreId}/promote")
+    @Operation(summary = "Promote a temporary restored database")
+    public RestoreResponse promote(@PathVariable String projectId, @PathVariable String databaseId,
+                                   @PathVariable String restoreId) {
+        return restoreService.promote(projectId, databaseId, restoreId);
+    }
+
+    @DeleteMapping("/{restoreId}")
+    @Operation(summary = "Delete a temporary restored database")
+    public RestoreResponse delete(@PathVariable String projectId, @PathVariable String databaseId,
+                                  @PathVariable String restoreId) {
+        return restoreService.deleteTemporary(projectId, databaseId, restoreId);
     }
 }

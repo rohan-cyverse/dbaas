@@ -2,6 +2,7 @@ package com.cyfuture.dbaas.entity;
 
 import com.cyfuture.dbaas.model.RestoreMode;
 import com.cyfuture.dbaas.model.RestoreStatus;
+import com.cyfuture.dbaas.model.RestoreAccessMode;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -44,7 +45,16 @@ public class RestoreRequestMetadata {
     private RestoreMode restoreMode;
     @Column(nullable = false, length = 32)
     private String restoredDatabaseId;
+    @Column(nullable = false, length = 32)
+    private String targetDatabaseName;
     private Instant restoreTime;
+    @Column(nullable = false)
+    private boolean temporary = true;
+    private Integer expiresAfterHours;
+    private Instant expiresAt;
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 32)
+    private RestoreAccessMode accessMode = RestoreAccessMode.PRIVATE;
     @Column(nullable = false, length = 63)
     private String kubernetesOpsRequestName;
     @Column(length = 63)
@@ -63,5 +73,7 @@ public class RestoreRequestMetadata {
     private Instant createdAt;
     private Instant startedAt;
     private Instant completedAt;
+    private Instant promotedAt;
+    private Instant deletedAt;
     private Instant lastObservedAt;
 }

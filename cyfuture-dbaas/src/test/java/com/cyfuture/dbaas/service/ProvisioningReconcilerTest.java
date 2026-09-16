@@ -77,8 +77,9 @@ class ProvisioningReconcilerTest {
         boolean ready = status == DatabaseStatus.RUNNING;
         return new DatabaseObservation(database.getDatabaseId(), "orders-db",
                 database.getEngine(), database.getMode(), "17.5.0", SizePlan.C1G2,
-                20, true, status, 1, ready ? 1 : 0, ready ? 1 : 0, ready,
+                20, true, status, 1, 1, 0, 0, 0, 0, ready ? 1 : 0, ready ? 1 : 0, ready,
                 ready ? "postgres.internal" : null, 5432,
+                List.of(),
                 ready ? "Database is ready" : "Waiting for database Pods: 0/1");
     }
 }

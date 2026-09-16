@@ -12,6 +12,7 @@ import com.cyfuture.dbaas.model.ProvisioningStage;
 import com.cyfuture.dbaas.model.ResourceStatus;
 import com.cyfuture.dbaas.model.RestoreMode;
 import com.cyfuture.dbaas.model.RestoreStatus;
+import com.cyfuture.dbaas.model.RestoreAccessMode;
 import com.cyfuture.dbaas.model.SizePlan;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -29,10 +30,12 @@ class PublicResponseContractTest {
     void databaseResponseDoesNotExposeKubernetesIdentityOrPrivateRouting() throws Exception {
         DatabaseResponse response = new DatabaseResponse(
                 "db-123456789012", "orders", DatabaseEngine.POSTGRESQL,
-                DatabaseMode.REPLICATION, "17.5.0", SizePlan.C1G2, 20, 2, 0,
-                true, DatabaseStatus.RUNNING, ProvisioningStage.READY, 100,
+                "17.5.0", DatabaseStatus.RUNNING, DatabaseMode.REPLICATION, SizePlan.C1G2,
+                20, 3, 1, 2, 0, 0, 0, true, ProvisioningStage.READY, 100,
                 new PublicEndpointResponse("203.0.113.10", 31001, true,
                         List.of("203.0.113.4/32")),
+                new DatabaseTopologyResponse(3, 1, 2, 0, 0, 0,
+                        List.of(new DatabaseTopologyMemberResponse("orders-0", "primary", "postgresql", true))),
                 "Database is ready.");
 
         String json = objectMapper.writeValueAsString(response);
@@ -75,9 +78,12 @@ class PublicResponseContractTest {
         BackupSettingsResponse settings = new BackupSettingsResponse("db-123456789012", true,
                 7, "0 2 * * *", "UTC", true, "ACTIVE", now, null, null);
         RestoreResponse restore = new RestoreResponse("rst-123456789012", "db-234567890123",
-                RestoreMode.FULL, "bkp-123456789012", null, RestoreStatus.COMPLETED,
-                now, now, now, null, null);
+                "op-123456789012", RestoreMode.FULL, "bkp-123456789012", null, "orders-restore",
+                true, now.plusSeconds(86400), RestoreAccessMode.PRIVATE, RestoreStatus.READY,
+                now, now, now, null, null, null, null);
 
+        String backupAndSettingsJson = objectMapper.writeValueAsString(new PageResponse<>(
+                List.of(backup, settings), 0, 20, 2, 1));
         String json = objectMapper.writeValueAsString(new PageResponse<>(
                 List.of(backup, settings, restore), 0, 20, 3, 1));
 
@@ -89,7 +95,8 @@ class PublicResponseContractTest {
         assertFalse(json.contains("kubernetes"));
         assertFalse(json.contains("namespace"));
         assertFalse(json.contains("backupRepo"));
-        assertFalse(json.contains("operationId"));
+        assertFalse(backupAndSettingsJson.contains("operationId"));
+        assertTrue(json.contains("\"operationId\""));
         assertTrue(json.contains("\"mode\":\"FULL\""));
         assertTrue(json.contains("\"restoreTime\""));
         assertFalse(json.contains("restorePoint"));

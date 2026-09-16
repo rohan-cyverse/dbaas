@@ -4,6 +4,10 @@ package com.cyfuture.dbaas.model;
 public enum RestoreStatus {
     PENDING,
     RUNNING,
+    READY,
     COMPLETED,
-    FAILED
+    FAILED,
+    DELETING,
+    DELETED,
+    EXPIRED
 }

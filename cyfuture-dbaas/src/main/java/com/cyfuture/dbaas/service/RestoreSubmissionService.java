@@ -29,7 +29,8 @@ public class RestoreSubmissionService {
     @Async
     public void submit(String restoreId) {
         RestoreRequestMetadata restore = restoreRepository.findById(restoreId).orElse(null);
-        if (restore == null || restore.getStatus() == RestoreStatus.COMPLETED
+        if (restore == null || restore.getStatus() == RestoreStatus.READY
+                || restore.getStatus() == RestoreStatus.COMPLETED
                 || restore.getStatus() == RestoreStatus.FAILED) return;
         DatabaseMetadata target = databaseRepository.findByDatabaseIdAndProjectName(
                 restore.getRestoredDatabaseId(), restore.getProjectName()).orElse(null);

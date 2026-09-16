@@ -8,6 +8,8 @@ import com.cyfuture.dbaas.dto.BackupSettingsRequest;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
 import com.cyfuture.dbaas.dto.CreateDatabaseResponse;
 import com.cyfuture.dbaas.dto.DatabaseResponse;
+import com.cyfuture.dbaas.dto.DatabaseTopologyMemberResponse;
+import com.cyfuture.dbaas.dto.DatabaseTopologyResponse;
 import com.cyfuture.dbaas.dto.DeleteDatabaseResponse;
 import com.cyfuture.dbaas.dto.PublicEndpointResponse;
 import com.cyfuture.dbaas.dto.OperationResponse;
@@ -216,7 +218,7 @@ public class DatabaseService {
         try {
             DatabaseObservation live = kubeBlocksClient.get(metadata.getNamespaceName(), databaseId);
             syncLiveStatus(metadata, live);
-            return withPublicAccess(metadata, live);
+            return withPublicAccess(metadata, live, true);
         } catch (ApiException exception) {
             if (metadata.getStatus() == DatabaseStatus.PROVISIONING) return fromMetadata(metadata);
             throw exception;
@@ -259,7 +261,8 @@ public class DatabaseService {
         // its managed Secret was removed; never fall back to creating a
         // target-ID-named database.
         RestoreRequestMetadata restore = restoreRepository.findByRestoredDatabaseId(databaseId).orElse(null);
-        if (restore != null && restore.getStatus() == RestoreStatus.COMPLETED) {
+        if (restore != null && (restore.getStatus() == RestoreStatus.READY
+                || restore.getStatus() == RestoreStatus.COMPLETED)) {
             if (!credentialLifecycleService.readyForRestoredDatabase(database,
                     CredentialLifecycleService.managedDatabaseName(restore.getSourceDatabaseId()),
                     CredentialLifecycleService.managedUsername(restore.getSourceDatabaseId()))) {
@@ -269,6 +272,13 @@ public class DatabaseService {
         }
         ManagedCredential credential = credentialLifecycleService.credentials(database);
         PublicEndpointResponse publicEndpoint = publicEndpoint(database);
+        if (restore != null && restore.getAccessMode() == com.cyfuture.dbaas.model.RestoreAccessMode.PRIVATE) {
+            String host = database.getDatabaseId() + "." + database.getNamespaceName() + ".svc.cluster.local";
+            return new ConnectionResponse(credential.username(), credential.password(),
+                    connectionUri(database.getEngine(), database.getMode(), false,
+                            credential.username(), credential.password(), host,
+                            defaultPort(database.getEngine()), credential.database()), null);
+        }
         if (!publicEndpoint.ready() || publicEndpoint.host() == null
                 || publicEndpoint.host().isBlank()) {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "PUBLIC_ENDPOINT_NOT_READY", true,
@@ -399,7 +409,7 @@ public class DatabaseService {
         metadata.setDeletionProtection(enabled);
         metadata.setUpdatedAt(Instant.now());
         databaseRepository.save(metadata);
-        return withPublicAccess(metadata, response);
+        return withPublicAccess(metadata, response, true);
     }
 
     public void validateProject(String project) {
@@ -426,21 +436,74 @@ public class DatabaseService {
     }
 
     private DatabaseResponse fromMetadata(DatabaseMetadata database) {
+        DatabaseTopologyResponse topology = metadataTopology(database);
         return new DatabaseResponse(database.getDatabaseId(), database.getDisplayName(), database.getEngine(),
-                database.getMode(), database.getDatabaseVersion(), database.getSizePlan(),
-                database.getStorageGi(), database.getReplicas(), database.getShards(), database.isDeletionProtection(),
-                database.getStatus(), stage(database), database.getProgress(),
+                database.getDatabaseVersion(), database.getStatus(), database.getMode(), database.getSizePlan(),
+                database.getStorageGi(), topology.instanceCount(), topology.primaryCount(), topology.replicaCount(),
+                topology.shardCount(), topology.mongosCount(), topology.configServerCount(),
+                database.isDeletionProtection(), stage(database), database.getProgress(),
                 publicEndpoint(database),
+                topology,
                 ClientMessages.database(database.getStatus(), stage(database)));
     }
 
-    private DatabaseResponse withPublicAccess(DatabaseMetadata metadata, DatabaseObservation live) {
+    private DatabaseResponse withPublicAccess(DatabaseMetadata metadata, DatabaseObservation live,
+                                              boolean includeMembers) {
         PublicEndpointResponse publicEndpoint = publicEndpoint(metadata);
-        return new DatabaseResponse(live.databaseId(), metadata.getDisplayName(),
-                live.engine(), live.mode(), live.version(), live.size(), live.storageGi(),
-                live.replicas(), metadata.getShards(), live.deletionProtection(),
-                metadata.getStatus(), stage(metadata), metadata.getProgress(), publicEndpoint,
+        DatabaseTopologyResponse topology = observedTopology(live, includeMembers);
+        return new DatabaseResponse(metadata.getDatabaseId(), metadata.getDisplayName(),
+                metadata.getEngine(), metadata.getDatabaseVersion(), metadata.getStatus(),
+                metadata.getMode(), metadata.getSizePlan(), metadata.getStorageGi(),
+                topology.instanceCount(), topology.primaryCount(), topology.replicaCount(),
+                topology.shardCount(), topology.mongosCount(), topology.configServerCount(),
+                live.deletionProtection(), stage(metadata), metadata.getProgress(), publicEndpoint,
+                topology,
                 ClientMessages.database(metadata.getStatus(), stage(metadata)));
+    }
+
+    private DatabaseTopologyResponse observedTopology(DatabaseObservation live, boolean includeMembers) {
+        return new DatabaseTopologyResponse(
+                live.instanceCount(),
+                live.primaryCount(),
+                live.replicaCount(),
+                live.shardCount(),
+                live.mongosCount(),
+                live.configServerCount(),
+                includeMembers ? live.members().stream()
+                        .map(member -> new DatabaseTopologyMemberResponse(
+                                member.name(), member.role(), member.component(), member.ready()))
+                        .toList() : List.of());
+    }
+
+    private DatabaseTopologyResponse metadataTopology(DatabaseMetadata database) {
+        int instanceCount = expectedInstanceCount(database);
+        int primaryCount = database.getStatus() == DatabaseStatus.DELETED ? 0 : primaryCount(database);
+        int replicaCount = Math.max(0, instanceCount - primaryCount
+                - mongosCount(database) - configServerCount(database));
+        return new DatabaseTopologyResponse(instanceCount, primaryCount, replicaCount,
+                database.getMode() == DatabaseMode.SHARDING ? database.getShards() : 0,
+                mongosCount(database), configServerCount(database), List.of());
+    }
+
+    private int expectedInstanceCount(DatabaseMetadata database) {
+        if (database.getStatus() == DatabaseStatus.DELETED) return 0;
+        if (database.getMode() == DatabaseMode.SHARDING) {
+            return database.getShards() * database.getReplicas() + mongosCount(database) + configServerCount(database);
+        }
+        return Math.max(1, database.getReplicas());
+    }
+
+    private int primaryCount(DatabaseMetadata database) {
+        if (database.getMode() == DatabaseMode.SHARDING) return Math.max(1, database.getShards());
+        return 1;
+    }
+
+    private int mongosCount(DatabaseMetadata database) {
+        return database.getMode() == DatabaseMode.SHARDING ? 2 : 0;
+    }
+
+    private int configServerCount(DatabaseMetadata database) {
+        return database.getMode() == DatabaseMode.SHARDING ? 3 : 0;
     }
 
     private PublicEndpointResponse publicEndpoint(DatabaseMetadata metadata) {
@@ -460,7 +523,7 @@ public class DatabaseService {
     }
 
     private void syncLiveStatus(DatabaseMetadata metadata, DatabaseObservation live) {
-        metadata.setExpectedReplicas(live.replicas());
+        metadata.setExpectedReplicas(live.instanceCount());
         metadata.setObservedReadyReplicas(live.readyReplicas());
         metadata.setObservedServiceReady(live.serviceReady());
         metadata.setLastObservedAt(Instant.now());
@@ -681,6 +744,14 @@ public class DatabaseService {
         };
     }
 
+    private int defaultPort(DatabaseEngine engine) {
+        return switch (engine) {
+            case POSTGRESQL -> 5432;
+            case MYSQL -> 3306;
+            case MONGODB -> 27017;
+        };
+    }
+
     private String urlEncode(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
     }
@@ -709,10 +780,9 @@ public class DatabaseService {
             DatabaseMetadata database
     ) {
         try {
-            return get(
-                    database.getProjectName(),
-                    database.getDatabaseId()
-            );
+            DatabaseObservation live = kubeBlocksClient.get(database.getNamespaceName(), database.getDatabaseId());
+            syncLiveStatus(database, live);
+            return withPublicAccess(database, live, false);
         } catch (ApiException exception) {
             return metadataOnlyResponse(database);
         }

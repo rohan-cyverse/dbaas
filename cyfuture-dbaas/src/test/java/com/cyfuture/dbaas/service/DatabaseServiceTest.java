@@ -165,7 +165,8 @@ class DatabaseServiceTest {
                 .thenReturn(new DatabaseObservation("db-orders0001", "orders-db",
                         DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE, "17.5.0",
                         SizePlan.C1G2, 10, true, DatabaseStatus.RUNNING,
-                        1, 1, 1, true, "db-orders0001.dbaas-orders.svc", 5432, "ready"));
+                        1, 1, 0, 0, 0, 0, 1, 1, true,
+                        "db-orders0001.dbaas-orders.svc", 5432, List.of(), "ready"));
 
         var response = service.setDeletionProtection("orders", "db-orders0001", true);
 
@@ -173,6 +174,59 @@ class DatabaseServiceTest {
         assertTrue(response.deletionProtection());
         verify(kubeBlocksClient).setDeletionProtection("dbaas-orders", "db-orders0001", true);
         verify(repository).save(database);
+    }
+
+    @Test
+    void listsOneLogicalDatabaseWithObservedHaInstanceCounts() {
+        DatabaseMetadata database = new DatabaseMetadata();
+        database.setDatabaseId("db-orders0001");
+        database.setDisplayName("orders-db");
+        database.setProjectName("orders");
+        database.setNamespaceName("dbaas-orders");
+        database.setEngine(DatabaseEngine.POSTGRESQL);
+        database.setMode(DatabaseMode.REPLICATION);
+        database.setDatabaseVersion("17.5.0");
+        database.setSizePlan(SizePlan.C1G2);
+        database.setStorageGi(20);
+        database.setReplicas(3);
+        database.setShards(0);
+        database.setStatus(DatabaseStatus.RUNNING);
+        database.setProvisioningStage(ProvisioningStage.READY);
+        database.setProgress(100);
+        when(repository.findByProjectNameOrderByCreatedAtDesc("orders")).thenReturn(List.of(database));
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(kubeBlocksClient.get("dbaas-orders", "db-orders0001"))
+                .thenReturn(new DatabaseObservation("db-orders0001", "orders-db",
+                        DatabaseEngine.POSTGRESQL, DatabaseMode.REPLICATION, "17.5.0",
+                        SizePlan.C1G2, 20, true, DatabaseStatus.RUNNING,
+                        3, 1, 2, 0, 0, 0, 3, 3, true,
+                        "db-orders0001-postgresql.dbaas-orders.svc", 5432,
+                        List.of(
+                                new DatabaseObservation.TopologyMember("db-orders0001-postgresql-0",
+                                        "primary", "postgresql", true),
+                                new DatabaseObservation.TopologyMember("db-orders0001-postgresql-1",
+                                        "replica", "postgresql", true),
+                                new DatabaseObservation.TopologyMember("db-orders0001-postgresql-2",
+                                        "replica", "postgresql", true)),
+                        "ready"));
+
+        List<com.cyfuture.dbaas.dto.DatabaseResponse> responses = service.list("orders");
+
+        assertEquals(1, responses.size());
+        com.cyfuture.dbaas.dto.DatabaseResponse response = responses.get(0);
+        assertEquals("db-orders0001", response.databaseId());
+        assertEquals(DatabaseMode.REPLICATION, response.deploymentMode());
+        assertEquals(SizePlan.C1G2, response.sizePlan());
+        assertEquals(3, response.instanceCount());
+        assertEquals(1, response.primaryCount());
+        assertEquals(2, response.replicaCount());
+        assertEquals(0, response.topology().members().size());
+
+        com.cyfuture.dbaas.dto.DatabaseResponse details = service.get("orders", "db-orders0001");
+
+        assertEquals(3, details.instanceCount());
+        assertEquals(3, details.topology().members().size());
     }
 
     @Test

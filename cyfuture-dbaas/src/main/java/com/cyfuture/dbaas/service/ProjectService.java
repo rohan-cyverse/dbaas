@@ -68,7 +68,11 @@ public class ProjectService {
     }
 
     public ProjectResponse get(String project) {
-        return toResponse(requireActiveProject(project));
+        ProjectMetadata metadata = requireProject(project);
+        if (metadata.getStatus() == ResourceStatus.PROVISIONING) {
+            metadata = activateNamespace(metadata);
+        }
+        return toResponse(metadata);
     }
 
     public ProjectResponse update(String project, UpdateProjectRequest request) {
@@ -82,6 +86,7 @@ public class ProjectService {
     public DeleteProjectResponse delete(String project) {
         ProjectMetadata metadata = requireProject(project);
         if (metadata.getStatus() == ResourceStatus.DELETED) return deletionResponse(metadata);
+        if (metadata.getStatus() == ResourceStatus.DELETING) return deletionResponse(metadata);
         if (backupRepository.existsByProjectNameAndStatusIn(project,
                 List.of(BackupStatus.PENDING, BackupStatus.RUNNING, BackupStatus.DELETING))) {
             throw new ApiException(HttpStatus.CONFLICT, "PROJECT_BACKUP_OPERATION_IN_PROGRESS", false,
@@ -110,12 +115,9 @@ public class ProjectService {
         // Mark every child before infrastructure cleanup. The metadata rows stay
         // authoritative while Kubernetes removes the project namespace.
         markDatabasesDeleting(databases);
-        // Persist the desired state before the Kubernetes request. If that request
-        // is temporarily unavailable, a repeated DELETE retries the same namespace.
         metadata.setStatus(ResourceStatus.DELETING);
         metadata.setUpdatedAt(Instant.now());
         projectRepository.save(metadata);
-        advanceDeletion(metadata, databases);
         return deletionResponse(metadata);
     }
 

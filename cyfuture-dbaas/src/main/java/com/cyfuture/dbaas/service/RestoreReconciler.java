@@ -8,6 +8,7 @@ import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.OperationStatus;
 import com.cyfuture.dbaas.model.ProvisioningStage;
+import com.cyfuture.dbaas.model.RestoreAccessMode;
 import com.cyfuture.dbaas.model.RestoreStatus;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.OperationMetadataRepository;
@@ -144,13 +145,15 @@ public class RestoreReconciler {
                     "Restored database credentials do not target the restored logical database.");
             return;
         }
-        PublicEndpointResponse endpoint = sharedGatewayService.configure(target);
-        if (!endpoint.ready()) {
-            updateRunning(restore, observed, 92, "Waiting for the restored public connection route");
-            return;
+        if (restore.getAccessMode() != RestoreAccessMode.PRIVATE) {
+            PublicEndpointResponse endpoint = sharedGatewayService.configure(target);
+            if (!endpoint.ready()) {
+                updateRunning(restore, observed, 92, "Waiting for the restored public connection route");
+                return;
+            }
         }
         progressService.ready(target);
-        restore.setStatus(RestoreStatus.COMPLETED);
+        restore.setStatus(RestoreStatus.READY);
         restore.setCompletedAt(Instant.now());
         restore.setLastObservedAt(Instant.now());
         restore.setFailureCode(null);
@@ -160,7 +163,9 @@ public class RestoreReconciler {
             operation.setStatus(OperationStatus.SUCCEEDED);
             operation.setProvisioningStage(ProvisioningStage.READY);
             operation.setProgress(100);
-            operation.setMessage("Restore completed and public connection is ready");
+            operation.setMessage(restore.getAccessMode() == RestoreAccessMode.PRIVATE
+                    ? "Restore completed and private connection is ready"
+                    : "Restore completed and public connection is ready");
             if (operation.getStartedAt() == null) operation.setStartedAt(Instant.now());
             operation.setCompletedAt(Instant.now());
             operationRepository.save(operation);

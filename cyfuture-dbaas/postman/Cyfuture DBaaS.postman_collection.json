@@ -960,7 +960,7 @@
     },
     {
       "name": "Backup and Restore",
-      "description": "Configure scheduled backups, retention, and PITR. Create manual FULL or INCREMENTAL backups through the same /backups endpoint. PITR requires a scheduled full backup and a READY recovery window. Full and point-in-time restores always create a new database; they never overwrite the source. Keep each idempotency key only for a retry of the identical request.",
+      "description": "Configure scheduled backups, retention, PITR, independent restore points, and temporary private restores. Restores always create a new temporary private database, never overwrite the source, and must be promoted before expiry to become permanent. Keep each Idempotency-Key unchanged only when retrying the identical request; use a new key for a new operation.",
       "item": [
         {
           "name": "Update Backup Settings",
@@ -1045,7 +1045,15 @@
                   "if (pm.response.code === 200) {",
                   "  const body = pm.response.json();",
                   "  if (body.startsAt) pm.collectionVariables.set('recoveryWindowStart', body.startsAt);",
-                  "  if (body.endsAt) pm.collectionVariables.set('restoreTime', body.endsAt);",
+                  "  if (body.endsAt) pm.collectionVariables.set('recoveryWindowEnd', body.endsAt);",
+                  "  if (body.startsAt && body.endsAt) {",
+                  "    const start = new Date(body.startsAt).getTime();",
+                  "    const end = new Date(body.endsAt).getTime();",
+                  "    if (Number.isFinite(start) && Number.isFinite(end) && end > start + 2000) {",
+                  "      const safe = new Date(start + Math.floor((end - start) / 2)).toISOString();",
+                  "      pm.collectionVariables.set('restoreTime', safe);",
+                  "    }",
+                  "  }",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -1081,12 +1089,16 @@
               "listen": "test",
               "script": {
                 "exec": [
-                  "if (pm.response.code === 202) {",
+                  "pm.test('Backup create response has expected status', function () { pm.expect([200, 202, 409, 422]).to.include(pm.response.code); });",
+                  "if ([200, 202].includes(pm.response.code)) {",
                   "  const body = pm.response.json();",
                   "  pm.collectionVariables.set('backupId', body.backupId);",
+                  "  if (body.operationId) pm.collectionVariables.set('operationId', body.operationId);",
                   "  pm.expect(body.type).to.equal('FULL');",
                   "  pm.expect(body.status).to.be.a('string');",
-                  "}"
+                  "}",
+                  "if (pm.response.code === 409) { pm.test('Backup conflict is explicit', function () { pm.expect(pm.response.text()).to.not.be.empty; }); }",
+                  "if (pm.response.code === 422) { pm.test('Backup validation is explicit', function () { pm.expect(pm.response.text()).to.not.be.empty; }); }"
                 ],
                 "type": "text/javascript"
               }
@@ -1207,12 +1219,18 @@
               "listen": "test",
               "script": {
                 "exec": [
-                  "if (pm.response.code === 202) {",
+                  "pm.test('Restore response has expected status', function () { pm.expect([200, 202, 409, 422]).to.include(pm.response.code); });",
+                  "if ([200, 202].includes(pm.response.code)) {",
                   "  const body = pm.response.json();",
                   "  pm.collectionVariables.set('restoreId', body.restoreId);",
                   "  pm.collectionVariables.set('restoredDatabaseId', body.databaseId);",
+                  "  if (body.operationId) pm.collectionVariables.set('operationId', body.operationId);",
                   "  pm.expect(body.mode).to.equal('FULL');",
-                  "}"
+                  "  pm.expect(body.temporary).to.equal(true);",
+                  "  pm.expect(body.accessMode).to.equal('PRIVATE');",
+                  "}",
+                  "if (pm.response.code === 409) { pm.test('Conflict is explicit', function () { pm.expect(pm.response.text()).to.include('ACTIVE_RESTORE'); }); }",
+                  "if (pm.response.code === 422) { pm.test('Validation is explicit', function () { pm.expect(pm.response.text()).to.not.be.empty; }); }"
                 ],
                 "type": "text/javascript"
               }
@@ -1232,7 +1250,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"mode\": \"FULL\",\n  \"backupId\": \"{{backupId}}\"\n}"
+              "raw": "{\n  \"mode\": \"FULL\",\n  \"backupId\": \"{{backupId}}\",\n  \"restoreTime\": null,\n  \"targetDatabaseName\": \"{{targetDatabaseName}}\",\n  \"temporary\": true,\n  \"expiresAfterHours\": 24,\n  \"accessMode\": \"PRIVATE\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restores",
@@ -1249,7 +1267,7 @@
                 "restores"
               ]
             },
-            "description": "Creates a full restore into a new database. backupId must refer to a completed full or incremental backup for this source database."
+            "description": "Creates an independent temporary private restore database from a completed backup. This never overwrites the source database and never creates a permanent database until Promote Restore succeeds."
           },
           "response": []
         },
@@ -1260,12 +1278,18 @@
               "listen": "test",
               "script": {
                 "exec": [
-                  "if (pm.response.code === 202) {",
+                  "pm.test('Restore response has expected status', function () { pm.expect([200, 202, 409, 422]).to.include(pm.response.code); });",
+                  "if ([200, 202].includes(pm.response.code)) {",
                   "  const body = pm.response.json();",
                   "  pm.collectionVariables.set('restoreId', body.restoreId);",
                   "  pm.collectionVariables.set('restoredDatabaseId', body.databaseId);",
+                  "  if (body.operationId) pm.collectionVariables.set('operationId', body.operationId);",
                   "  pm.expect(body.mode).to.equal('POINT_IN_TIME');",
-                  "}"
+                  "  pm.expect(body.temporary).to.equal(true);",
+                  "  pm.expect(body.accessMode).to.equal('PRIVATE');",
+                  "}",
+                  "if (pm.response.code === 409) { pm.test('Conflict is explicit', function () { pm.expect(pm.response.text()).to.include('ACTIVE_RESTORE'); }); }",
+                  "if (pm.response.code === 422) { pm.test('Validation is explicit', function () { pm.expect(pm.response.text()).to.not.be.empty; }); }"
                 ],
                 "type": "text/javascript"
               }
@@ -1285,7 +1309,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"mode\": \"POINT_IN_TIME\",\n  \"restoreTime\": \"{{restoreTime}}\"\n}"
+              "raw": "{\n  \"mode\": \"POINT_IN_TIME\",\n  \"backupId\": null,\n  \"restoreTime\": \"{{restoreTime}}\",\n  \"targetDatabaseName\": \"{{targetDatabaseName}}\",\n  \"temporary\": true,\n  \"expiresAfterHours\": 24,\n  \"accessMode\": \"PRIVATE\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restores",
@@ -1302,7 +1326,7 @@
                 "restores"
               ]
             },
-            "description": "Run Get PITR Recovery Window first. restoreTime must be a past UTC timestamp within a READY recovery window. The restore always targets a new database."
+            "description": "Run Get PITR Recovery Window first. restoreTime is auto-set to a safe midpoint inside the window, not exactly at endsAt. The restore always targets a new temporary private database."
           },
           "response": []
         },
@@ -1328,6 +1352,196 @@
               ]
             },
             "description": "Returns the current restore status and the ID of the newly created target database."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Restore status response has expected status', function () { pm.expect([200, 409, 422]).to.include(pm.response.code); });",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('restoreId', body.restoreId);",
+                  "  pm.collectionVariables.set('restoredDatabaseId', body.databaseId);",
+                  "  pm.expect(body.status).to.be.a('string');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Active Restore",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Active restore response has expected status', function () { pm.expect([200, 409, 422]).to.include(pm.response.code); });",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('restoreId', body.restoreId);",
+                  "  pm.collectionVariables.set('restoredDatabaseId', body.databaseId);",
+                  "  pm.expect(body.temporary).to.equal(true);",
+                  "  pm.expect(body.accessMode).to.equal('PRIVATE');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restores/active",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "restores",
+                "active"
+              ]
+            },
+            "description": "Returns the one active temporary restore for the source database, if present."
+          },
+          "response": []
+        },
+        {
+          "name": "Promote Restore",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Promote response has expected status', function () { pm.expect([200, 409, 422]).to.include(pm.response.code); });",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('restoreId', body.restoreId);",
+                  "  pm.collectionVariables.set('restoredDatabaseId', body.databaseId);",
+                  "  pm.expect(body.status).to.be.oneOf(['READY', 'COMPLETED']);",
+                  "  pm.expect(body.temporary).to.equal(false);",
+                  "  pm.expect(body.expiresAt).to.be.oneOf([null, undefined]);",
+                  "}",
+                  "if (pm.response.code === 409) { pm.test('Promote conflict is explicit', function () { pm.expect(pm.response.text()).to.not.be.empty; }); }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restores/{{restoreId}}/promote",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "restores",
+                "{{restoreId}}",
+                "promote"
+              ]
+            },
+            "description": "Promotes a READY temporary restored database. Promotion removes expiry and does not delete or modify the source database."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Temporary Restore",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Delete temporary restore response has expected status', function () { pm.expect([200, 202, 409, 422]).to.include(pm.response.code); });",
+                  "if ([200, 202].includes(pm.response.code)) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('restoreId', body.restoreId);",
+                  "  pm.collectionVariables.set('restoredDatabaseId', body.databaseId);",
+                  "  pm.expect(body.databaseId).to.equal(pm.collectionVariables.get('restoredDatabaseId'));",
+                  "}",
+                  "if (pm.response.code === 409) { pm.test('Delete conflict is explicit', function () { pm.expect(pm.response.text()).to.not.be.empty; }); }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restores/{{restoreId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "restores",
+                "{{restoreId}}"
+              ]
+            },
+            "description": "Deletes the temporary restored database only. The source database ID remains {{databaseId}} and is not targeted."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Restored Database Connection",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Restored connection response has expected status', function () { pm.expect([200, 409, 422]).to.include(pm.response.code); });",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.username).to.be.a('string');",
+                  "  pm.expect(body.password).to.be.a('string');",
+                  "  pm.expect(body.connectionUri).to.be.a('string');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{restoredDatabaseId}}/connection",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{restoredDatabaseId}}",
+                "connection"
+              ]
+            },
+            "description": "Returns credentials for the restored database. Do not print or share the complete connection URI in logs."
           },
           "response": []
         },
@@ -1511,7 +1725,7 @@
     },
     {
       "key": "backupIdempotencyKey",
-      "value": "backup-manual-20260907-001"
+      "value": "backup-full-{{$timestamp}}-{{$randomInt}}"
     },
     {
       "key": "restoreId",
@@ -1523,11 +1737,11 @@
     },
     {
       "key": "fullRestoreIdempotencyKey",
-      "value": "restore-full-20260909-001"
+      "value": "restore-full-{{$timestamp}}-{{$randomInt}}"
     },
     {
       "key": "pitrRestoreIdempotencyKey",
-      "value": "restore-pitr-20260909-001"
+      "value": "restore-pitr-{{$timestamp}}-{{$randomInt}}"
     },
     {
       "key": "recoveryWindowStart",
@@ -1548,6 +1762,14 @@
     {
       "key": "newStorageSize",
       "value": "30Gi"
+    },
+    {
+      "key": "targetDatabaseName",
+      "value": "orders-restore-{{$randomInt}}"
+    },
+    {
+      "key": "recoveryWindowEnd",
+      "value": ""
     }
   ]
 }
