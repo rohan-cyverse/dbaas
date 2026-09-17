@@ -5,14 +5,11 @@ import com.cyfuture.dbaas.dto.RestoreResponse;
 import com.cyfuture.dbaas.entity.BackupMetadata;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.OperationMetadata;
-import com.cyfuture.dbaas.entity.ProjectMetadata;
 import com.cyfuture.dbaas.entity.RestoreRequestMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.BackupStatus;
 import com.cyfuture.dbaas.model.BackupType;
-import com.cyfuture.dbaas.model.DatabaseMode;
 import com.cyfuture.dbaas.model.DatabaseStatus;
-import com.cyfuture.dbaas.model.DesiredState;
 import com.cyfuture.dbaas.model.OperationStatus;
 import com.cyfuture.dbaas.model.OperationType;
 import com.cyfuture.dbaas.model.ProvisioningStage;
@@ -25,6 +22,7 @@ import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import com.cyfuture.dbaas.repository.RestoreRequestMetadataRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -57,6 +55,10 @@ public class RestoreService {
     private final PitrRecoveryService pitrRecoveryService;
     private final BackupPolicyService backupPolicyService;
     private final DatabaseService databaseService;
+    private final OperationService operationService;
+
+    @Value("${dbaas.restore.rollback-retention-minutes:60}")
+    private long rollbackRetentionMinutes = 60L;
 
     @Transactional
     public RestoreResponse restore(String project, String databaseId,
@@ -157,10 +159,9 @@ public class RestoreService {
 
     private RestoreResponse restoreFull(String project, DatabaseMetadata source,
                                         String idempotencyKey, CreateRestoreRequest request) {
-        RestoreOptions options = validateRestoreOptions(request);
-        String requestHash = hash(RestoreMode.FULL.name(), request.backupId(), options.targetDatabaseName(),
-                String.valueOf(options.temporary()), String.valueOf(options.expiresAfterHours()),
-                options.accessMode().name());
+        RestoreOptions options = validateRestoreOptions(request, source);
+        String requestHash = hash(RestoreMode.FULL.name(), request.backupId(), "IN_PLACE",
+                String.valueOf(request.createSafetyBackup()));
         RestoreResponse duplicate = duplicateForSource(project, source.getDatabaseId(), idempotencyKey, requestHash);
         if (duplicate != null) return duplicate;
         BackupMetadata backup = backupRepository.findByBackupIdAndProjectNameAndDatabaseId(
@@ -168,13 +169,12 @@ public class RestoreService {
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "BACKUP_NOT_FOUND", false,
                         "Backup was not found for this database."));
         validateFullBackup(backup, source);
-        ensureNoActiveTemporaryRestore(project, source.getDatabaseId());
         return createRestore(project, source, idempotencyKey, backup, RestoreMode.FULL, null, requestHash, options);
     }
 
     private RestoreResponse restorePointInTime(String project, DatabaseMetadata source,
                                                String idempotencyKey, CreateRestoreRequest request) {
-        RestoreOptions options = validateRestoreOptions(request);
+        RestoreOptions options = validateRestoreOptions(request, source);
         BackupEngineStrategy strategy = strategies.require(source.getEngine());
         if (!strategy.supportsPitrTopology(source.getMode())) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "PITR_NOT_SUPPORTED", false,
@@ -185,9 +185,8 @@ public class RestoreService {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_RESTORE_TIME", false,
                     "restoreTime must be a past UTC timestamp.");
         }
-        String requestHash = hash(RestoreMode.POINT_IN_TIME.name(), restoreTime.toString(), options.targetDatabaseName(),
-                String.valueOf(options.temporary()), String.valueOf(options.expiresAfterHours()),
-                options.accessMode().name());
+        String requestHash = hash(RestoreMode.POINT_IN_TIME.name(), restoreTime.toString(), "IN_PLACE",
+                String.valueOf(request.createSafetyBackup()));
         RestoreResponse duplicate = duplicateForSource(project, source.getDatabaseId(), idempotencyKey, requestHash);
         if (duplicate != null) return duplicate;
         backupPolicyService.refresh(project, source.getDatabaseId());
@@ -196,7 +195,6 @@ public class RestoreService {
             throw new ApiException(HttpStatus.CONFLICT, "RESTORE_TIME_OUTSIDE_WINDOW", false,
                     "restoreTime must be inside the currently recoverable window, not exactly at its boundaries.");
         }
-        ensureNoActiveTemporaryRestore(project, source.getDatabaseId());
         // KubeBlocks PITR restores from the continuous backup resource. That
         // resource references the qualifying full backup used as its base.
         return createRestore(project, source, idempotencyKey, window.latestContinuousBackup(),
@@ -206,24 +204,22 @@ public class RestoreService {
     private RestoreResponse createRestore(String project, DatabaseMetadata source, String idempotencyKey,
                                           BackupMetadata backup, RestoreMode mode, Instant restoreTime,
                                           String requestHash, RestoreOptions options) {
-        ProjectMetadata projectMetadata = projectService.requireActiveProject(project);
+        projectService.requireActiveProject(project);
+        operationService.rejectIfMutatingOperationActive(project, source.getDatabaseId());
+        ensureNoActiveTemporaryRestore(project, source.getDatabaseId());
         String restoreId = "rst-" + shortId();
-        String restoredDatabaseId = "db-" + shortId();
         String operationId = "op-" + shortId();
+        String restoreSuffix = shortId().substring(0, 8);
+        String temporaryClusterName = source.getDatabaseId() + "-restore-" + restoreSuffix;
+        String oldClusterName = source.physicalClusterName();
         Instant now = Instant.now();
-        DatabaseMetadata target = restoredDatabase(source, project, restoredDatabaseId,
-                uniqueDisplayName(project, options.targetDatabaseName(), restoreId));
-        target.setOperationId(operationId);
-        target.setIdempotencyKey("restore:" + restoreId);
-        target.setRequestHash(requestHash);
-        target.setNamespaceName(projectMetadata.getNamespaceName());
-        target.setStatus(DatabaseStatus.PROVISIONING);
-        target.setDesiredState(DesiredState.RUNNING);
-        target.setProvisioningStage(ProvisioningStage.RESTORING_DATA);
-        target.setProgress(5);
-        target.setMessage("Restore request queued");
-        target.setCreatedAt(now);
-        target.setUpdatedAt(now);
+        if (source.getActiveClusterName() == null || source.getActiveClusterName().isBlank()) {
+            source.setActiveClusterName(source.getDatabaseId());
+        }
+        source.setProvisioningStage(ProvisioningStage.CREATING_SAFETY_BACKUP);
+        source.setProgress(5);
+        source.setMessage("Restore request queued");
+        source.setUpdatedAt(now);
 
         RestoreRequestMetadata restore = new RestoreRequestMetadata();
         restore.setRestoreId(restoreId);
@@ -232,12 +228,14 @@ public class RestoreService {
         restore.setSourceDatabaseId(source.getDatabaseId());
         restore.setSourceBackupId(backup.getBackupId());
         restore.setRestoreMode(mode);
-        restore.setRestoredDatabaseId(restoredDatabaseId);
-        restore.setTargetDatabaseName(target.getDisplayName());
+        restore.setRestoredDatabaseId(source.getDatabaseId());
+        restore.setTemporaryClusterName(temporaryClusterName);
+        restore.setOldClusterName(oldClusterName);
+        restore.setTargetDatabaseName(source.getDisplayName());
         restore.setRestoreTime(restoreTime);
-        restore.setTemporary(options.temporary());
-        restore.setExpiresAfterHours(options.expiresAfterHours());
-        restore.setExpiresAt(options.temporary() ? now.plusSeconds(options.expiresAfterHours() * 3600L) : null);
+        restore.setTemporary(true);
+        restore.setExpiresAfterHours(null);
+        restore.setExpiresAt(null);
         restore.setAccessMode(options.accessMode());
         restore.setKubernetesOpsRequestName(restoreId);
         restore.setStatus(RestoreStatus.PENDING);
@@ -247,20 +245,21 @@ public class RestoreService {
 
         OperationMetadata operation = OperationMetadata.builder()
                 .operationId(operationId)
-                .databaseId(restoredDatabaseId)
+                .databaseId(source.getDatabaseId())
                 .projectName(project)
                 .type(OperationType.RESTORE)
                 .status(OperationStatus.PENDING)
-                .provisioningStage(ProvisioningStage.RESTORING_DATA)
+                .provisioningStage(ProvisioningStage.CREATING_SAFETY_BACKUP)
                 .progress(5)
                 .message(mode == RestoreMode.POINT_IN_TIME ? "Point-in-time restore queued" : "Restore queued")
                 .idempotencyKey(idempotencyKey)
                 .requestHash(requestHash)
                 .opsRequestName(restore.getKubernetesOpsRequestName())
                 .createdAt(now)
+                .timeoutAt(now.plusMillis(3_600_000L))
                 .build();
         try {
-            databaseRepository.save(target);
+            databaseRepository.save(source);
             restoreRepository.save(restore);
             operationRepository.save(operation);
         } catch (DataIntegrityViolationException exception) {
@@ -291,43 +290,6 @@ public class RestoreService {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "BACKUP_NOT_RESTORABLE", false,
                     "This backup is not compatible with the current database topology.");
         }
-    }
-
-    private DatabaseMetadata restoredDatabase(DatabaseMetadata source, String project,
-                                               String databaseId, String displayName) {
-        DatabaseMetadata target = new DatabaseMetadata();
-        target.setDatabaseId(databaseId);
-        target.setProjectName(project);
-        target.setDisplayName(displayName);
-        target.setRemark("Restored database");
-        target.setEngine(source.getEngine());
-        target.setMode(source.getMode());
-        target.setDatabaseVersion(source.getDatabaseVersion());
-        target.setSizePlan(source.getSizePlan());
-        target.setStorageGi(source.getStorageGi());
-        target.setReplicas(source.getReplicas());
-        target.setShards(source.getShards());
-        target.setExpectedReplicas(source.getMode() == DatabaseMode.SHARDING
-                ? source.getShards() * source.getReplicas() + 5 : source.getReplicas());
-        target.setObservedReadyReplicas(0);
-        target.setObservedServiceReady(false);
-        target.setTimezone(source.getTimezone());
-        target.setAllowedCidrs(source.getAllowedCidrs());
-        target.setTags(source.getTags());
-        target.setDeletionProtection(false);
-        return target;
-    }
-
-    private String uniqueDisplayName(String project, String requested, String restoreId) {
-        String base = blank(requested) ? "restore-" + restoreId.substring(4) : requested.trim();
-        if (!databaseRepository.existsByProjectNameAndDisplayName(project, base)) return base;
-        for (int i = 0; i < 12; i++) {
-            String suffix = "-" + shortId().substring(0, 4);
-            String candidate = base.substring(0, Math.min(base.length(), 32 - suffix.length())) + suffix;
-            if (!databaseRepository.existsByProjectNameAndDisplayName(project, candidate)) return candidate;
-        }
-        throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "DATABASE_NAME_ALLOCATION_FAILED", true,
-                "Unable to allocate a name for the restored database. Retry the request.");
     }
 
     private Instant parseUtcRestoreTime(String value) {
@@ -377,23 +339,20 @@ public class RestoreService {
         databaseService.delete(restore.getProjectName(), restore.getRestoredDatabaseId());
     }
 
-    private RestoreOptions validateRestoreOptions(CreateRestoreRequest request) {
-        boolean temporary = request.temporary() == null || request.temporary();
-        int expiresAfterHours = request.expiresAfterHours() == null ? 24 : request.expiresAfterHours();
-        RestoreAccessMode accessMode = request.accessMode() == null ? RestoreAccessMode.PRIVATE : request.accessMode();
-        if (!temporary) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "RESTORE_MUST_BE_TEMPORARY", false,
-                    "Restore creates a temporary database. Promote it after validation to make it permanent.");
+    private RestoreOptions validateRestoreOptions(CreateRestoreRequest request, DatabaseMetadata source) {
+        if (request.target() == null || !"IN_PLACE".equals(request.target())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_RESTORE_TARGET", false,
+                    "Restore target must be IN_PLACE.");
         }
-        if (expiresAfterHours < 1 || expiresAfterHours > 24) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_RESTORE_EXPIRY", false,
-                    "expiresAfterHours must be between 1 and 24.");
+        if (Boolean.FALSE.equals(request.createSafetyBackup())) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "SAFETY_BACKUP_REQUIRED", false,
+                    "In-place restore requires createSafetyBackup=true.");
         }
-        if (accessMode != RestoreAccessMode.PRIVATE) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_RESTORE_ACCESS_MODE", false,
-                    "Temporary restores support PRIVATE access only.");
+        if (blank(request.confirmation()) || !source.getDisplayName().equals(request.confirmation())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "RESTORE_CONFIRMATION_REQUIRED", false,
+                    "confirmation must match the database name.");
         }
-        return new RestoreOptions(request.targetDatabaseName(), temporary, expiresAfterHours, accessMode);
+        return new RestoreOptions(null, false, 0, RestoreAccessMode.PRIVATE);
     }
 
     private void ensureNoActiveTemporaryRestore(String project, String databaseId) {
@@ -407,7 +366,9 @@ public class RestoreService {
     }
 
     private List<RestoreStatus> activeTemporaryStatuses() {
-        return List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING, RestoreStatus.READY, RestoreStatus.COMPLETED);
+        return List.of(RestoreStatus.PENDING, RestoreStatus.SAFETY_BACKUP, RestoreStatus.RESTORING,
+                RestoreStatus.VALIDATING, RestoreStatus.CUTTING_OVER, RestoreStatus.ROLLING_BACK,
+                RestoreStatus.RUNNING, RestoreStatus.READY);
     }
 
     private record RestoreOptions(String targetDatabaseName, boolean temporary,

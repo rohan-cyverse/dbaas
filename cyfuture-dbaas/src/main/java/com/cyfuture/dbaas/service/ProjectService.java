@@ -93,7 +93,9 @@ public class ProjectService {
                     "Project deletion is blocked while a backup operation is active.");
         }
         if (restoreRepository.existsByProjectNameAndStatusIn(project,
-                List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))) {
+                List.of(RestoreStatus.PENDING, RestoreStatus.SAFETY_BACKUP, RestoreStatus.RESTORING,
+                        RestoreStatus.VALIDATING, RestoreStatus.CUTTING_OVER, RestoreStatus.ROLLING_BACK,
+                        RestoreStatus.RUNNING))) {
             throw new ApiException(HttpStatus.CONFLICT, "PROJECT_RESTORE_IN_PROGRESS", false,
                     "Project deletion is blocked while a restore is active.");
         }
@@ -147,16 +149,18 @@ public class ProjectService {
                 || backupRepository.existsByProjectNameAndStatusIn(metadata.getProjectId(),
                 List.of(BackupStatus.COMPLETED, BackupStatus.FAILED))
                 || restoreRepository.existsByProjectNameAndStatusIn(metadata.getProjectId(),
-                List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))) {
+                List.of(RestoreStatus.PENDING, RestoreStatus.SAFETY_BACKUP, RestoreStatus.RESTORING,
+                        RestoreStatus.VALIDATING, RestoreStatus.CUTTING_OVER, RestoreStatus.ROLLING_BACK,
+                        RestoreStatus.RUNNING))) {
             return;
         }
         if (hasActiveKubernetesBackup(databases)) return;
         for (DatabaseMetadata database : databases) {
             kubeBlocksClient.prepareProjectDatabaseDeletion(
-                    database.getNamespaceName(), database.getDatabaseId());
+                    database.getNamespaceName(), database.physicalClusterName());
         }
         boolean clustersGone = databases.stream().allMatch(database -> !kubeBlocksClient
-                .observeCluster(database.getNamespaceName(), database.getDatabaseId()).exists());
+                .observeCluster(database.getNamespaceName(), database.physicalClusterName()).exists());
         if (!clustersGone) return;
 
         kubeBlocksClient.deleteProjectNamespace(metadata.getNamespaceName(), metadata.getProjectId());
@@ -170,7 +174,7 @@ public class ProjectService {
 
     private boolean hasActiveKubernetesBackup(List<DatabaseMetadata> databases) {
         return databases.stream().anyMatch(database -> kubeBlocksClient.hasActiveBackup(
-                database.getNamespaceName(), database.getDatabaseId()));
+                database.getNamespaceName(), database.physicalClusterName()));
     }
 
     private DeleteProjectResponse deletionResponse(ProjectMetadata metadata) {

@@ -16,5 +16,16 @@ public record CreateRestoreRequest(
         @Size(max = 32) String targetDatabaseName,
         Boolean temporary,
         Integer expiresAfterHours,
-        RestoreAccessMode accessMode
-) {}
+        RestoreAccessMode accessMode,
+        @Schema(example = "IN_PLACE", allowableValues = {"IN_PLACE"})
+        String target,
+        Boolean createSafetyBackup,
+        @Size(max = 32) String confirmation
+) {
+    public CreateRestoreRequest(RestoreMode mode, String backupId, String restoreTime,
+                                String targetDatabaseName, Boolean temporary,
+                                Integer expiresAfterHours, RestoreAccessMode accessMode) {
+        this(mode, backupId, restoreTime, targetDatabaseName, temporary, expiresAfterHours,
+                accessMode, null, null, null);
+    }
+}

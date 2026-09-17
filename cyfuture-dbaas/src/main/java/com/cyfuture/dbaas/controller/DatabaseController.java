@@ -1,5 +1,7 @@
 package com.cyfuture.dbaas.controller;
 
+import com.cyfuture.dbaas.dto.AccessRulesRequest;
+import com.cyfuture.dbaas.dto.AccessRulesResponse;
 import com.cyfuture.dbaas.dto.ConnectionResponse;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
 import com.cyfuture.dbaas.dto.CreateDatabaseResponse;
@@ -236,6 +238,34 @@ public class DatabaseController {
                 )
                 .header("Pragma", "no-cache")
                 .body(response);
+    }
+
+    @GetMapping("/{databaseId}/access-rules")
+    @Operation(
+            summary = "Get public access rules",
+            description = "Returns the IPv4 CIDRs currently allowed to connect through the public endpoint."
+    )
+    public AccessRulesResponse accessRules(
+            @PathVariable String project,
+            @PathVariable String databaseId
+    ) {
+        return databaseService.accessRules(project, databaseId);
+    }
+
+    @PutMapping("/{databaseId}/access-rules")
+    @Operation(
+            summary = "Update public access rules",
+            description = "Replaces the allowed IPv4 CIDRs for the public endpoint. Use includeCurrentClientIp to add the caller's detected public IP as /32."
+    )
+    public AccessRulesResponse updateAccessRules(
+            @PathVariable String project,
+            @PathVariable String databaseId,
+            @Valid @RequestBody AccessRulesRequest request,
+            HttpServletRequest httpRequest
+    ) {
+        String clientIp = request.includeCurrentClientIp()
+                ? clientIpResolver.resolve(httpRequest) : null;
+        return databaseService.updateAccessRules(project, databaseId, request, clientIp);
     }
 
     @PostMapping("/{databaseId}/credentials/rotate")

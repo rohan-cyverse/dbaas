@@ -46,6 +46,8 @@ public class DatabaseMetadata {
     private String namespaceName;
     @Column(nullable = false, length = 32)
     private String displayName;
+    @Column(length = 63)
+    private String activeClusterName;
     @Column(length = 64)
     private String remark;
     @Enumerated(EnumType.STRING) @Column(length = 32) private DatabaseEngine engine;
@@ -83,4 +85,9 @@ public class DatabaseMetadata {
     private Instant degradedSince;
     private Instant deleteRequestedAt;
     private Instant deletedAt;
+
+    public String physicalClusterName() {
+        return activeClusterName == null || activeClusterName.isBlank()
+                ? databaseId : activeClusterName;
+    }
 }

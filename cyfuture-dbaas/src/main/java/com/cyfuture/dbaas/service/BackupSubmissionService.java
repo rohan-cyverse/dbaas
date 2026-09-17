@@ -49,7 +49,7 @@ public class BackupSubmissionService {
                 return;
             }
             KubeBlocksClient.BackupPolicyInfo policy = kubeBlocksClient.resolveReadyBackupPolicy(
-                    source.getNamespaceName(), source.getDatabaseId(), source.getEngine(),
+                    source.getNamespaceName(), source.physicalClusterName(), source.getEngine(),
                     method, normalizer.repositoryName());
             kubeBlocksClient.createBackup(source.getNamespaceName(), backup.getProjectName(),
                     backup.getDatabaseId(), backup.getKubernetesBackupName(), policy.policyName(),
@@ -103,6 +103,7 @@ public class BackupSubmissionService {
             operation.setProvisioningStage(stage);
             operation.setProgress(progress);
             operation.setMessage(message);
+            operation.setLastHeartbeatAt(Instant.now());
             if (operation.getStartedAt() == null) operation.setStartedAt(Instant.now());
             if (completed) operation.setCompletedAt(Instant.now());
             operationRepository.save(operation);

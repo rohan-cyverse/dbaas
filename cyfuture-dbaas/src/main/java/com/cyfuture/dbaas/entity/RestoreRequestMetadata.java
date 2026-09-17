@@ -20,8 +20,6 @@ import java.time.Instant;
 @Table(name = "restores", uniqueConstraints = {
         @UniqueConstraint(name = "uk_restore_project_source_database_idempotency",
                 columnNames = {"project_name", "source_database_id", "idempotency_key"}),
-        @UniqueConstraint(name = "uk_restore_target_database",
-                columnNames = "restored_database_id"),
         @UniqueConstraint(name = "uk_restore_ops_request",
                 columnNames = "kubernetes_ops_request_name")
 })
@@ -45,6 +43,10 @@ public class RestoreRequestMetadata {
     private RestoreMode restoreMode;
     @Column(nullable = false, length = 32)
     private String restoredDatabaseId;
+    @Column(length = 63)
+    private String temporaryClusterName;
+    @Column(length = 63)
+    private String oldClusterName;
     @Column(nullable = false, length = 32)
     private String targetDatabaseName;
     private Instant restoreTime;
@@ -75,5 +77,13 @@ public class RestoreRequestMetadata {
     private Instant completedAt;
     private Instant promotedAt;
     private Instant deletedAt;
+    private Instant oldClusterDeleteAt;
+    private Instant oldClusterDeletedAt;
     private Instant lastObservedAt;
+    @Column(length = 32)
+    private String safetyBackupId;
+    @Column(nullable = false)
+    private boolean dataReplacementStarted;
+    @Column(nullable = false)
+    private boolean rollbackAttempted;
 }

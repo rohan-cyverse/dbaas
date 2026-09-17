@@ -71,10 +71,17 @@ public class PitrRecoveryService {
     }
 
     public RecoveryWindowResponse response(PitrWindow window) {
-        String errorCode = window.status() == PitrStatus.UNHEALTHY ? "PITR_UNHEALTHY" : null;
-        String errorMessage = window.status() == PitrStatus.UNHEALTHY ? window.message() : null;
+        String errorCode = window.status() == PitrStatus.UNHEALTHY ? "PITR_UNHEALTHY"
+                : window.status() == PitrStatus.PENDING ? pendingReason(window) : null;
+        String errorMessage = window.status() == PitrStatus.UNHEALTHY
+                || window.status() == PitrStatus.PENDING ? window.message() : null;
         return new RecoveryWindowResponse(window.databaseId(), window.enabled(), window.status(),
                 window.startsAt(), window.endsAt(), errorCode, errorMessage, window.observedAt());
+    }
+
+    private String pendingReason(PitrWindow window) {
+        if (window.baseBackup() == null) return "WAITING_FOR_BASE_BACKUP";
+        return "WAITING_FOR_WAL_ARCHIVE";
     }
 
     private PitrWindow calculate(BackupPolicyMetadata settings, Instant now) {
@@ -120,7 +127,7 @@ public class PitrRecoveryService {
                 .toList();
         if (continuous.isEmpty()) {
             return result(settings, PitrStatus.PENDING, null, null, bases.get(0), null,
-                    "Waiting for continuous log backup coverage.", now);
+                    "Waiting for continuous WAL archive coverage.", now);
         }
 
         Map<String, BackupMetadata> byId = new HashMap<>();

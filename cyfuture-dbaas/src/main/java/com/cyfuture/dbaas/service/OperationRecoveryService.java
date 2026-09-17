@@ -14,10 +14,13 @@ import com.cyfuture.dbaas.repository.BackupMetadataRepository;
 import com.cyfuture.dbaas.repository.RestoreRequestMetadataRepository;
 import com.cyfuture.dbaas.repository.BackupPolicyMetadataRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Arrays;
 import java.util.Map;
@@ -37,10 +40,12 @@ public class OperationRecoveryService {
     private final BackupPolicyMetadataRepository backupPolicyRepository;
     private final BackupPolicySubmissionService backupPolicySubmissionService;
 
+    @Value("${dbaas.operation-timeout-ms:3600000}")
+    private long operationTimeoutMs = 3_600_000L;
+
     @EventListener(ApplicationReadyEvent.class)
     public void resumeInterruptedOperations() {
-        List<OperationMetadata> interrupted = operationRepository.findByStatusIn(
-                List.of(OperationStatus.PENDING, OperationStatus.RUNNING));
+        List<OperationMetadata> interrupted = operationRepository.findByStatusIn(activeStatuses());
         for (OperationMetadata operation : interrupted) {
             databaseRepository
                     .findByDatabaseIdAndProjectName(
@@ -73,6 +78,35 @@ public class OperationRecoveryService {
                         }
                     });
         }
+    }
+
+    @Scheduled(fixedDelayString = "${dbaas.operation.reconcile-ms:30000}")
+    public void recoverStaleOperations() {
+        Instant now = Instant.now();
+        for (OperationMetadata operation : operationRepository.findByStatusIn(activeStatuses())) {
+            Instant heartbeat = operation.getLastHeartbeatAt() == null
+                    ? operation.getStartedAt() == null ? operation.getCreatedAt() : operation.getStartedAt()
+                    : operation.getLastHeartbeatAt();
+            Instant timeoutAt = operation.getTimeoutAt() == null && heartbeat != null
+                    ? heartbeat.plusMillis(operationTimeoutMs) : operation.getTimeoutAt();
+            if (timeoutAt == null || timeoutAt.isAfter(now)) continue;
+            if (operation.getStatus() == OperationStatus.CANCEL_REQUESTED
+                    || operation.getStatus() == OperationStatus.CANCELLING) {
+                operation.setStatus(OperationStatus.CANCELLED);
+                operation.setMessage("Operation cancelled after stale cancellation recovery");
+            } else {
+                operation.setStatus(OperationStatus.FAILED);
+                operation.setMessage("Operation timed out and was released by recovery");
+            }
+            operation.setProgress(100);
+            operation.setCompletedAt(now);
+            operationRepository.save(operation);
+        }
+    }
+
+    private List<OperationStatus> activeStatuses() {
+        return List.of(OperationStatus.PENDING, OperationStatus.RUNNING,
+                OperationStatus.CANCEL_REQUESTED, OperationStatus.CANCELLING);
     }
 
     private CreateDatabaseRequest request(DatabaseMetadata database) {

@@ -3,6 +3,8 @@ package com.cyfuture.dbaas.service;
 import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.client.DatabaseObservation;
 import com.cyfuture.dbaas.config.DatabaseProperties;
+import com.cyfuture.dbaas.dto.AccessRulesRequest;
+import com.cyfuture.dbaas.dto.AccessRulesResponse;
 import com.cyfuture.dbaas.dto.ConnectionResponse;
 import com.cyfuture.dbaas.dto.BackupSettingsRequest;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
@@ -57,6 +59,7 @@ public class DatabaseService {
     private static final Pattern CIDR = Pattern.compile(
             "^((25[0-5]|2[0-4]\\d|1?\\d?\\d)\\.){3}(25[0-5]|2[0-4]\\d|1?\\d?\\d)/(3[0-2]|[12]?\\d)$");
     private static final Pattern IDEMPOTENCY_KEY = Pattern.compile("^[A-Za-z0-9._:-]{8,128}$");
+    private static final int MAX_ALLOWED_CIDRS = 10;
     private static final int MAX_DISPLAY_NAME_LENGTH = 32;
     private static final int NAME_ALLOCATION_ATTEMPTS = 12;
 
@@ -216,7 +219,7 @@ public class DatabaseService {
             return fromMetadata(metadata);
         }
         try {
-            DatabaseObservation live = kubeBlocksClient.get(metadata.getNamespaceName(), databaseId);
+            DatabaseObservation live = kubeBlocksClient.get(metadata.getNamespaceName(), metadata.physicalClusterName());
             syncLiveStatus(metadata, live);
             return withPublicAccess(metadata, live, true);
         } catch (ApiException exception) {
@@ -251,7 +254,7 @@ public class DatabaseService {
                     "Database connection is not ready; current stage is " + stage(database));
         }
         authorizeCaller(database, clientIp);
-        DatabaseObservation live = kubeBlocksClient.get(database.getNamespaceName(), databaseId);
+        DatabaseObservation live = kubeBlocksClient.get(database.getNamespaceName(), database.physicalClusterName());
         if (live.status() != DatabaseStatus.RUNNING || !live.serviceReady()) {
             throw new ApiException(HttpStatus.CONFLICT, "DATABASE_NOT_READY", true,
                     "Database is not ready for connections");
@@ -260,9 +263,11 @@ public class DatabaseService {
         // its recovery point. Re-establish that specific credential first if
         // its managed Secret was removed; never fall back to creating a
         // target-ID-named database.
-        RestoreRequestMetadata restore = restoreRepository.findByRestoredDatabaseId(databaseId).orElse(null);
-        if (restore != null && (restore.getStatus() == RestoreStatus.READY
-                || restore.getStatus() == RestoreStatus.COMPLETED)) {
+        RestoreRequestMetadata restore = restoreRepository
+                .findFirstByRestoredDatabaseIdAndStatusInOrderByCreatedAtDesc(databaseId,
+                        List.of(RestoreStatus.COMPLETED, RestoreStatus.READY))
+                .orElse(null);
+        if (restore != null) {
             if (!credentialLifecycleService.readyForRestoredDatabase(database,
                     CredentialLifecycleService.managedDatabaseName(restore.getSourceDatabaseId()),
                     CredentialLifecycleService.managedUsername(restore.getSourceDatabaseId()))) {
@@ -273,7 +278,7 @@ public class DatabaseService {
         ManagedCredential credential = credentialLifecycleService.credentials(database);
         PublicEndpointResponse publicEndpoint = publicEndpoint(database);
         if (restore != null && restore.getAccessMode() == com.cyfuture.dbaas.model.RestoreAccessMode.PRIVATE) {
-            String host = database.getDatabaseId() + "." + database.getNamespaceName() + ".svc.cluster.local";
+            String host = database.physicalClusterName() + "." + database.getNamespaceName() + ".svc.cluster.local";
             return new ConnectionResponse(credential.username(), credential.password(),
                     connectionUri(database.getEngine(), database.getMode(), false,
                             credential.username(), credential.password(), host,
@@ -296,6 +301,25 @@ public class DatabaseService {
                 requireDatabase(project, databaseId));
     }
 
+    public AccessRulesResponse accessRules(String project, String databaseId) {
+        DatabaseMetadata database = requireDatabase(project, databaseId);
+        return new AccessRulesResponse(database.getDatabaseId(),
+                metadataCidrs(database), publicEndpoint(database));
+    }
+
+    public AccessRulesResponse updateAccessRules(String project, String databaseId,
+                                                 AccessRulesRequest request, String clientIp) {
+        DatabaseMetadata database = requireDatabase(project, databaseId);
+        List<String> cidrs = normalizeAccessRules(request.allowedCidrs(),
+                request.includeCurrentClientIp(), clientIp);
+        validateNetwork(cidrs);
+        database.setAllowedCidrs(cidrs.toString());
+        database.setUpdatedAt(Instant.now());
+        databaseRepository.save(database);
+        sharedGatewayService.reconcileNow();
+        return new AccessRulesResponse(database.getDatabaseId(), cidrs, publicEndpoint(database));
+    }
+
     public DeleteDatabaseResponse delete(String project, String databaseId) {
         DatabaseMetadata database = requireDatabase(project, databaseId);
         if (database.getStatus() == DatabaseStatus.DELETED) {
@@ -313,10 +337,14 @@ public class DatabaseService {
         if (backupRepository.existsByProjectNameAndDatabaseIdAndStatusIn(project, databaseId,
                 List.of(BackupStatus.PENDING, BackupStatus.RUNNING, BackupStatus.DELETING))
                 || restoreRepository.existsByProjectNameAndSourceDatabaseIdAndStatusIn(project, databaseId,
-                List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))
+                List.of(RestoreStatus.PENDING, RestoreStatus.SAFETY_BACKUP, RestoreStatus.RESTORING,
+                        RestoreStatus.VALIDATING, RestoreStatus.CUTTING_OVER, RestoreStatus.ROLLING_BACK,
+                        RestoreStatus.RUNNING))
                 || restoreRepository.existsByRestoredDatabaseIdAndStatusIn(databaseId,
-                List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))
-                || kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), databaseId)) {
+                List.of(RestoreStatus.PENDING, RestoreStatus.SAFETY_BACKUP, RestoreStatus.RESTORING,
+                        RestoreStatus.VALIDATING, RestoreStatus.CUTTING_OVER, RestoreStatus.ROLLING_BACK,
+                        RestoreStatus.RUNNING))
+                || kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), database.physicalClusterName())) {
             throw new ApiException(HttpStatus.CONFLICT, "BACKUP_OR_RESTORE_IN_PROGRESS", false,
                     "Database deletion is blocked while a backup or restore is active.");
         }
@@ -340,7 +368,7 @@ public class DatabaseService {
         databaseRepository.save(database);
 
         if (!backupRetentionService.readyForClusterDeletion(project, databaseId)
-                || kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), databaseId)) {
+                || kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), database.physicalClusterName())) {
             database.setMessage("Database deletion is waiting for active backup or restore work");
             database.setUpdatedAt(Instant.now());
             databaseRepository.save(database);
@@ -367,9 +395,9 @@ public class DatabaseService {
                 databaseRepository.save(database);
                 return deletionResponse(database);
             }
-            kubeBlocksClient.requestDelete(database.getNamespaceName(), databaseId);
+            kubeBlocksClient.requestDelete(database.getNamespaceName(), database.physicalClusterName());
             KubeBlocksClient.ClusterObservation observation = kubeBlocksClient.observeCluster(
-                    database.getNamespaceName(), databaseId);
+                    database.getNamespaceName(), database.physicalClusterName());
             if (!observation.exists()) {
                 CredentialLifecycleService.CredentialCleanupObservation remaining =
                         credentialLifecycleService.cleanupDatabaseResources(database);
@@ -613,6 +641,9 @@ public class DatabaseService {
         List<String> cidrs = safeCidrs(allowedCidrs);
         if (cidrs.isEmpty())
             throw new ApiException(HttpStatus.BAD_REQUEST, "Could not determine an allowed client IP");
+        if (cidrs.size() > MAX_ALLOWED_CIDRS)
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "A database can have at most " + MAX_ALLOWED_CIDRS + " access rules");
         if (cidrs.stream().anyMatch(cidr -> cidr == null || !CIDR.matcher(cidr).matches()))
             throw new ApiException(HttpStatus.BAD_REQUEST,
                     "Every allowedCidrs value must be a valid IPv4 CIDR such as 49.50.73.146/32");
@@ -642,6 +673,24 @@ public class DatabaseService {
 
     private List<String> safeCidrs(List<String> cidrs) {
         return cidrs == null ? List.of() : List.copyOf(cidrs);
+    }
+
+    private List<String> normalizeAccessRules(List<String> allowedCidrs,
+                                              boolean includeCurrentClientIp,
+                                              String clientIp) {
+        java.util.LinkedHashSet<String> normalized = new java.util.LinkedHashSet<>();
+        safeCidrs(allowedCidrs).stream()
+                .filter(cidr -> cidr != null && !cidr.isBlank())
+                .map(String::trim)
+                .forEach(normalized::add);
+        if (includeCurrentClientIp) {
+            if (clientIp == null || clientIp.isBlank()) {
+                throw new ApiException(HttpStatus.BAD_REQUEST,
+                        "Could not detect the caller public IP for database access");
+            }
+            normalized.add(clientIp.trim() + "/32");
+        }
+        return normalized.stream().sorted().toList();
     }
 
     private CreateDatabaseRequest publicRequest(CreateDatabaseRequest request,
@@ -780,7 +829,7 @@ public class DatabaseService {
             DatabaseMetadata database
     ) {
         try {
-            DatabaseObservation live = kubeBlocksClient.get(database.getNamespaceName(), database.getDatabaseId());
+            DatabaseObservation live = kubeBlocksClient.get(database.getNamespaceName(), database.physicalClusterName());
             syncLiveStatus(database, live);
             return withPublicAccess(database, live, false);
         } catch (ApiException exception) {

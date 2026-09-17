@@ -21,7 +21,8 @@ public interface RestoreRequestMetadataRepository extends JpaRepository<RestoreR
             String restoreId, String projectName, String sourceDatabaseId);
     Optional<RestoreRequestMetadata> findFirstByProjectNameAndSourceDatabaseIdAndTemporaryTrueAndPromotedAtIsNullAndDeletedAtIsNullAndStatusInOrderByCreatedAtDesc(
             String projectName, String sourceDatabaseId, Collection<RestoreStatus> statuses);
-    Optional<RestoreRequestMetadata> findByRestoredDatabaseId(String restoredDatabaseId);
+    Optional<RestoreRequestMetadata> findFirstByRestoredDatabaseIdAndStatusInOrderByCreatedAtDesc(
+            String restoredDatabaseId, Collection<RestoreStatus> statuses);
     boolean existsByRestoredDatabaseId(String restoredDatabaseId);
     Optional<RestoreRequestMetadata> findByOperationId(String operationId);
     boolean existsByProjectNameAndSourceBackupIdAndStatusIn(
@@ -34,4 +35,6 @@ public interface RestoreRequestMetadataRepository extends JpaRepository<RestoreR
     boolean existsByRestoredDatabaseIdAndStatusIn(String restoredDatabaseId,
                                                   Collection<RestoreStatus> statuses);
     boolean existsByProjectNameAndStatusIn(String projectName, Collection<RestoreStatus> statuses);
+    List<RestoreRequestMetadata> findByOldClusterDeleteAtBeforeAndOldClusterDeletedAtIsNullAndStatus(
+            Instant oldClusterDeleteAt, RestoreStatus status);
 }

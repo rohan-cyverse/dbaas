@@ -31,9 +31,10 @@ public class DatabaseBackendResolver {
     }
 
     static Optional<V1Service> select(List<V1Service> services, DatabaseMetadata db, int port) {
+        String physicalClusterName = db.physicalClusterName();
         return services.stream()
                 .filter(x -> x.getMetadata() != null && x.getMetadata().getName() != null)
-                .filter(x -> belongsToDatabase(x, db.getDatabaseId()))
+                .filter(x -> belongsToDatabase(x, physicalClusterName))
                 .filter(x -> x.getSpec() != null && x.getSpec().getClusterIP() != null
                         && !"None".equalsIgnoreCase(x.getSpec().getClusterIP()))
                 .filter(x -> x.getSpec().getPorts() != null && x.getSpec().getPorts().stream()

@@ -50,7 +50,8 @@ class BackupRecoveryApiContractTest {
     void usesExplicitTypeAndModePayloadFields() {
         assertEquals(Set.of("type", "retentionDays"), componentNames(CreateBackupRequest.class));
         assertEquals(Set.of("mode", "backupId", "restoreTime", "targetDatabaseName",
-                "temporary", "expiresAfterHours", "accessMode"), componentNames(CreateRestoreRequest.class));
+                "temporary", "expiresAfterHours", "accessMode", "target",
+                "createSafetyBackup", "confirmation"), componentNames(CreateRestoreRequest.class));
         assertEquals(Set.of("restoreId", "databaseId", "operationId", "mode", "backupId", "restoreTime",
                         "targetDatabaseName", "temporary", "expiresAt", "accessMode", "status",
                 "createdAt", "startedAt", "completedAt", "promotedAt", "deletedAt", "errorCode", "errorMessage"),

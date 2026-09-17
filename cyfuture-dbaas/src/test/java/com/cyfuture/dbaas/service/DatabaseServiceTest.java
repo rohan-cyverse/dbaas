@@ -1,5 +1,6 @@
 package com.cyfuture.dbaas.service;
 
+import com.cyfuture.dbaas.dto.AccessRulesRequest;
 import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.client.DatabaseObservation;
 import com.cyfuture.dbaas.config.DatabaseProperties;
@@ -47,6 +48,7 @@ class DatabaseServiceTest {
     private FriendlyNameGenerator friendlyNames;
     private KubeBlocksClient kubeBlocksClient;
     private BackupPolicyService backupPolicyService;
+    private SharedGatewayService sharedGatewayService;
     private DatabaseService service;
 
     @BeforeEach
@@ -66,6 +68,7 @@ class DatabaseServiceTest {
                 .thenReturn(Optional.empty());
         kubeBlocksClient = mock(KubeBlocksClient.class);
         backupPolicyService = mock(BackupPolicyService.class);
+        sharedGatewayService = mock(SharedGatewayService.class);
         when(backupPolicyService.normalizeForCreation(any(BackupSettingsRequest.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         when(backupPolicyService.initialPolicy(any(DatabaseMetadata.class),
@@ -73,7 +76,7 @@ class DatabaseServiceTest {
                 .thenReturn(new BackupPolicyMetadata());
         service = new DatabaseService(kubeBlocksClient, properties, repository,
                 provisioning, metadataCreation, mock(CredentialLifecycleService.class),
-                projects, mock(SharedGatewayService.class), mock(OperationMetadataRepository.class), friendlyNames,
+                projects, sharedGatewayService, mock(OperationMetadataRepository.class), friendlyNames,
                 mock(BackupMetadataRepository.class), mock(RestoreRequestMetadataRepository.class),
                 backupPolicyService, mock(BackupRetentionService.class));
     }
@@ -174,6 +177,37 @@ class DatabaseServiceTest {
         assertTrue(response.deletionProtection());
         verify(kubeBlocksClient).setDeletionProtection("dbaas-orders", "db-orders0001", true);
         verify(repository).save(database);
+    }
+
+    @Test
+    void updatesAccessRulesAndReconcilesGateway() {
+        DatabaseMetadata database = database("db-orders0001");
+        database.setAllowedCidrs("[49.50.73.146/32]");
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+
+        var response = service.updateAccessRules("orders", "db-orders0001",
+                new AccessRulesRequest(List.of("203.0.113.0/24"), true),
+                "157.37.137.185");
+
+        assertEquals(List.of("157.37.137.185/32", "203.0.113.0/24"), response.allowedCidrs());
+        assertEquals("[157.37.137.185/32, 203.0.113.0/24]", database.getAllowedCidrs());
+        verify(repository).save(database);
+        verify(sharedGatewayService).reconcileNow();
+    }
+
+    @Test
+    void rejectsOpenInternetAccessRule() {
+        DatabaseMetadata database = database("db-orders0001");
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.updateAccessRules("orders", "db-orders0001",
+                        new AccessRulesRequest(List.of("0.0.0.0/0"), false), null));
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatus());
+        verify(repository, never()).save(database);
     }
 
     @Test
@@ -305,5 +339,22 @@ class DatabaseServiceTest {
 
     private BackupSettingsRequest backup() {
         return new BackupSettingsRequest(true, 7, "0 2 * * *", "UTC", false);
+    }
+
+    private DatabaseMetadata database(String databaseId) {
+        DatabaseMetadata database = new DatabaseMetadata();
+        database.setDatabaseId(databaseId);
+        database.setProjectName("orders");
+        database.setNamespaceName("dbaas-orders");
+        database.setDisplayName("orders-db");
+        database.setEngine(DatabaseEngine.POSTGRESQL);
+        database.setMode(DatabaseMode.STANDALONE);
+        database.setDatabaseVersion("17.5.0");
+        database.setSizePlan(SizePlan.C1G2);
+        database.setStorageGi(10);
+        database.setStatus(DatabaseStatus.RUNNING);
+        database.setProvisioningStage(ProvisioningStage.READY);
+        database.setProgress(100);
+        return database;
     }
 }

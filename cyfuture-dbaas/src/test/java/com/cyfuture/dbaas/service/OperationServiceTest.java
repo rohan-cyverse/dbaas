@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -51,6 +52,54 @@ class OperationServiceTest {
         assertEquals(HttpStatus.NOT_FOUND, exception.getStatus());
         verify(repository).findByOperationIdAndDatabaseIdAndProjectName(
                 "op-create0001", "db-billing001", "orders");
+    }
+
+    @Test
+    void cancelIsAcceptedBeforeDataReplacementStarts() {
+        OperationMetadata operation = operation();
+        operation.setStatus(OperationStatus.RUNNING);
+        operation.setProvisioningStage(ProvisioningStage.CREATING_SAFETY_BACKUP);
+        when(repository.findByOperationIdAndDatabaseIdAndProjectName(
+                "op-create0001", "db-orders0001", "orders"))
+                .thenReturn(Optional.of(operation));
+
+        var response = service.cancel("orders", "db-orders0001", "op-create0001");
+
+        assertEquals(OperationStatus.CANCEL_REQUESTED, response.status());
+        verify(repository).save(operation);
+    }
+
+    @Test
+    void cancelIsRejectedAfterDataReplacementStarts() {
+        OperationMetadata operation = operation();
+        operation.setStatus(OperationStatus.RUNNING);
+        operation.setProvisioningStage(ProvisioningStage.REPLACING_DATA);
+        when(repository.findByOperationIdAndDatabaseIdAndProjectName(
+                "op-create0001", "db-orders0001", "orders"))
+                .thenReturn(Optional.of(operation));
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.cancel("orders", "db-orders0001", "op-create0001"));
+
+        assertEquals(HttpStatus.CONFLICT, exception.getStatus());
+        assertEquals("OPERATION_NOT_CANCELLABLE", exception.getCode());
+    }
+
+    @Test
+    void activeOperationBlocksNewMutatingOperation() {
+        OperationMetadata operation = operation();
+        operation.setStatus(OperationStatus.RUNNING);
+        operation.setProvisioningStage(ProvisioningStage.RESTORING_DATA);
+        when(repository.findByDatabaseIdAndProjectNameAndStatusIn("db-orders0001", "orders",
+                List.of(OperationStatus.PENDING, OperationStatus.RUNNING,
+                        OperationStatus.CANCEL_REQUESTED, OperationStatus.CANCELLING)))
+                .thenReturn(List.of(operation));
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.rejectIfMutatingOperationActive("orders", "db-orders0001"));
+
+        assertEquals(HttpStatus.CONFLICT, exception.getStatus());
+        assertEquals("OPERATION_CONFLICT", exception.getCode());
     }
 
     private OperationMetadata operation() {

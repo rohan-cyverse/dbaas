@@ -41,6 +41,11 @@ public class BackupRetentionService {
                 List.of(BackupStatus.PENDING, BackupStatus.RUNNING, BackupStatus.DELETING))
                 && !restoreRepository.existsByProjectNameAndSourceDatabaseIdAndStatusIn(project, databaseId,
                 List.of(com.cyfuture.dbaas.model.RestoreStatus.PENDING,
+                        com.cyfuture.dbaas.model.RestoreStatus.SAFETY_BACKUP,
+                        com.cyfuture.dbaas.model.RestoreStatus.RESTORING,
+                        com.cyfuture.dbaas.model.RestoreStatus.VALIDATING,
+                        com.cyfuture.dbaas.model.RestoreStatus.CUTTING_OVER,
+                        com.cyfuture.dbaas.model.RestoreStatus.ROLLING_BACK,
                         com.cyfuture.dbaas.model.RestoreStatus.RUNNING));
     }
 
@@ -52,6 +57,11 @@ public class BackupRetentionService {
             if (backup.getStatus() == BackupStatus.COMPLETED || backup.getStatus() == BackupStatus.FAILED) {
                 if (restoreRepository.existsByProjectNameAndSourceBackupIdAndStatusIn(project, backup.getBackupId(),
                         List.of(com.cyfuture.dbaas.model.RestoreStatus.PENDING,
+                                com.cyfuture.dbaas.model.RestoreStatus.SAFETY_BACKUP,
+                                com.cyfuture.dbaas.model.RestoreStatus.RESTORING,
+                                com.cyfuture.dbaas.model.RestoreStatus.VALIDATING,
+                                com.cyfuture.dbaas.model.RestoreStatus.CUTTING_OVER,
+                                com.cyfuture.dbaas.model.RestoreStatus.ROLLING_BACK,
                                 com.cyfuture.dbaas.model.RestoreStatus.RUNNING))) {
                     pending = true;
                     continue;

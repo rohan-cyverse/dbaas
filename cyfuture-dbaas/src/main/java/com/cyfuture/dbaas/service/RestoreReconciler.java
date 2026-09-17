@@ -4,6 +4,7 @@ import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.dto.PublicEndpointResponse;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.RestoreRequestMetadata;
+import com.cyfuture.dbaas.entity.BackupMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.OperationStatus;
@@ -11,6 +12,7 @@ import com.cyfuture.dbaas.model.ProvisioningStage;
 import com.cyfuture.dbaas.model.RestoreAccessMode;
 import com.cyfuture.dbaas.model.RestoreStatus;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
+import com.cyfuture.dbaas.repository.BackupMetadataRepository;
 import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import com.cyfuture.dbaas.repository.RestoreRequestMetadataRepository;
 import lombok.RequiredArgsConstructor;
@@ -33,14 +35,18 @@ public class RestoreReconciler {
     private final RestoreRequestMetadataRepository restoreRepository;
     private final DatabaseMetadataRepository databaseRepository;
     private final OperationMetadataRepository operationRepository;
+    private final BackupMetadataRepository backupRepository;
     private final KubeBlocksClient kubeBlocksClient;
     private final CredentialLifecycleService credentialLifecycleService;
     private final SharedGatewayService sharedGatewayService;
     private final ProvisioningProgressService progressService;
     private final RestoreSubmissionService submissionService;
+    private final OperationService operationService;
 
     @Value("${dbaas.restore-timeout-ms:3600000}")
     private long restoreTimeoutMs = 3_600_000L;
+    @Value("${dbaas.restore.rollback-retention-minutes:60}")
+    private long rollbackRetentionMinutes = 60L;
 
     @EventListener(ApplicationReadyEvent.class)
     public void reconcileOnStartup() { reconcile(); }
@@ -48,7 +54,9 @@ public class RestoreReconciler {
     @Scheduled(fixedDelayString = "${dbaas.backup.reconcile-ms:5000}")
     public void reconcile() {
         for (RestoreRequestMetadata restore : restoreRepository.findByStatusInOrderByCreatedAtAsc(
-                List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))) {
+                List.of(RestoreStatus.PENDING, RestoreStatus.SAFETY_BACKUP, RestoreStatus.RESTORING,
+                        RestoreStatus.VALIDATING, RestoreStatus.CUTTING_OVER, RestoreStatus.ROLLING_BACK,
+                        RestoreStatus.RUNNING))) {
             try {
                 if (timedOut(restore)) {
                     fail(restore, "RESTORE_TIMEOUT", "Restore timed out before readiness was verified.");
@@ -75,7 +83,7 @@ public class RestoreReconciler {
 
     /** Performs one live restore refresh and is used by restore GET endpoints. */
     public void refresh(RestoreRequestMetadata restore) {
-        if (restore.getStatus() == RestoreStatus.PENDING) {
+        if (restore.getStatus() == RestoreStatus.PENDING || restore.getStatus() == RestoreStatus.SAFETY_BACKUP) {
             submissionService.submit(restore.getRestoreId());
             return;
         }
@@ -89,10 +97,15 @@ public class RestoreReconciler {
             fail(restore, "RESTORE_TARGET_METADATA_MISSING", "Restore target metadata is unavailable.");
             return;
         }
+        if (operationService.cancellationRequested(restore.getOperationId())
+                && restore.getStatus() != RestoreStatus.CUTTING_OVER) {
+            cancel(restore, target);
+            return;
+        }
         KubeBlocksClient.OpsRequestInfo observed = kubeBlocksClient.getOpsRequest(
                 target.getNamespaceName(), restore.getKubernetesOpsRequestName());
         if (failedPhase(observed.phase())) {
-            fail(restore, "KUBERNETES_RESTORE_FAILED", observed.message());
+            fail(restore, errorCode(observed, "KUBERNETES_RESTORE_FAILED"), observed.message());
             return;
         }
         KubeBlocksClient.RestoreObservation restoreObserved = kubeBlocksClient.observeRestore(
@@ -105,22 +118,26 @@ public class RestoreReconciler {
                 return;
             }
             if (!"Completed".equalsIgnoreCase(restoreObserved.phase())) {
-                updateRunning(restore, observed, 40, "KubeBlocks is restoring database data");
+                updateRunning(restore, observed, RestoreStatus.RESTORING, 40,
+                        "KubeBlocks is restoring database data");
                 return;
             }
         } else if (!"Succeed".equalsIgnoreCase(observed.phase())) {
-            updateRunning(restore, observed, 30, "Waiting for the KubeBlocks Restore resource");
+            updateRunning(restore, observed, RestoreStatus.RESTORING, 30,
+                    "Waiting for the KubeBlocks Restore resource");
             return;
         }
         if (!"Succeed".equalsIgnoreCase(observed.phase())) {
-            updateRunning(restore, observed, 45, "KubeBlocks is restoring database data");
+            updateRunning(restore, observed, RestoreStatus.RESTORING, 45,
+                    "KubeBlocks is restoring database data");
             return;
         }
 
         KubeBlocksClient.ClusterObservation cluster = kubeBlocksClient.observeCluster(
-                target.getNamespaceName(), target.getDatabaseId());
+                target.getNamespaceName(), temporaryClusterName(restore));
         if (!cluster.exists()) {
-            updateRunning(restore, observed, 60, "Waiting for the restored database Cluster");
+            updateRunning(restore, observed, RestoreStatus.VALIDATING, 60,
+                    "Waiting for the restored database Cluster");
             return;
         }
         if ("Failed".equalsIgnoreCase(cluster.phase())) {
@@ -128,15 +145,18 @@ public class RestoreReconciler {
             return;
         }
         if (!cluster.healthy()) {
-            updateRunning(restore, observed, 70, "Waiting for restored database replicas");
+            updateRunning(restore, observed, RestoreStatus.VALIDATING, 70,
+                    "Waiting for restored database replicas");
             return;
         }
         String restoredLogicalDatabase = CredentialLifecycleService.managedDatabaseName(
                 restore.getSourceDatabaseId());
         String restoredUsername = CredentialLifecycleService.managedUsername(restore.getSourceDatabaseId());
-        if (!credentialLifecycleService.readyForRestoredDatabase(target, restoredLogicalDatabase,
+        if (!credentialLifecycleService.readyForRestoredCluster(target, temporaryClusterName(restore),
+                restoredLogicalDatabase,
                 restoredUsername)) {
-            updateRunning(restore, observed, 82, "Creating restored database credentials");
+            updateRunning(restore, observed, RestoreStatus.VALIDATING, 82,
+                    "Validating restored database connection");
             return;
         }
         String actualLogicalDatabase = credentialLifecycleService.databaseName(target);
@@ -145,15 +165,37 @@ public class RestoreReconciler {
                     "Restored database credentials do not target the restored logical database.");
             return;
         }
-        if (restore.getAccessMode() != RestoreAccessMode.PRIVATE) {
-            PublicEndpointResponse endpoint = sharedGatewayService.configure(target);
-            if (!endpoint.ready()) {
-                updateRunning(restore, observed, 92, "Waiting for the restored public connection route");
-                return;
-            }
+        if (restore.getStatus() != RestoreStatus.CUTTING_OVER) {
+            restore.setStatus(RestoreStatus.CUTTING_OVER);
+            restoreRepository.save(restore);
+            target.setStatus(DatabaseStatus.MAINTENANCE);
+            target.setProvisioningStage(ProvisioningStage.CUTTING_OVER);
+            target.setProgress(90);
+            target.setMessage("Switching database endpoint to restored cluster");
+            target.setUpdatedAt(Instant.now());
+            databaseRepository.save(target);
+            updateOperation(restore, OperationStatus.RUNNING, ProvisioningStage.CUTTING_OVER, 90,
+                    "Switching database endpoint to restored cluster", false);
+            return;
+        }
+
+        target.setActiveClusterName(temporaryClusterName(restore));
+        target.setStatus(DatabaseStatus.RUNNING);
+        target.setProvisioningStage(ProvisioningStage.CONFIGURING_NETWORK);
+        target.setProgress(95);
+        target.setUpdatedAt(Instant.now());
+        databaseRepository.save(target);
+        PublicEndpointResponse endpoint = sharedGatewayService.configure(target);
+        if (!endpoint.ready()) {
+            updateOperation(restore, OperationStatus.RUNNING, ProvisioningStage.CONFIGURING_NETWORK,
+                    95, "Waiting for the stable endpoint to target restored cluster", false);
+            return;
         }
         progressService.ready(target);
-        restore.setStatus(RestoreStatus.READY);
+        restore.setStatus(RestoreStatus.COMPLETED);
+        restore.setTemporary(false);
+        restore.setPromotedAt(Instant.now());
+        restore.setOldClusterDeleteAt(Instant.now().plusSeconds(rollbackRetentionMinutes * 60));
         restore.setCompletedAt(Instant.now());
         restore.setLastObservedAt(Instant.now());
         restore.setFailureCode(null);
@@ -163,9 +205,8 @@ public class RestoreReconciler {
             operation.setStatus(OperationStatus.SUCCEEDED);
             operation.setProvisioningStage(ProvisioningStage.READY);
             operation.setProgress(100);
-            operation.setMessage(restore.getAccessMode() == RestoreAccessMode.PRIVATE
-                    ? "Restore completed and private connection is ready"
-                    : "Restore completed and public connection is ready");
+            operation.setMessage("Restore completed and stable endpoint targets restored cluster");
+            operation.setLastHeartbeatAt(Instant.now());
             if (operation.getStartedAt() == null) operation.setStartedAt(Instant.now());
             operation.setCompletedAt(Instant.now());
             operationRepository.save(operation);
@@ -184,12 +225,12 @@ public class RestoreReconciler {
     }
 
     private void updateRunning(RestoreRequestMetadata restore, KubeBlocksClient.OpsRequestInfo observed,
-                               int fallbackProgress, String operationMessage) {
+                               RestoreStatus restoreStatus, int fallbackProgress, String operationMessage) {
         int progress = progress(observed.progress(), fallbackProgress);
-        boolean changed = restore.getStatus() != RestoreStatus.RUNNING
+        boolean changed = restore.getStatus() != restoreStatus
                 || !Objects.equals(restore.getStartedAt(), observed.startedAt());
         if (changed) {
-            restore.setStatus(RestoreStatus.RUNNING);
+            restore.setStatus(restoreStatus);
             if (observed.startedAt() != null) restore.setStartedAt(observed.startedAt());
             restore.setLastObservedAt(Instant.now());
             restoreRepository.save(restore);
@@ -201,12 +242,47 @@ public class RestoreReconciler {
             operation.setProvisioningStage(ProvisioningStage.RESTORING_DATA);
             operation.setProgress(progress);
             operation.setMessage(operationMessage);
+            operation.setLastHeartbeatAt(Instant.now());
             if (operation.getStartedAt() == null) operation.setStartedAt(Instant.now());
             operationRepository.save(operation);
         });
     }
 
     private void fail(RestoreRequestMetadata restore, String code, String message) {
+        if (restore.getStatus() == RestoreStatus.CUTTING_OVER && !restore.isRollbackAttempted()
+                && restore.getOldClusterName() != null && !restore.getOldClusterName().isBlank()) {
+            restore.setRollbackAttempted(true);
+            restore.setStatus(RestoreStatus.ROLLING_BACK);
+            restore.setFailureCode(code);
+            restore.setFailureMessage(BackupRestoreSafety.safeMessage(null, message));
+            restore.setLastObservedAt(Instant.now());
+            restoreRepository.save(restore);
+            DatabaseMetadata target = databaseRepository.findByDatabaseIdAndProjectName(
+                    restore.getRestoredDatabaseId(), restore.getProjectName()).orElse(null);
+            if (target != null) {
+                target.setActiveClusterName(restore.getOldClusterName());
+                target.setStatus(DatabaseStatus.RUNNING);
+                target.setProvisioningStage(ProvisioningStage.READY);
+                target.setProgress(100);
+                target.setMessage("Restore cutover rolled back");
+                target.setUpdatedAt(Instant.now());
+                databaseRepository.save(target);
+                cleanupTemporaryCluster(restore, target);
+            }
+            restore.setStatus(RestoreStatus.FAILED);
+            restore.setCompletedAt(Instant.now());
+            restoreRepository.save(restore);
+            operationRepository.findById(restore.getOperationId()).ifPresent(operation -> {
+                operation.setStatus(OperationStatus.FAILED);
+                operation.setProvisioningStage(ProvisioningStage.FAILED);
+                operation.setProgress(100);
+                operation.setMessage("Restore cutover failed; rolled back to the previous cluster");
+                operation.setLastHeartbeatAt(Instant.now());
+                operation.setCompletedAt(Instant.now());
+                operationRepository.save(operation);
+            });
+            return;
+        }
         restore.setStatus(RestoreStatus.FAILED);
         restore.setFailureCode(code);
         restore.setFailureMessage(BackupRestoreSafety.safeMessage(null, message));
@@ -215,10 +291,11 @@ public class RestoreReconciler {
         restoreRepository.save(restore);
         databaseRepository.findByDatabaseIdAndProjectName(restore.getRestoredDatabaseId(), restore.getProjectName())
                 .ifPresent(target -> {
-                    target.setStatus(DatabaseStatus.FAILED);
-                    target.setProvisioningStage(ProvisioningStage.FAILED);
+                    cleanupTemporaryCluster(restore, target);
+                    target.setStatus(DatabaseStatus.RUNNING);
+                    target.setProvisioningStage(ProvisioningStage.READY);
                     target.setProgress(100);
-                    target.setMessage("Restore failed.");
+                    target.setMessage("Restore failed; original database remains active.");
                     target.setUpdatedAt(Instant.now());
                     databaseRepository.save(target);
                 });
@@ -227,9 +304,63 @@ public class RestoreReconciler {
             operation.setProvisioningStage(ProvisioningStage.FAILED);
             operation.setProgress(100);
             operation.setMessage("Restore failed.");
+            operation.setLastHeartbeatAt(Instant.now());
             operation.setCompletedAt(Instant.now());
             operationRepository.save(operation);
         });
+    }
+
+    private void cancel(RestoreRequestMetadata restore, DatabaseMetadata target) {
+        cleanupTemporaryCluster(restore, target);
+        restore.setStatus(RestoreStatus.CANCELLED);
+        restore.setFailureCode("RESTORE_CANCELLED");
+        restore.setFailureMessage("Restore was cancelled before cutover; the original database was left untouched.");
+        restore.setCompletedAt(Instant.now());
+        restore.setLastObservedAt(Instant.now());
+        restoreRepository.save(restore);
+        target.setStatus(DatabaseStatus.RUNNING);
+        target.setProvisioningStage(ProvisioningStage.READY);
+        target.setProgress(100);
+        target.setMessage("Restore cancelled");
+        target.setUpdatedAt(Instant.now());
+        databaseRepository.save(target);
+        operationService.markCancelled(restore.getOperationId());
+    }
+
+    private void updateOperation(RestoreRequestMetadata restore, OperationStatus status,
+                                 ProvisioningStage stage, int progress, String message,
+                                 boolean completed) {
+        operationRepository.findById(restore.getOperationId()).ifPresent(operation -> {
+            operation.setStatus(status);
+            operation.setProvisioningStage(stage);
+            operation.setProgress(progress);
+            operation.setMessage(message);
+            operation.setLastHeartbeatAt(Instant.now());
+            if (operation.getStartedAt() == null) operation.setStartedAt(Instant.now());
+            if (completed) operation.setCompletedAt(Instant.now());
+            operationRepository.save(operation);
+        });
+    }
+
+    private void cleanupTemporaryCluster(RestoreRequestMetadata restore, DatabaseMetadata database) {
+        String temporaryCluster = temporaryClusterName(restore);
+        if (temporaryCluster.equals(database.physicalClusterName())) return;
+        try {
+            kubeBlocksClient.requestDelete(database.getNamespaceName(), temporaryCluster);
+        } catch (Exception ignored) {
+            // Cleanup is retried by reconciliation.
+        }
+    }
+
+    private String temporaryClusterName(RestoreRequestMetadata restore) {
+        return restore.getTemporaryClusterName() == null || restore.getTemporaryClusterName().isBlank()
+                ? restore.getRestoredDatabaseId() + "-restore-" + restore.getRestoreId().substring(4, 12)
+                : restore.getTemporaryClusterName();
+    }
+
+    private String errorCode(KubeBlocksClient.OpsRequestInfo observed, String fallback) {
+        return observed.reason() == null || observed.reason().isBlank()
+                ? fallback : observed.reason();
     }
 
     private boolean failedPhase(String phase) {

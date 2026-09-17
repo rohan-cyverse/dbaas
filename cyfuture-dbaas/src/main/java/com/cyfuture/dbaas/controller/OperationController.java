@@ -8,6 +8,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -27,5 +28,14 @@ public class OperationController {
                                  @PathVariable String operationId) {
         databaseService.get(project, databaseId);
         return operationService.getForDatabase(project, databaseId, operationId);
+    }
+
+    @PostMapping("/{operationId}/cancel")
+    @Operation(summary = "Cancel operation")
+    public OperationResponse cancel(@PathVariable String project,
+                                    @PathVariable String databaseId,
+                                    @PathVariable String operationId) {
+        databaseService.get(project, databaseId);
+        return operationService.cancel(project, databaseId, operationId);
     }
 }

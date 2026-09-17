@@ -36,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -53,6 +54,7 @@ class RestoreServiceTest {
     private PitrRecoveryService pitrRecoveryService;
     private BackupPolicyService backupPolicyService;
     private DatabaseService databaseService;
+    private OperationService operationService;
     private RestoreService service;
     private DatabaseMetadata source;
     private BackupMetadata backup;
@@ -70,9 +72,10 @@ class RestoreServiceTest {
         pitrRecoveryService = mock(PitrRecoveryService.class);
         backupPolicyService = mock(BackupPolicyService.class);
         databaseService = mock(DatabaseService.class);
+        operationService = mock(OperationService.class);
         service = new RestoreService(backupRepository, restoreRepository, databaseRepository,
                 operationRepository, projectService, strategies, submissionService, restoreReconciler,
-                pitrRecoveryService, backupPolicyService, databaseService);
+                pitrRecoveryService, backupPolicyService, databaseService, operationService);
 
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("orders");
@@ -102,25 +105,23 @@ class RestoreServiceTest {
     }
 
     @Test
-    void rejectsSecondActiveTemporaryRestoreForTheSameSource() {
-        when(restoreRepository
-                .findFirstByProjectNameAndSourceDatabaseIdAndTemporaryTrueAndPromotedAtIsNullAndDeletedAtIsNullAndStatusInOrderByCreatedAtDesc(
-                        anyString(), anyString(), anyCollection()))
-                .thenReturn(Optional.of(restore(RestoreStatus.READY)));
+    void inPlaceRestoreDoesNotCreateTemporaryDatabaseMetadata() {
+        var response = service.restore("orders", "db-source0001", "restore-key-002",
+                restoreRequest("orders-restore"));
 
-        ApiException exception = assertThrows(ApiException.class,
-                () -> service.restore("orders", "db-source0001", "restore-key-002",
-                        restoreRequest("orders-restore")));
-
-        assertEquals(HttpStatus.CONFLICT, exception.getStatus());
-        verify(databaseRepository, never()).save(any(DatabaseMetadata.class));
+        assertEquals("db-source0001", response.databaseId());
+        var captor = forClass(RestoreRequestMetadata.class);
+        verify(restoreRepository).save(captor.capture());
+        assertEquals("db-source0001", captor.getValue().getRestoredDatabaseId());
+        assertNotEquals("db-source0001", captor.getValue().getTemporaryClusterName());
+        assertEquals("db-source0001", captor.getValue().getOldClusterName());
     }
 
     @Test
     void repeatedIdempotencyKeyReturnsTheOriginalRestoreEvenWhenActive() {
         RestoreRequestMetadata existing = restore(RestoreStatus.RUNNING);
-        existing.setRequestHash(hash(RestoreMode.FULL.name(), "bkp-source0001",
-                "orders-restore", "true", "24", RestoreAccessMode.PRIVATE.name()));
+        existing.setRequestHash(hash(RestoreMode.FULL.name(), "bkp-source0001", "IN_PLACE",
+                String.valueOf(true)));
         when(restoreRepository.findByProjectNameAndSourceDatabaseIdAndIdempotencyKey(
                 "orders", "db-source0001", "restore-key-003")).thenReturn(Optional.of(existing));
 
@@ -171,7 +172,7 @@ class RestoreServiceTest {
 
     private CreateRestoreRequest restoreRequest(String targetName) {
         return new CreateRestoreRequest(RestoreMode.FULL, "bkp-source0001", null,
-                targetName, true, 24, RestoreAccessMode.PRIVATE);
+                targetName, true, 24, RestoreAccessMode.PRIVATE, "IN_PLACE", true, "orders");
     }
 
     private RestoreRequestMetadata restore(RestoreStatus status) {

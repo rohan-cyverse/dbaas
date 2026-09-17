@@ -194,7 +194,7 @@ public class SharedGatewayService {
             if (allowed.isEmpty()) continue;
             try {
                 DatabaseObservation live = kubeBlocksClient.get(
-                        database.getNamespaceName(), database.getDatabaseId());
+                        database.getNamespaceName(), database.physicalClusterName());
                 if (live.serviceReady()) {
                     DatabaseBackendResolver.DatabaseBackendEndpoint endpoint = backendResolver.resolve(database);
                     routes.add(new Route(database.getDatabaseId(), database.getPublicPort(),
@@ -237,7 +237,7 @@ public class SharedGatewayService {
                     || database.getStatus() == DatabaseStatus.FAILED) continue;
             try {
                 DatabaseObservation live = kubeBlocksClient.get(
-                        database.getNamespaceName(), database.getDatabaseId());
+                        database.getNamespaceName(), database.physicalClusterName());
                 if (live.status() == DatabaseStatus.FAILED) continue;
                 database.setPublicPort(portAllocator.allocate());
                 database.setUpdatedAt(Instant.now());
