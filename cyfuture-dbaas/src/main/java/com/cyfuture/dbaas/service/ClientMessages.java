@@ -41,6 +41,7 @@ public final class ClientMessages {
             case VALIDATING -> "Validating configuration.";
             case CREATING_DATABASE -> "Creating database.";
             case RESTORING_DATA -> "Restoring database data.";
+            case CREATING_SAFETY_BACKUP -> "Creating a safety backup.";
             case WAITING_FOR_REPLICAS -> "Waiting for database readiness.";
             case CREATING_CREDENTIALS -> "Preparing credentials.";
             case CONFIGURING_NETWORK -> "Configuring public access.";

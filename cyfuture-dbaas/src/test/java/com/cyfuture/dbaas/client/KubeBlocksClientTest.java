@@ -20,6 +20,9 @@ import io.kubernetes.client.openapi.models.V1PodStatus;
 import io.kubernetes.client.openapi.models.V1PersistentVolumeClaimList;
 import io.kubernetes.client.openapi.models.V1ResourceRequirements;
 import io.kubernetes.client.openapi.models.V1Namespace;
+import io.kubernetes.client.openapi.models.V1Secret;
+import io.kubernetes.client.openapi.models.V1SecretList;
+import io.kubernetes.client.openapi.models.V1Service;
 import io.kubernetes.client.custom.Quantity;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -54,7 +57,9 @@ class KubeBlocksClientTest {
         coreV1Api = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
         apiClient = mock(ApiClient.class);
         when(apiClient.escapeString(any())).thenAnswer(invocation -> invocation.getArgument(0));
-        client = new KubeBlocksClient(new DatabaseProperties(), customObjectsApi,
+        DatabaseProperties properties = new DatabaseProperties();
+        properties.getMongodb().setCredentialAccount("root");
+        client = new KubeBlocksClient(properties, customObjectsApi,
                 coreV1Api, mock(StorageV1Api.class), apiClient);
         when(customObjectsApi.getClusterCustomObject("apiextensions.k8s.io", "v1",
                 "customresourcedefinitions", "opsrequests.operations.kubeblocks.io")
@@ -154,6 +159,61 @@ class KubeBlocksClientTest {
     }
 
     @Test
+    void shardedMongoUsesConfigServerCredentials() throws Exception {
+        V1Secret shard = new V1Secret().metadata(new V1ObjectMeta()
+                .name("db-orders0001-shard-x1-account-root"))
+                .data(Map.of("username", new byte[0], "password", new byte[0]));
+        V1Secret config = new V1Secret().metadata(new V1ObjectMeta()
+                .name("db-orders0001-config-server-account-root"))
+                .data(Map.of("username", new byte[0], "password", new byte[0]));
+        when(coreV1Api.listNamespacedSecret("dbaas-orders").execute())
+                .thenReturn(new V1SecretList().items(List.of(shard, config)));
+
+        assertEquals("db-orders0001-config-server-account-root",
+                client.adminCredentialSecretName("dbaas-orders", "db-orders0001",
+                        DatabaseEngine.MONGODB));
+    }
+
+    @Test
+    void observesShardedMongoThroughPerPodMongosService() throws Exception {
+        Map<String, Object> observed = new java.util.LinkedHashMap<>();
+        observed.put("metadata", Map.of("name", "db-orders0001", "annotations", Map.of(
+                "dbaas.cyfuture.com/engine", "MONGODB",
+                "dbaas.cyfuture.com/mode", "SHARDING",
+                "dbaas.cyfuture.com/version", "8.0.17",
+                "dbaas.cyfuture.com/size", "C1G1",
+                "dbaas.cyfuture.com/storage-gi", "20",
+                "dbaas.cyfuture.com/replicas", "2",
+                "dbaas.cyfuture.com/expected-pods", "0",
+                "dbaas.cyfuture.com/expected-volumes", "0")));
+        observed.put("spec", cluster().get("spec"));
+        observed.put("status", Map.of(
+                "phase", "Creating",
+                "conditions", List.of(Map.of(
+                        "type", "Ready", "status", "True", "reason", "ClusterReady"))));
+        when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
+                "dbaas-orders", "clusters", "db-orders0001").execute()).thenReturn(observed);
+        when(coreV1Api.listNamespacedPod("dbaas-orders").labelSelector(
+                "app.kubernetes.io/instance=db-orders0001").execute())
+                .thenReturn(new V1PodList().items(List.of()));
+        when(coreV1Api.listNamespacedPersistentVolumeClaim("dbaas-orders").labelSelector(
+                "app.kubernetes.io/instance=db-orders0001").execute())
+                .thenReturn(new V1PersistentVolumeClaimList().items(List.of()));
+        when(coreV1Api.readNamespacedService(
+                "db-orders0001-mongos-mongos-0", "dbaas-orders").execute())
+                .thenReturn(new V1Service().metadata(new V1ObjectMeta()
+                        .name("db-orders0001-mongos-mongos-0")));
+
+        DatabaseObservation result = client.get("dbaas-orders", "db-orders0001");
+
+        assertTrue(result.serviceReady());
+        assertEquals(com.cyfuture.dbaas.model.DatabaseStatus.RUNNING, result.status());
+        assertEquals(2, result.replicas());
+        assertEquals("db-orders0001-mongos-mongos-0.dbaas-orders.svc.cluster.local",
+                result.privateHost());
+    }
+
+    @Test
     void createsPostgresqlMongoAndMysqlWithPreferInPlacePolicy() throws Exception {
         client.create("dbaas-orders", "prj-orders", "db-postgres0001",
                 request(DatabaseEngine.POSTGRESQL, DatabaseMode.REPLICATION));
@@ -171,6 +231,23 @@ class KubeBlocksClientTest {
                 assertEquals("PreferInPlace", ((Map<?, ?>) component).get("podUpdatePolicy"));
             }
         }
+    }
+
+    @Test
+    void shardedMongoCreatesRootAccountOnConfigServer() throws Exception {
+        CreateDatabaseRequest request = new CreateDatabaseRequest("orders-db", null,
+                DatabaseEngine.MONGODB, DatabaseMode.SHARDING, "8.0.17",
+                SizePlan.C1G1, 20, 3, 2, null, List.of(), false, Map.of());
+
+        client.create("dbaas-orders", "prj-orders", "db-orders0001", request);
+
+        ArgumentCaptor<Object> body = ArgumentCaptor.forClass(Object.class);
+        verify(customObjectsApi).createNamespacedCustomObject(eq("apps.kubeblocks.io"),
+                eq("v1"), eq("dbaas-orders"), eq("clusters"), body.capture());
+        Map<?, ?> spec = (Map<?, ?>) ((Map<?, ?>) body.getValue()).get("spec");
+        Map<?, ?> configServer = (Map<?, ?>) ((List<?>) spec.get("componentSpecs")).get(0);
+        Map<?, ?> account = (Map<?, ?>) ((List<?>) configServer.get("systemAccounts")).get(0);
+        assertEquals("root", account.get("name"));
     }
 
     @Test
