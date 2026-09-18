@@ -154,6 +154,21 @@ class DatabaseServiceTest {
     }
 
     @Test
+    void shardedMongoConnectionUriDoesNotForceDirectConnection() throws Exception {
+        var connectionUri = DatabaseService.class.getDeclaredMethod("connectionUri",
+                DatabaseEngine.class, DatabaseMode.class, boolean.class,
+                String.class, String.class, String.class, int.class, String.class);
+        connectionUri.setAccessible(true);
+
+        String uri = (String) connectionUri.invoke(service,
+                DatabaseEngine.MONGODB, DatabaseMode.SHARDING, true,
+                "user", "pass", "mongo.example.com", 27017, "appdb_xxx");
+
+        assertEquals("mongodb://user:pass@mongo.example.com:27017/appdb_xxx"
+                + "?authSource=appdb_xxx", uri);
+    }
+
+    @Test
     void updatesDeletionProtectionForAnActiveDatabase() {
         DatabaseMetadata database = new DatabaseMetadata();
         database.setDatabaseId("db-orders0001");

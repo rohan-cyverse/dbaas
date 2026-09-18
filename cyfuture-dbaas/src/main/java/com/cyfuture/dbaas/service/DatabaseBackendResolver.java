@@ -41,9 +41,26 @@ public class DatabaseBackendResolver {
                         .anyMatch(p -> p.getPort() != null && p.getPort() == port))
                 .filter(x -> !isReadOnly(x))
                 .min(Comparator
-                        .comparingInt((V1Service service) -> db.getMode() == DatabaseMode.REPLICA_SET
-                                && isStrictPrimaryService(service) ? 0 : 1)
+                        .comparingInt((V1Service service) -> servicePriority(service, db))
                         .thenComparing(service -> service.getMetadata().getName()));
+    }
+
+    private static int servicePriority(V1Service service, DatabaseMetadata db) {
+        if (db.getEngine() == DatabaseEngine.MONGODB
+                && db.getMode() == DatabaseMode.SHARDING) {
+            String name = service.getMetadata().getName();
+            // KubeBlocks exposes application traffic through per-pod mongos
+            // Services. Never let a lexicographically earlier config-server
+            // or shard Service become the public gateway backend.
+            if (name.matches(java.util.regex.Pattern.quote(db.getDatabaseId())
+                    + "-mongos-mongos-[0-9]+")) return 0;
+            if (name.contains("-mongos")) return 1;
+            return 10;
+        }
+        if (db.getMode() == DatabaseMode.REPLICA_SET && isStrictPrimaryService(service)) {
+            return 0;
+        }
+        return 1;
     }
 
     static V1Service ensureMongoPrimaryService(CoreV1Api api, DatabaseMetadata db, int port)

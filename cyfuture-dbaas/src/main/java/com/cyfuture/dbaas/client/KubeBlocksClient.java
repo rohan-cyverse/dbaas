@@ -30,6 +30,7 @@ import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -175,6 +176,13 @@ public class KubeBlocksClient {
                         && secret.getData() != null
                         && secret.getData().containsKey("username")
                         && secret.getData().containsKey("password"))
+                // In a sharded MongoDB topology the root system account is
+                // owned by the config-server component. Shard account Secrets
+                // can have the same suffix but are not the cluster-wide
+                // credential accepted by mongos.
+                .sorted(Comparator.comparingInt(secret ->
+                        secret.getMetadata().getName().equals(databaseId
+                                + "-config-server" + expectedSuffix) ? 0 : 1))
                 .map(secret -> secret.getMetadata().getName())
                 .findFirst()
                 .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT,
@@ -1271,6 +1279,14 @@ public class KubeBlocksClient {
             configServer.put("serviceVersion", request.version());
             configServer.put("replicas", 3);
             configServer.put("podUpdatePolicy", PREFER_IN_PLACE);
+            configServer.put("systemAccounts", List.of(Map.of(
+                    "name", settings.getCredentialAccount(),
+                    "passwordConfig", Map.of(
+                            "length", 16,
+                            "numDigits", 8,
+                            "numSymbols", 0,
+                            "letterCase", "MixedCases",
+                            "seed", databaseId))));
             configServer.put("resources", resources);
             configServer.put("volumeClaimTemplates", List.of(volume));
 
@@ -1629,8 +1645,10 @@ public class KubeBlocksClient {
 
         String id = String.valueOf(metadata.get("name"));
         String phase = String.valueOf(status.getOrDefault("phase", ""));
-        DatabaseStatus databaseStatus = mapStatus(phase);
-        int replicas = number(component.get("replicas"));
+        DatabaseStatus databaseStatus = mapStatus(phase, status);
+        int replicas = modeFromAnnotations(annotations) == DatabaseMode.SHARDING
+                ? integerAnnotation(annotations, "dbaas.cyfuture.com/replicas", 1)
+                : number(component.get("replicas"));
         if (replicas == 0) {
             replicas = integerAnnotation(annotations, "dbaas.cyfuture.com/replicas", 1);
         }
@@ -1641,8 +1659,7 @@ public class KubeBlocksClient {
         int readyVolumes = countBoundVolumes(namespace, id);
         DatabaseEngine engine = DatabaseEngine.valueOf(String.valueOf(
                 annotations.get("dbaas.cyfuture.com/engine")));
-        DatabaseMode mode = DatabaseMode.valueOf(String.valueOf(
-                annotations.getOrDefault("dbaas.cyfuture.com/mode", "STANDALONE")));
+        DatabaseMode mode = modeFromAnnotations(annotations);
         String privateHost = internalHost(namespace, id, mode == DatabaseMode.SHARDING
                 ? "mongos" : String.valueOf(component.get("name")));
         boolean serviceReady = privateHost != null;
@@ -1896,10 +1913,16 @@ public class KubeBlocksClient {
             return null;
         }
 
-        // KubeBlocks add-ons use one of these two service-name patterns.
-        List<String> serviceNames = List.of(
-                databaseId + "-" + componentName,
-                databaseId + "-" + componentName + "-" + componentName);
+        // Stateful components expose a component Service. Mongos is different:
+        // current KubeBlocks MongoDB add-ons expose one Service per router plus
+        // a headless discovery Service.
+        List<String> serviceNames = "mongos".equals(componentName)
+                ? List.of(databaseId + "-mongos-mongos-0",
+                        databaseId + "-mongos-headless",
+                        databaseId + "-mongos",
+                        databaseId + "-mongos-mongos")
+                : List.of(databaseId + "-" + componentName,
+                        databaseId + "-" + componentName + "-" + componentName);
 
         for (String serviceName : serviceNames) {
             try {
@@ -1910,6 +1933,11 @@ public class KubeBlocksClient {
             }
         }
         return null;
+    }
+
+    private DatabaseMode modeFromAnnotations(Map<String, Object> annotations) {
+        return DatabaseMode.valueOf(String.valueOf(
+                annotations.getOrDefault("dbaas.cyfuture.com/mode", "STANDALONE")));
     }
 
     private List<String> allowedCidrs(Map<String, Object> annotations) {
@@ -2035,11 +2063,23 @@ public class KubeBlocksClient {
         return copy;
     }
 
-    private DatabaseStatus mapStatus(String phase) {
+    private DatabaseStatus mapStatus(String phase, Map<String, Object> status) {
+        if (readyCondition(status)) return DatabaseStatus.RUNNING;
         if ("Running".equalsIgnoreCase(phase)) return DatabaseStatus.RUNNING;
         if ("Failed".equalsIgnoreCase(phase) || "Abnormal".equalsIgnoreCase(phase)) return DatabaseStatus.FAILED;
         if (phase.isBlank()) return DatabaseStatus.PROVISIONING;
         return DatabaseStatus.PROVISIONING;
+    }
+
+    private boolean readyCondition(Map<String, Object> status) {
+        for (Object item : (List<?>) status.getOrDefault("conditions", List.of())) {
+            Map<String, Object> condition = asMap(item);
+            if ("Ready".equalsIgnoreCase(String.valueOf(condition.get("type")))
+                    && "True".equalsIgnoreCase(String.valueOf(condition.get("status")))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String readinessMessage(String phase, DatabaseStatus status,
