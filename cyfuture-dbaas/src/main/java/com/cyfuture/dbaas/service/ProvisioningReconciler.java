@@ -43,10 +43,15 @@ public class ProvisioningReconciler {
         // Cluster can report Running before its Restore OpsRequest is finished.
         if (restoreRepository.existsByRestoredDatabaseIdAndStatusIn(database.getDatabaseId(),
                 java.util.List.of(com.cyfuture.dbaas.model.RestoreStatus.PENDING,
+                        com.cyfuture.dbaas.model.RestoreStatus.SAFETY_BACKUP,
+                        com.cyfuture.dbaas.model.RestoreStatus.RESTORING,
+                        com.cyfuture.dbaas.model.RestoreStatus.VALIDATING,
+                        com.cyfuture.dbaas.model.RestoreStatus.CUTTING_OVER,
+                        com.cyfuture.dbaas.model.RestoreStatus.ROLLING_BACK,
                         com.cyfuture.dbaas.model.RestoreStatus.RUNNING))) return;
         try {
             DatabaseObservation live = kubeBlocksClient.get(
-                    database.getNamespaceName(), database.getDatabaseId());
+                    database.getNamespaceName(), database.physicalClusterName());
             if (live.status() == DatabaseStatus.FAILED) {
                 progressService.failed(database, live.message());
                 return;

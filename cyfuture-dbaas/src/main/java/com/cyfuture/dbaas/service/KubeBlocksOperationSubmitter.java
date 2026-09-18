@@ -43,7 +43,7 @@ public class KubeBlocksOperationSubmitter {
                 case HORIZONTAL_SCALING -> submitHorizontal(database, operation);
                 case STORAGE_EXPANSION -> submitStorage(database, operation);
                 case RESTART -> kubeBlocksClient.createRestartOpsRequest(
-                        database.getNamespaceName(), database.getDatabaseId(), operation.getOpsRequestName(),
+                        database.getNamespaceName(), database.physicalClusterName(), operation.getOpsRequestName(),
                         restartComponents(database));
                 default -> throw new IllegalStateException("Unsupported KubeBlocks operation " + operation.getType());
             }
@@ -65,9 +65,9 @@ public class KubeBlocksOperationSubmitter {
 
     private void submitVertical(DatabaseMetadata database, OperationMetadata operation) {
         kubeBlocksClient.ensurePreferInPlacePodUpdatePolicy(database.getNamespaceName(),
-                database.getDatabaseId(), operation.getComponentName());
+                database.physicalClusterName(), operation.getComponentName());
         kubeBlocksClient.createVerticalScalingOpsRequest(database.getNamespaceName(),
-                database.getDatabaseId(), operation.getOpsRequestName(),
+                database.physicalClusterName(), operation.getOpsRequestName(),
                 operation.getComponentName(),
                 Map.of("cpu", operation.getCpuRequest(), "memory", operation.getMemoryRequest()),
                 Map.of("cpu", operation.getCpuLimit(), "memory", operation.getMemoryLimit()));
@@ -75,15 +75,15 @@ public class KubeBlocksOperationSubmitter {
 
     private void submitHorizontal(DatabaseMetadata database, OperationMetadata operation) {
         KubeBlocksClient.ClusterComponentInfo component = kubeBlocksClient.requireComponent(
-                database.getNamespaceName(), database.getDatabaseId(), operation.getComponentName());
+                database.getNamespaceName(), database.physicalClusterName(), operation.getComponentName());
         kubeBlocksClient.createHorizontalScalingOpsRequest(database.getNamespaceName(),
-                database.getDatabaseId(), operation.getOpsRequestName(), component.name(),
+                database.physicalClusterName(), operation.getOpsRequestName(), component.name(),
                 component.replicas(), operation.getTargetReplicas());
     }
 
     private void submitStorage(DatabaseMetadata database, OperationMetadata operation) {
         KubeBlocksClient.ClusterComponentInfo component = kubeBlocksClient.requireComponent(
-                database.getNamespaceName(), database.getDatabaseId(), operation.getComponentName());
+                database.getNamespaceName(), database.physicalClusterName(), operation.getComponentName());
         String currentStorage = component.storage(operation.getVolumeName());
         if (currentStorage == null) {
             throw new ApiException(org.springframework.http.HttpStatus.BAD_REQUEST,
@@ -96,12 +96,12 @@ public class KubeBlocksOperationSubmitter {
                     "newStorageSize must be greater than the current size " + currentStorage);
         }
         kubeBlocksClient.createVolumeExpansionOpsRequest(database.getNamespaceName(),
-                database.getDatabaseId(), operation.getOpsRequestName(), component.name(),
+                database.physicalClusterName(), operation.getOpsRequestName(), component.name(),
                 operation.getVolumeName(), operation.getTargetStorageSize());
     }
 
     private List<String> restartComponents(DatabaseMetadata database) {
-        return kubeBlocksClient.componentNames(database.getNamespaceName(), database.getDatabaseId());
+        return kubeBlocksClient.componentNames(database.getNamespaceName(), database.physicalClusterName());
     }
 
     private String safeMessage(Exception exception) {

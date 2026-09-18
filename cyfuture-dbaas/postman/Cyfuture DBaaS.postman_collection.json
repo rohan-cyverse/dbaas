@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "321fcd7f-040f-4080-86b7-8c66abbfad9f",
     "name": "Cyfuture DBaaS",
-    "description": "DBaaS manages projects and databases. Immutable IDs (prj-xxxx, db-xxxx) identify resources; database names are human-facing handles. Omit a database name to receive a unique engine-prefixed handle. Keep an Idempotency-Key unchanged only when retrying the exact same request. The Backup and Restore folder supports manual full backups, scheduled backups, retention, PITR, and restores into new databases.",
+    "description": "DBaaS manages projects and databases. Immutable IDs (prj-xxxx, db-xxxx) identify resources; database names are human-facing handles. Omit a database name to receive a unique engine-prefixed handle. Keep an Idempotency-Key unchanged only when retrying the exact same request. The Backup and Restore folder supports manual full backups, scheduled backups, retention, PITR, and in-place restores with automatic safety backups. Access Rules manages trusted public IPv4 CIDRs for database endpoints.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "_exporter_id": "56329818",
     "_collection_link": "https://go.postman.co/collection/56329818-321fcd7f-040f-4080-86b7-8c66abbfad9f?source=collection_link"
@@ -187,6 +187,7 @@
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
+                  "  pm.collectionVariables.set('databaseName', body.name);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
                   "}"
                 ],
@@ -245,6 +246,7 @@
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
+                  "  pm.collectionVariables.set('databaseName', body.name);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
                   "}"
                 ],
@@ -303,6 +305,7 @@
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
+                  "  pm.collectionVariables.set('databaseName', body.name);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
                   "}"
                 ],
@@ -361,6 +364,7 @@
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
+                  "  pm.collectionVariables.set('databaseName', body.name);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
                   "}"
                 ],
@@ -419,6 +423,7 @@
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
+                  "  pm.collectionVariables.set('databaseName', body.name);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
                   "}"
                 ],
@@ -477,6 +482,7 @@
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
+                  "  pm.collectionVariables.set('databaseName', body.name);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
                   "}"
                 ],
@@ -535,6 +541,7 @@
                   "});",
                   "if (pm.response.code === 202) {",
                   "  pm.collectionVariables.set('databaseId', body.databaseId);",
+                  "  pm.collectionVariables.set('databaseName', body.name);",
                   "  pm.collectionVariables.set('operationId', body.operationId);",
                   "}"
                 ],
@@ -773,6 +780,7 @@
                   "pm.test('Progress contract is present', function () {",
                   "  pm.expect(body.stage).to.be.a('string');",
                   "  pm.expect(body.progress).to.be.within(0, 100);",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('databaseName', body.name); }",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -798,6 +806,143 @@
             }
           },
           "response": []
+        },
+        {
+          "name": "Get Access Rules",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/access-rules",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "access-rules"
+              ]
+            },
+            "description": "Returns the public endpoint access rules currently allowed for this database."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Access rules returned', function () { pm.response.to.have.status(200); });",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.databaseId).to.equal(pm.collectionVariables.get('databaseId'));",
+                  "  pm.expect(body.allowedCidrs).to.be.an('array');",
+                  "  pm.expect(body.endpoint).to.be.an('object');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Access Rules",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/access-rules",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "access-rules"
+              ]
+            },
+            "description": "Replaces the database public access rules with the listed IPv4 CIDRs. 0.0.0.0/0 is intentionally rejected by the API.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"allowedCidrs\": [\"{{accessRuleCidr}}\"],\n  \"includeCurrentClientIp\": false\n}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Access rules updated', function () { pm.response.to.have.status(200); });",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.allowedCidrs).to.include(pm.collectionVariables.get('accessRuleCidr'));",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Add Current IP to Access Rules",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/access-rules",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "access-rules"
+              ]
+            },
+            "description": "Replaces the list with the listed CIDRs plus the caller public IP detected by the API as /32. Useful after switching network or VPN.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"allowedCidrs\": [\"{{accessRuleCidr}}\"],\n  \"includeCurrentClientIp\": true\n}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Current IP added to access rules', function () { pm.response.to.have.status(200); });",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.allowedCidrs).to.be.an('array').and.not.empty;",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
         },
         {
           "name": "List Project Databases",
@@ -960,7 +1105,7 @@
     },
     {
       "name": "Backup and Restore",
-      "description": "Configure scheduled backups, retention, and PITR. Create manual FULL or INCREMENTAL backups through the same /backups endpoint. PITR requires a scheduled full backup and a READY recovery window. Full and point-in-time restores always create a new database; they never overwrite the source. Keep each idempotency key only for a retry of the identical request.",
+      "description": "Configure scheduled backups, retention, PITR, and production-safe in-place restores. Restore requests preserve the same API databaseId, name, namespace, credentials, and stable endpoint. DBaaS creates and verifies a safety backup, restores into a temporary physical KubeBlocks cluster named <databaseId>-restore-<shortId>, validates it, then briefly enters maintenance to cut the stable Service/HAProxy endpoint over. The old physical cluster is retained for the configured rollback period, default 60 minutes, then cleaned up automatically. Keep each Idempotency-Key unchanged only when retrying the identical request; use a new key for a new operation.",
       "item": [
         {
           "name": "Update Backup Settings",
@@ -1045,7 +1190,16 @@
                   "if (pm.response.code === 200) {",
                   "  const body = pm.response.json();",
                   "  if (body.startsAt) pm.collectionVariables.set('recoveryWindowStart', body.startsAt);",
-                  "  if (body.endsAt) pm.collectionVariables.set('restoreTime', body.endsAt);",
+                  "  if (body.endsAt) pm.collectionVariables.set('recoveryWindowEnd', body.endsAt);",
+                  "  if (body.status === 'PENDING' && body.errorCode) pm.expect(['WAITING_FOR_BASE_BACKUP', 'WAITING_FOR_WAL_ARCHIVE']).to.include(body.errorCode);",
+                  "  if (body.startsAt && body.endsAt) {",
+                  "    const start = new Date(body.startsAt).getTime();",
+                  "    const end = new Date(body.endsAt).getTime();",
+                  "    if (Number.isFinite(start) && Number.isFinite(end) && end > start + 2000) {",
+                  "      const safe = new Date(start + Math.floor((end - start) / 2)).toISOString();",
+                  "      pm.collectionVariables.set('restoreTime', safe);",
+                  "    }",
+                  "  }",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -1070,7 +1224,7 @@
                 "recovery-window"
               ]
             },
-            "description": "Returns observed PITR health and the startsAt/endsAt recovery bounds. Only use a point-in-time restore when status is READY."
+            "description": "Returns observed PITR health and the startsAt/endsAt recovery bounds. Only use a point-in-time restore when status is READY. When status is PENDING, errorCode can explain why, including WAITING_FOR_BASE_BACKUP or WAITING_FOR_WAL_ARCHIVE."
           },
           "response": []
         },
@@ -1081,12 +1235,16 @@
               "listen": "test",
               "script": {
                 "exec": [
-                  "if (pm.response.code === 202) {",
+                  "pm.test('Backup create response has expected status', function () { pm.expect([200, 202, 409, 422]).to.include(pm.response.code); });",
+                  "if ([200, 202].includes(pm.response.code)) {",
                   "  const body = pm.response.json();",
                   "  pm.collectionVariables.set('backupId', body.backupId);",
+                  "  if (body.operationId) pm.collectionVariables.set('operationId', body.operationId);",
                   "  pm.expect(body.type).to.equal('FULL');",
                   "  pm.expect(body.status).to.be.a('string');",
-                  "}"
+                  "}",
+                  "if (pm.response.code === 409) { pm.test('Backup conflict is explicit', function () { pm.expect(pm.response.text()).to.not.be.empty; }); }",
+                  "if (pm.response.code === 422) { pm.test('Backup validation is explicit', function () { pm.expect(pm.response.text()).to.not.be.empty; }); }"
                 ],
                 "type": "text/javascript"
               }
@@ -1196,7 +1354,7 @@
                 "restores"
               ]
             },
-            "description": "Lists full and point-in-time restore history for this source database. Each item identifies its newly created target database."
+            "description": "Lists full and point-in-time restore history for this database."
           },
           "response": []
         },
@@ -1207,12 +1365,18 @@
               "listen": "test",
               "script": {
                 "exec": [
-                  "if (pm.response.code === 202) {",
+                  "pm.test('Restore response has expected status', function () { pm.expect([200, 202, 409, 422]).to.include(pm.response.code); });",
+                  "if ([200, 202].includes(pm.response.code)) {",
                   "  const body = pm.response.json();",
                   "  pm.collectionVariables.set('restoreId', body.restoreId);",
-                  "  pm.collectionVariables.set('restoredDatabaseId', body.databaseId);",
+                  "  pm.expect(body.databaseId).to.equal(pm.collectionVariables.get('databaseId'));",
+                  "  if (body.operationId) pm.collectionVariables.set('operationId', body.operationId);",
                   "  pm.expect(body.mode).to.equal('FULL');",
-                  "}"
+                  "  pm.expect(['PENDING', 'SAFETY_BACKUP', 'RESTORING', 'VALIDATING', 'CUTTING_OVER', 'COMPLETED']).to.include(body.status);",
+                  "  pm.expect(body.accessMode).to.equal('PRIVATE');",
+                  "}",
+                  "if (pm.response.code === 409) { pm.test('Conflict is explicit', function () { pm.expect(pm.response.text()).to.not.be.empty; }); }",
+                  "if (pm.response.code === 422) { pm.test('Validation is explicit', function () { pm.expect(pm.response.text()).to.not.be.empty; }); }"
                 ],
                 "type": "text/javascript"
               }
@@ -1232,7 +1396,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"mode\": \"FULL\",\n  \"backupId\": \"{{backupId}}\"\n}"
+              "raw": "{\n  \"mode\": \"FULL\",\n  \"backupId\": \"{{backupId}}\",\n  \"target\": \"IN_PLACE\",\n  \"createSafetyBackup\": true,\n  \"confirmation\": \"{{databaseName}}\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restores",
@@ -1249,7 +1413,7 @@
                 "restores"
               ]
             },
-            "description": "Creates a full restore into a new database. backupId must refer to a completed full or incremental backup for this source database."
+            "description": "Starts an in-place full restore. DBaaS creates a safety backup, restores into an internal temporary physical cluster, validates it, then cuts over the stable database endpoint automatically."
           },
           "response": []
         },
@@ -1260,12 +1424,18 @@
               "listen": "test",
               "script": {
                 "exec": [
-                  "if (pm.response.code === 202) {",
+                  "pm.test('Restore response has expected status', function () { pm.expect([200, 202, 409, 422]).to.include(pm.response.code); });",
+                  "if ([200, 202].includes(pm.response.code)) {",
                   "  const body = pm.response.json();",
                   "  pm.collectionVariables.set('restoreId', body.restoreId);",
-                  "  pm.collectionVariables.set('restoredDatabaseId', body.databaseId);",
+                  "  pm.expect(body.databaseId).to.equal(pm.collectionVariables.get('databaseId'));",
+                  "  if (body.operationId) pm.collectionVariables.set('operationId', body.operationId);",
                   "  pm.expect(body.mode).to.equal('POINT_IN_TIME');",
-                  "}"
+                  "  pm.expect(['PENDING', 'SAFETY_BACKUP', 'RESTORING', 'VALIDATING', 'CUTTING_OVER', 'COMPLETED']).to.include(body.status);",
+                  "  pm.expect(body.accessMode).to.equal('PRIVATE');",
+                  "}",
+                  "if (pm.response.code === 409) { pm.test('Conflict is explicit', function () { pm.expect(pm.response.text()).to.not.be.empty; }); }",
+                  "if (pm.response.code === 422) { pm.test('Validation is explicit', function () { pm.expect(pm.response.text()).to.not.be.empty; }); }"
                 ],
                 "type": "text/javascript"
               }
@@ -1285,7 +1455,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"mode\": \"POINT_IN_TIME\",\n  \"restoreTime\": \"{{restoreTime}}\"\n}"
+              "raw": "{\n  \"mode\": \"POINT_IN_TIME\",\n  \"restoreTime\": \"{{restoreTime}}\",\n  \"target\": \"IN_PLACE\",\n  \"createSafetyBackup\": true,\n  \"confirmation\": \"{{databaseName}}\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/restores",
@@ -1302,7 +1472,7 @@
                 "restores"
               ]
             },
-            "description": "Run Get PITR Recovery Window first. restoreTime must be a past UTC timestamp within a READY recovery window. The restore always targets a new database."
+            "description": "Starts an in-place point-in-time restore. Run Get PITR Recovery Window first and choose a restoreTime inside the window, not exactly at the boundaries."
           },
           "response": []
         },
@@ -1327,7 +1497,66 @@
                 "{{restoreId}}"
               ]
             },
-            "description": "Returns the current restore status and the ID of the newly created target database."
+            "description": "Returns the current in-place restore status. Status values include PENDING, SAFETY_BACKUP, RESTORING, VALIDATING, CUTTING_OVER, COMPLETED, FAILED, CANCELLED, and ROLLING_BACK. The databaseId remains the stable source databaseId."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Restore status response has expected status', function () { pm.expect([200, 409, 422]).to.include(pm.response.code); });",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.collectionVariables.set('restoreId', body.restoreId);",
+                  "  pm.expect(body.databaseId).to.equal(pm.collectionVariables.get('databaseId'));",
+                  "  pm.expect(body.status).to.be.a('string');",
+                  "  pm.expect(['PENDING', 'SAFETY_BACKUP', 'RESTORING', 'VALIDATING', 'CUTTING_OVER', 'COMPLETED', 'FAILED', 'CANCELLED', 'ROLLING_BACK', 'RUNNING', 'READY']).to.include(body.status);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Database Connection After Restore",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Restored connection response has expected status', function () { pm.expect([200, 409, 422]).to.include(pm.response.code); });",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.username).to.be.a('string');",
+                  "  pm.expect(body.password).to.be.a('string');",
+                  "  pm.expect(body.connectionUri).to.be.a('string');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/connection",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "connection"
+              ]
+            },
+            "description": "Returns credentials for the same database after restore cutover. The API databaseId and endpoint are preserved; DBaaS internally routes to the active physical cluster."
           },
           "response": []
         },
@@ -1398,6 +1627,48 @@
                 "{{operationId}}"
               ]
             }
+          },
+          "response": []
+        },
+        {
+          "name": "Cancel Operation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Cancel response has expected status', function () { pm.expect([200, 409]).to.include(pm.response.code); });",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(['CANCEL_REQUESTED', 'CANCELLING', 'CANCELLED', 'SUCCEEDED', 'FAILED']).to.include(body.status);",
+                  "}",
+                  "if (pm.response.code === 409) { pm.test('Non-cancellable stage is explicit', function () { pm.expect(pm.response.text()).to.include('OPERATION_NOT_CANCELLABLE'); }); }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/operations/{{operationId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "operations",
+                "{{operationId}}",
+                "cancel"
+              ]
+            },
+            "description": "Requests cancellation before restore CUTTING_OVER. For restore operations, cancellation is allowed while queued, creating the safety backup, restoring into the temporary cluster, or validating it. Cancellation deletes temporary restore resources and leaves the original database untouched. Once CUTTING_OVER starts, cancellation returns OPERATION_NOT_CANCELLABLE."
           },
           "response": []
         },
@@ -1511,23 +1782,19 @@
     },
     {
       "key": "backupIdempotencyKey",
-      "value": "backup-manual-20260907-001"
+      "value": "backup-full-{{$timestamp}}-{{$randomInt}}"
     },
     {
       "key": "restoreId",
       "value": ""
     },
     {
-      "key": "restoredDatabaseId",
-      "value": ""
-    },
-    {
       "key": "fullRestoreIdempotencyKey",
-      "value": "restore-full-20260909-001"
+      "value": "restore-full-{{$timestamp}}-{{$randomInt}}"
     },
     {
       "key": "pitrRestoreIdempotencyKey",
-      "value": "restore-pitr-20260909-001"
+      "value": "restore-pitr-{{$timestamp}}-{{$randomInt}}"
     },
     {
       "key": "recoveryWindowStart",
@@ -1548,6 +1815,18 @@
     {
       "key": "newStorageSize",
       "value": "30Gi"
+    },
+    {
+      "key": "recoveryWindowEnd",
+      "value": ""
+    },
+    {
+      "key": "accessRuleCidr",
+      "value": "203.0.113.10/32"
+    },
+    {
+      "key": "databaseName",
+      "value": ""
     }
   ]
 }

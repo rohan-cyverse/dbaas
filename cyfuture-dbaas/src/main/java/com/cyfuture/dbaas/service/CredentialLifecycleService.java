@@ -98,7 +98,7 @@ public class CredentialLifecycleService {
         // An existing restored credential Secret may deliberately point at the
         // source logical database. Preserve that value; only a new Secret uses
         // the normal target-ID-derived database name.
-        reconcile(metadata, null, null, false);
+        reconcile(metadata, null, null, false, metadata.physicalClusterName());
     }
 
     /**
@@ -118,7 +118,13 @@ public class CredentialLifecycleService {
         }
         // This mode must only grant a fresh DBaaS credential to a logical
         // database that KubeBlocks actually restored. It never creates one.
-        reconcile(metadata, logicalDatabaseName, logicalUsername, true);
+        reconcile(metadata, logicalDatabaseName, logicalUsername, true, metadata.physicalClusterName());
+        return readyStatus(metadata, true);
+    }
+
+    public boolean readyForRestoredCluster(DatabaseMetadata metadata, String physicalClusterName,
+                                           String logicalDatabaseName, String logicalUsername) {
+        reconcile(metadata, logicalDatabaseName, logicalUsername, true, physicalClusterName);
         return readyStatus(metadata, true);
     }
 
@@ -159,7 +165,8 @@ public class CredentialLifecycleService {
     }
 
     private void reconcile(DatabaseMetadata metadata, String logicalDatabaseName,
-                           String logicalUsername, boolean requireExistingDatabase) {
+                           String logicalUsername, boolean requireExistingDatabase,
+                           String physicalClusterName) {
         try {
             if (metadata.getDesiredState() == DesiredState.DELETED
                     || metadata.getStatus() == DatabaseStatus.DELETING
@@ -167,7 +174,7 @@ public class CredentialLifecycleService {
                 return;
             }
             DatabaseObservation database = kubeBlocksClient.get(
-                    metadata.getNamespaceName(), metadata.getDatabaseId());
+                    metadata.getNamespaceName(), physicalClusterName);
             if (database.status() != DatabaseStatus.RUNNING
                     || !database.serviceReady()) {
                 return;
@@ -189,9 +196,9 @@ public class CredentialLifecycleService {
             V1Job job = readJob(metadata.getNamespaceName(), jobName);
             if (job == null) {
                 String adminSecret = kubeBlocksClient.adminCredentialSecretName(
-                        metadata.getNamespaceName(), metadata.getDatabaseId(), metadata.getEngine());
+                        metadata.getNamespaceName(), physicalClusterName, metadata.getEngine());
                 createJob(metadata, database, secret.getMetadata().getName(),
-                        adminSecret, generation, requireExistingDatabase);
+                        adminSecret, generation, requireExistingDatabase, physicalClusterName);
                 markOperation(annotations.get(OPERATION_ID), OperationStatus.RUNNING,
                         "Updating managed database credentials", false);
                 return;
@@ -395,7 +402,7 @@ public class CredentialLifecycleService {
 
     private void createJob(DatabaseMetadata metadata, DatabaseObservation database,
                            String managedSecret, String adminSecret, int generation,
-                           boolean requireExistingDatabase)
+                           boolean requireExistingDatabase, String physicalClusterName)
             throws io.kubernetes.client.openapi.ApiException {
         DatabaseProperties.EngineSettings settings = properties.engine(metadata.getEngine());
         if (settings.getCredentialImage() == null || settings.getCredentialImage().isBlank()) {
@@ -426,7 +433,7 @@ public class CredentialLifecycleService {
                         .name(name)
                         .namespace(metadata.getNamespaceName())
                         .labels(helperLabels(metadata))
-                        .ownerReferences(ownerReferences(metadata)))
+                        .ownerReferences(ownerReferences(metadata, physicalClusterName)))
                 .spec(new V1JobSpec()
                         .backoffLimit(2)
                         .activeDeadlineSeconds(300L)
@@ -556,8 +563,12 @@ public class CredentialLifecycleService {
     }
 
     private List<V1OwnerReference> ownerReferences(DatabaseMetadata metadata) {
+        return ownerReferences(metadata, metadata.physicalClusterName());
+    }
+
+    private List<V1OwnerReference> ownerReferences(DatabaseMetadata metadata, String physicalClusterName) {
         return List.of(kubeBlocksClient.clusterOwnerReference(metadata.getNamespaceName(),
-                metadata.getDatabaseId()));
+                physicalClusterName));
     }
 
     private boolean hasClusterOwner(V1ObjectMeta metadata) {

@@ -64,4 +64,8 @@ public class OperationMetadata {
     private Instant createdAt;
     private Instant startedAt;
     private Instant completedAt;
+    private Instant lastHeartbeatAt;
+    private Instant timeoutAt;
+    @Column(length = 32)
+    private String blockingOperationId;
 }

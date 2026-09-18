@@ -95,7 +95,7 @@ public class KubeBlocksOperationReconciler {
 
         if (reported == OperationStatus.SUCCEEDED) {
             KubeBlocksClient.VerticalScalingObservation observation = kubeBlocksClient
-                    .observeVerticalScaling(database.getNamespaceName(), database.getDatabaseId(),
+                    .observeVerticalScaling(database.getNamespaceName(), database.physicalClusterName(),
                             operation.getComponentName(),
                             java.util.Map.of("cpu", operation.getCpuRequest(),
                                     "memory", operation.getMemoryRequest()),

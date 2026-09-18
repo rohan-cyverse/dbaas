@@ -73,7 +73,7 @@ public class BackupPolicyReconciler {
         }
         BackupEngineStrategy strategy = strategies.require(source.getEngine());
         KubeBlocksClient.BackupPolicyInfo observed = kubeBlocksClient.resolveReadyBackupPolicy(
-                source.getNamespaceName(), source.getDatabaseId(), source.getEngine(), strategy.manualFullMethod(),
+                source.getNamespaceName(), source.physicalClusterName(), source.getEngine(), strategy.manualFullMethod(),
                 policy.isPitrEnabled() ? strategy.continuousMethod() : null, normalizer.repositoryName());
         if (!"AVAILABLE".equalsIgnoreCase(observed.observedStatus())) {
             pending(policy, observed.policyName(), null, "Waiting for backup settings to become available.");
@@ -87,7 +87,7 @@ public class BackupPolicyReconciler {
             return;
         }
         KubeBlocksClient.BackupScheduleInfo schedule = kubeBlocksClient.observeGeneratedBackupSchedule(
-                source.getNamespaceName(), source.getDatabaseId(), observed.policyName());
+                source.getNamespaceName(), source.physicalClusterName(), observed.policyName());
         if (!schedule.exists() || !schedule.available()) {
             pending(policy, observed.policyName(), schedule.scheduleName(),
                     "Waiting for scheduled backups to become available.");

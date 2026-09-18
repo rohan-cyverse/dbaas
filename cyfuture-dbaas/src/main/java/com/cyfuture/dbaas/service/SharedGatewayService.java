@@ -202,21 +202,12 @@ public class SharedGatewayService {
             List<String> allowed = cidrs(database.getAllowedCidrs());
             if (allowed.isEmpty()) continue;
             try {
-                DatabaseBackendResolver.DatabaseBackendEndpoint endpoint = backendResolver.resolve(database);
-                routes.add(new Route(database.getDatabaseId(), database.getPublicPort(),
-                        endpoint.host(), endpoint.port(), allowed));
-            } catch (Exception exception) {
-                Route retained = existing.get(database.getDatabaseId());
-                if (retained != null && retained.publicPort() == database.getPublicPort()) {
-                    routes.add(new Route(retained.databaseId(), retained.publicPort(),
-                            retained.host(), retained.targetPort(), allowed));
-                    log.debug("Retaining last known gateway backend for {}: {}",
-                            database.getDatabaseId(), exception.getMessage());
-                } else {
-                    // A new database without a resolvable Service is simply
-                    // retried. Other healthy databases must still be added.
-                    log.debug("Gateway backend for {} is not ready yet: {}",
-                            database.getDatabaseId(), exception.getMessage());
+                DatabaseObservation live = kubeBlocksClient.get(
+                        database.getNamespaceName(), database.physicalClusterName());
+                if (live.serviceReady()) {
+                    DatabaseBackendResolver.DatabaseBackendEndpoint endpoint = backendResolver.resolve(database);
+                    routes.add(new Route(database.getDatabaseId(), database.getPublicPort(),
+                            endpoint.host(), endpoint.port(), allowed));
                 }
             }
         }
@@ -272,7 +263,7 @@ public class SharedGatewayService {
                     || database.getStatus() == DatabaseStatus.FAILED) continue;
             try {
                 DatabaseObservation live = kubeBlocksClient.get(
-                        database.getNamespaceName(), database.getDatabaseId());
+                        database.getNamespaceName(), database.physicalClusterName());
                 if (live.status() == DatabaseStatus.FAILED) continue;
                 database.setPublicPort(portAllocator.allocate());
                 database.setUpdatedAt(Instant.now());

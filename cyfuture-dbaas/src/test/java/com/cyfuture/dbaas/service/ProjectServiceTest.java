@@ -70,7 +70,7 @@ class ProjectServiceTest {
     }
 
     @Test
-    void projectDeletionRequestsNamespaceRemovalAndCanBeRetried() {
+    void projectDeletionMarksProjectDeletingAndDoesNotStartDuplicateCleanup() {
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-orders0001");
         project.setNamespaceName("dbaas-p-prj-orders0001");
@@ -82,29 +82,24 @@ class ProjectServiceTest {
         when(projectRepository.findById("prj-orders0001")).thenReturn(Optional.of(project));
         when(databaseRepository.findByProjectNameOrderByCreatedAtDesc("prj-orders0001"))
                 .thenReturn(java.util.List.of(database));
-        when(kubeBlocksClient.observeCluster("dbaas-p-prj-orders0001", "db-orders0001"))
-                .thenReturn(KubeBlocksClient.ClusterObservation.missing(
-                        "dbaas-p-prj-orders0001", "db-orders0001"));
-        when(kubeBlocksClient.projectNamespaceExists(
-                "dbaas-p-prj-orders0001", "prj-orders0001")).thenReturn(true);
 
         var response = service.delete("prj-orders0001");
+
         assertEquals(ResourceStatus.DELETING, project.getStatus());
         assertEquals("prj-orders0001", response.projectId());
         assertEquals(ResourceStatus.DELETING, response.status());
         assertEquals("Project deletion has been requested. Database cleanup and namespace removal are in progress.",
                 response.message());
-        verify(kubeBlocksClient).deleteProjectNamespace(
-                "dbaas-p-prj-orders0001", "prj-orders0001");
         assertFalse(database.isDeletionProtection());
-        verify(kubeBlocksClient).prepareProjectDatabaseDeletion(
-                "dbaas-p-prj-orders0001", "db-orders0001");
+        verify(kubeBlocksClient, never()).prepareProjectDatabaseDeletion(any(), any());
+        verify(kubeBlocksClient, never()).deleteProjectNamespace(any(), any());
 
-        service.delete("prj-orders0001");
-        verify(kubeBlocksClient, times(2)).deleteProjectNamespace(
-                "dbaas-p-prj-orders0001", "prj-orders0001");
-        verify(kubeBlocksClient, times(2)).prepareProjectDatabaseDeletion(
-                "dbaas-p-prj-orders0001", "db-orders0001");
+        var duplicate = service.delete("prj-orders0001");
+
+        assertEquals(ResourceStatus.DELETING, duplicate.status());
+        verify(databaseRepository, times(1)).findByProjectNameOrderByCreatedAtDesc("prj-orders0001");
+        verify(kubeBlocksClient, never()).prepareProjectDatabaseDeletion(any(), any());
+        verify(kubeBlocksClient, never()).deleteProjectNamespace(any(), any());
     }
 
     @Test
@@ -112,18 +107,17 @@ class ProjectServiceTest {
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-orders0001");
         project.setNamespaceName("dbaas-p-prj-orders0001");
-        project.setStatus(ResourceStatus.ACTIVE);
+        project.setStatus(ResourceStatus.DELETING);
         DatabaseMetadata database = new DatabaseMetadata();
         database.setDatabaseId("db-orders0001");
         database.setNamespaceName("dbaas-p-prj-orders0001");
-        when(projectRepository.findById(project.getProjectId())).thenReturn(Optional.of(project));
         when(databaseRepository.findByProjectNameOrderByCreatedAtDesc(project.getProjectId()))
                 .thenReturn(java.util.List.of(database));
         when(kubeBlocksClient.observeCluster(database.getNamespaceName(), database.getDatabaseId()))
                 .thenReturn(new KubeBlocksClient.ClusterObservation(true, database.getNamespaceName(),
                         database.getDatabaseId(), "Deleting", 0, 1, false, "finalizing"));
 
-        service.delete(project.getProjectId());
+        service.reconcileDeletion(project);
 
         verify(kubeBlocksClient).prepareProjectDatabaseDeletion(
                 database.getNamespaceName(), database.getDatabaseId());
@@ -233,6 +227,20 @@ class ProjectServiceTest {
         assertEquals(1, projects.size());
         assertEquals(project.getProjectId(), projects.get(0).projectId());
         verify(projectRepository).findAllByOrderByCreatedAtDesc();
+    }
+
+    @Test
+    void getsDeletingProjectFromMetadataStatus() {
+        ProjectMetadata project = new ProjectMetadata();
+        project.setProjectId("prj-orders0001");
+        project.setDisplayName("orders");
+        project.setStatus(ResourceStatus.DELETING);
+        when(projectRepository.findById(project.getProjectId())).thenReturn(Optional.of(project));
+
+        var response = service.get(project.getProjectId());
+
+        assertEquals(project.getProjectId(), response.projectId());
+        assertEquals(ResourceStatus.DELETING, response.status());
     }
 
     @Test

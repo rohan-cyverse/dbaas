@@ -1,6 +1,7 @@
 package com.cyfuture.dbaas.exception;
 
 import com.cyfuture.dbaas.dto.ApiErrorResponse;
+import com.cyfuture.dbaas.service.OperationService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -12,6 +13,10 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 public class GlobalExceptionHandler {
     @ExceptionHandler(ApiException.class)
     ResponseEntity<ApiErrorResponse> handleApiException(ApiException exception) {
+        if (exception instanceof OperationService.OperationConflictException conflict) {
+            return ResponseEntity.status(exception.getStatus()).body(new ApiErrorResponse(
+                    exception.getCode(), messageFor(exception), exception.isRetryable(), conflict.details()));
+        }
         return ResponseEntity.status(exception.getStatus()).body(new ApiErrorResponse(
                 exception.getCode(), messageFor(exception), exception.isRetryable()));
     }

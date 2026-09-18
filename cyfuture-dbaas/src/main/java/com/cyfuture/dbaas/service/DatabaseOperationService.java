@@ -56,8 +56,9 @@ public class DatabaseOperationService {
         if (operation.getRequestHash() != null) return operationMapper.toResponse(operation);
 
         validateResources(request);
+        DatabaseMetadata database = operationDatabase(project, databaseId);
         KubeBlocksClient.ClusterComponentInfo component = kubeBlocksClient.requireComponent(
-                operationDatabase(project, databaseId).getNamespaceName(), databaseId, request.componentName());
+                database.getNamespaceName(), database.physicalClusterName(), request.componentName());
         operation.setComponentName(component.name());
         operation.setCpuRequest(request.requests().cpu());
         operation.setMemoryRequest(request.requests().memory());
@@ -78,7 +79,7 @@ public class DatabaseOperationService {
 
         DatabaseMetadata database = operationDatabase(project, databaseId);
         KubeBlocksClient.ClusterComponentInfo component = kubeBlocksClient.requireComponent(
-                database.getNamespaceName(), databaseId, request.componentName());
+                database.getNamespaceName(), database.physicalClusterName(), request.componentName());
         if (component.replicas() == request.targetReplicas()) {
             throw new ApiException(HttpStatus.BAD_REQUEST,
                     "targetReplicas must be different from the current replica count");
@@ -102,7 +103,7 @@ public class DatabaseOperationService {
 
         DatabaseMetadata database = operationDatabase(project, databaseId);
         KubeBlocksClient.ClusterComponentInfo component = kubeBlocksClient.requireComponent(
-                database.getNamespaceName(), databaseId, request.componentName());
+                database.getNamespaceName(), database.physicalClusterName(), request.componentName());
         String currentStorage = component.storage(volumeName);
         if (currentStorage == null) {
             throw new ApiException(HttpStatus.BAD_REQUEST,
@@ -130,7 +131,7 @@ public class DatabaseOperationService {
         if (operation.getRequestHash() != null) return operationMapper.toResponse(operation);
 
         DatabaseMetadata database = operationDatabase(project, databaseId);
-        kubeBlocksClient.componentNames(database.getNamespaceName(), databaseId);
+        kubeBlocksClient.componentNames(database.getNamespaceName(), database.physicalClusterName());
         return queue(operation, hash, "Database restart request queued");
     }
 

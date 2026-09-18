@@ -4,5 +4,10 @@ package com.cyfuture.dbaas.dto;
 public record ApiErrorResponse(
         String code,
         String message,
-        boolean retryable
-) {}
+        boolean retryable,
+        Object details
+) {
+    public ApiErrorResponse(String code, String message, boolean retryable) {
+        this(code, message, retryable, null);
+    }
+}

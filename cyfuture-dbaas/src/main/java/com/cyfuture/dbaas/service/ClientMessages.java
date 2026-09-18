@@ -18,6 +18,7 @@ public final class ClientMessages {
         if (status == DatabaseStatus.DELETING) return "Deletion is in progress.";
         if (status == DatabaseStatus.DELETED) return "Database deleted.";
         if (status == DatabaseStatus.DEGRADED) return "Database health is degraded.";
+        if (status == DatabaseStatus.MAINTENANCE) return "Database is in maintenance.";
         if (status == DatabaseStatus.MISSING) return "Database resource is unavailable.";
         if (status == DatabaseStatus.FAILED) return "Provisioning failed.";
         if (status == DatabaseStatus.ORPHANED) return "Unmanaged database resource detected.";
@@ -29,6 +30,9 @@ public final class ClientMessages {
         return switch (status) {
             case PENDING -> "Operation is queued.";
             case RUNNING -> "Operation is in progress.";
+            case CANCEL_REQUESTED -> "Cancellation requested.";
+            case CANCELLING -> "Operation is cancelling.";
+            case CANCELLED -> "Operation cancelled.";
             case SUCCEEDED -> "Operation completed.";
             case FAILED -> "Operation failed.";
         };
@@ -39,6 +43,12 @@ public final class ClientMessages {
         return switch (stage) {
             case QUEUED -> "Provisioning is queued.";
             case VALIDATING -> "Validating configuration.";
+            case CREATING_SAFETY_BACKUP -> "Creating safety backup.";
+            case ENTERING_MAINTENANCE -> "Entering maintenance mode.";
+            case QUIESCING_TOPOLOGY -> "Quiescing database topology.";
+            case REPLACING_DATA -> "Replacing database data.";
+            case CUTTING_OVER -> "Switching database endpoint.";
+            case ROLLING_BACK -> "Rolling back restore.";
             case CREATING_DATABASE -> "Creating database.";
             case RESTORING_DATA -> "Restoring database data.";
             case CREATING_SAFETY_BACKUP -> "Creating a safety backup.";

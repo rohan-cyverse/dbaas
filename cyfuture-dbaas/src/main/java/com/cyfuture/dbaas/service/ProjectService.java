@@ -68,7 +68,11 @@ public class ProjectService {
     }
 
     public ProjectResponse get(String project) {
-        return toResponse(requireActiveProject(project));
+        ProjectMetadata metadata = requireProject(project);
+        if (metadata.getStatus() == ResourceStatus.PROVISIONING) {
+            metadata = activateNamespace(metadata);
+        }
+        return toResponse(metadata);
     }
 
     public ProjectResponse update(String project, UpdateProjectRequest request) {
@@ -82,13 +86,16 @@ public class ProjectService {
     public DeleteProjectResponse delete(String project) {
         ProjectMetadata metadata = requireProject(project);
         if (metadata.getStatus() == ResourceStatus.DELETED) return deletionResponse(metadata);
+        if (metadata.getStatus() == ResourceStatus.DELETING) return deletionResponse(metadata);
         if (backupRepository.existsByProjectNameAndStatusIn(project,
                 List.of(BackupStatus.PENDING, BackupStatus.RUNNING, BackupStatus.DELETING))) {
             throw new ApiException(HttpStatus.CONFLICT, "PROJECT_BACKUP_OPERATION_IN_PROGRESS", false,
                     "Project deletion is blocked while a backup operation is active.");
         }
         if (restoreRepository.existsByProjectNameAndStatusIn(project,
-                List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))) {
+                List.of(RestoreStatus.PENDING, RestoreStatus.SAFETY_BACKUP, RestoreStatus.RESTORING,
+                        RestoreStatus.VALIDATING, RestoreStatus.CUTTING_OVER, RestoreStatus.ROLLING_BACK,
+                        RestoreStatus.RUNNING))) {
             throw new ApiException(HttpStatus.CONFLICT, "PROJECT_RESTORE_IN_PROGRESS", false,
                     "Project deletion is blocked while a restore is active.");
         }
@@ -110,12 +117,9 @@ public class ProjectService {
         // Mark every child before infrastructure cleanup. The metadata rows stay
         // authoritative while Kubernetes removes the project namespace.
         markDatabasesDeleting(databases);
-        // Persist the desired state before the Kubernetes request. If that request
-        // is temporarily unavailable, a repeated DELETE retries the same namespace.
         metadata.setStatus(ResourceStatus.DELETING);
         metadata.setUpdatedAt(Instant.now());
         projectRepository.save(metadata);
-        advanceDeletion(metadata, databases);
         return deletionResponse(metadata);
     }
 
@@ -145,16 +149,18 @@ public class ProjectService {
                 || backupRepository.existsByProjectNameAndStatusIn(metadata.getProjectId(),
                 List.of(BackupStatus.COMPLETED, BackupStatus.FAILED))
                 || restoreRepository.existsByProjectNameAndStatusIn(metadata.getProjectId(),
-                List.of(RestoreStatus.PENDING, RestoreStatus.RUNNING))) {
+                List.of(RestoreStatus.PENDING, RestoreStatus.SAFETY_BACKUP, RestoreStatus.RESTORING,
+                        RestoreStatus.VALIDATING, RestoreStatus.CUTTING_OVER, RestoreStatus.ROLLING_BACK,
+                        RestoreStatus.RUNNING))) {
             return;
         }
         if (hasActiveKubernetesBackup(databases)) return;
         for (DatabaseMetadata database : databases) {
             kubeBlocksClient.prepareProjectDatabaseDeletion(
-                    database.getNamespaceName(), database.getDatabaseId());
+                    database.getNamespaceName(), database.physicalClusterName());
         }
         boolean clustersGone = databases.stream().allMatch(database -> !kubeBlocksClient
-                .observeCluster(database.getNamespaceName(), database.getDatabaseId()).exists());
+                .observeCluster(database.getNamespaceName(), database.physicalClusterName()).exists());
         if (!clustersGone) return;
 
         kubeBlocksClient.deleteProjectNamespace(metadata.getNamespaceName(), metadata.getProjectId());
@@ -168,7 +174,7 @@ public class ProjectService {
 
     private boolean hasActiveKubernetesBackup(List<DatabaseMetadata> databases) {
         return databases.stream().anyMatch(database -> kubeBlocksClient.hasActiveBackup(
-                database.getNamespaceName(), database.getDatabaseId()));
+                database.getNamespaceName(), database.physicalClusterName()));
     }
 
     private DeleteProjectResponse deletionResponse(ProjectMetadata metadata) {

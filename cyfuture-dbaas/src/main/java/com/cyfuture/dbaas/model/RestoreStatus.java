@@ -1,9 +1,20 @@
 package com.cyfuture.dbaas.model;
 
-/** Public lifecycle state for a restore-to-new-database request. */
+/** Public lifecycle state for an in-place restore request. */
 public enum RestoreStatus {
     PENDING,
-    RUNNING,
+    SAFETY_BACKUP,
+    RESTORING,
+    VALIDATING,
+    CUTTING_OVER,
     COMPLETED,
-    FAILED
+    FAILED,
+    CANCELLED,
+    ROLLING_BACK,
+    // Legacy temporary-restore states retained so existing API data still deserializes.
+    RUNNING,
+    READY,
+    DELETING,
+    DELETED,
+    EXPIRED
 }

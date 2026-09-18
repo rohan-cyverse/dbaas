@@ -92,7 +92,7 @@ public class DatabaseStateReconciler {
     private void observe(DatabaseMetadata database) {
         try {
             KubeBlocksClient.ClusterObservation observed = kubeBlocksClient.observeCluster(
-                    database.getNamespaceName(), database.getDatabaseId());
+                    database.getNamespaceName(), database.physicalClusterName());
             if (!observed.exists()) {
                 handleMissing(database);
                 return;
@@ -178,7 +178,7 @@ public class DatabaseStateReconciler {
             }
             if (!backupRetentionService.readyForClusterDeletion(
                     database.getProjectName(), database.getDatabaseId())
-                    || kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), database.getDatabaseId())) {
+                    || kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), database.physicalClusterName())) {
                 update(database::setMessage,
                         "Database deletion is waiting for active backup or restore work");
                 finishDeleteOperation(database, OperationStatus.RUNNING,
@@ -189,9 +189,9 @@ public class DatabaseStateReconciler {
             sharedGatewayService.removeRoute(database);
             CredentialLifecycleService.CredentialCleanupObservation credentialCleanup =
                     credentialLifecycleService.cleanupDatabaseResources(database);
-            kubeBlocksClient.requestDelete(database.getNamespaceName(), database.getDatabaseId());
+            kubeBlocksClient.requestDelete(database.getNamespaceName(), database.physicalClusterName());
             KubeBlocksClient.ClusterObservation observed = kubeBlocksClient.observeCluster(
-                    database.getNamespaceName(), database.getDatabaseId());
+                    database.getNamespaceName(), database.physicalClusterName());
             if (!observed.exists()) {
                 if (!credentialCleanup.complete()) {
                     update(database::setMessage,

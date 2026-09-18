@@ -1,5 +1,6 @@
 package com.cyfuture.dbaas.service;
 
+import com.cyfuture.dbaas.dto.AccessRulesRequest;
 import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.client.DatabaseObservation;
 import com.cyfuture.dbaas.config.DatabaseProperties;
@@ -47,6 +48,7 @@ class DatabaseServiceTest {
     private FriendlyNameGenerator friendlyNames;
     private KubeBlocksClient kubeBlocksClient;
     private BackupPolicyService backupPolicyService;
+    private SharedGatewayService sharedGatewayService;
     private DatabaseService service;
 
     @BeforeEach
@@ -66,6 +68,7 @@ class DatabaseServiceTest {
                 .thenReturn(Optional.empty());
         kubeBlocksClient = mock(KubeBlocksClient.class);
         backupPolicyService = mock(BackupPolicyService.class);
+        sharedGatewayService = mock(SharedGatewayService.class);
         when(backupPolicyService.normalizeForCreation(any(BackupSettingsRequest.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         when(backupPolicyService.initialPolicy(any(DatabaseMetadata.class),
@@ -73,7 +76,7 @@ class DatabaseServiceTest {
                 .thenReturn(new BackupPolicyMetadata());
         service = new DatabaseService(kubeBlocksClient, properties, repository,
                 provisioning, metadataCreation, mock(CredentialLifecycleService.class),
-                projects, mock(SharedGatewayService.class), mock(OperationMetadataRepository.class), friendlyNames,
+                projects, sharedGatewayService, mock(OperationMetadataRepository.class), friendlyNames,
                 mock(BackupMetadataRepository.class), mock(RestoreRequestMetadataRepository.class),
                 backupPolicyService, mock(BackupRetentionService.class));
     }
@@ -180,7 +183,8 @@ class DatabaseServiceTest {
                 .thenReturn(new DatabaseObservation("db-orders0001", "orders-db",
                         DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE, "17.5.0",
                         SizePlan.C1G2, 10, true, DatabaseStatus.RUNNING,
-                        1, 1, 1, true, "db-orders0001.dbaas-orders.svc", 5432, "ready"));
+                        1, 1, 0, 0, 0, 0, 1, 1, true,
+                        "db-orders0001.dbaas-orders.svc", 5432, List.of(), "ready"));
 
         var response = service.setDeletionProtection("orders", "db-orders0001", true);
 
@@ -188,6 +192,90 @@ class DatabaseServiceTest {
         assertTrue(response.deletionProtection());
         verify(kubeBlocksClient).setDeletionProtection("dbaas-orders", "db-orders0001", true);
         verify(repository).save(database);
+    }
+
+    @Test
+    void updatesAccessRulesAndReconcilesGateway() {
+        DatabaseMetadata database = database("db-orders0001");
+        database.setAllowedCidrs("[49.50.73.146/32]");
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+
+        var response = service.updateAccessRules("orders", "db-orders0001",
+                new AccessRulesRequest(List.of("203.0.113.0/24"), true),
+                "157.37.137.185");
+
+        assertEquals(List.of("157.37.137.185/32", "203.0.113.0/24"), response.allowedCidrs());
+        assertEquals("[157.37.137.185/32, 203.0.113.0/24]", database.getAllowedCidrs());
+        verify(repository).save(database);
+        verify(sharedGatewayService).reconcileNow();
+    }
+
+    @Test
+    void rejectsOpenInternetAccessRule() {
+        DatabaseMetadata database = database("db-orders0001");
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.updateAccessRules("orders", "db-orders0001",
+                        new AccessRulesRequest(List.of("0.0.0.0/0"), false), null));
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatus());
+        verify(repository, never()).save(database);
+    }
+
+    @Test
+    void listsOneLogicalDatabaseWithObservedHaInstanceCounts() {
+        DatabaseMetadata database = new DatabaseMetadata();
+        database.setDatabaseId("db-orders0001");
+        database.setDisplayName("orders-db");
+        database.setProjectName("orders");
+        database.setNamespaceName("dbaas-orders");
+        database.setEngine(DatabaseEngine.POSTGRESQL);
+        database.setMode(DatabaseMode.REPLICATION);
+        database.setDatabaseVersion("17.5.0");
+        database.setSizePlan(SizePlan.C1G2);
+        database.setStorageGi(20);
+        database.setReplicas(3);
+        database.setShards(0);
+        database.setStatus(DatabaseStatus.RUNNING);
+        database.setProvisioningStage(ProvisioningStage.READY);
+        database.setProgress(100);
+        when(repository.findByProjectNameOrderByCreatedAtDesc("orders")).thenReturn(List.of(database));
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(kubeBlocksClient.get("dbaas-orders", "db-orders0001"))
+                .thenReturn(new DatabaseObservation("db-orders0001", "orders-db",
+                        DatabaseEngine.POSTGRESQL, DatabaseMode.REPLICATION, "17.5.0",
+                        SizePlan.C1G2, 20, true, DatabaseStatus.RUNNING,
+                        3, 1, 2, 0, 0, 0, 3, 3, true,
+                        "db-orders0001-postgresql.dbaas-orders.svc", 5432,
+                        List.of(
+                                new DatabaseObservation.TopologyMember("db-orders0001-postgresql-0",
+                                        "primary", "postgresql", true),
+                                new DatabaseObservation.TopologyMember("db-orders0001-postgresql-1",
+                                        "replica", "postgresql", true),
+                                new DatabaseObservation.TopologyMember("db-orders0001-postgresql-2",
+                                        "replica", "postgresql", true)),
+                        "ready"));
+
+        List<com.cyfuture.dbaas.dto.DatabaseResponse> responses = service.list("orders");
+
+        assertEquals(1, responses.size());
+        com.cyfuture.dbaas.dto.DatabaseResponse response = responses.get(0);
+        assertEquals("db-orders0001", response.databaseId());
+        assertEquals(DatabaseMode.REPLICATION, response.deploymentMode());
+        assertEquals(SizePlan.C1G2, response.sizePlan());
+        assertEquals(3, response.instanceCount());
+        assertEquals(1, response.primaryCount());
+        assertEquals(2, response.replicaCount());
+        assertEquals(0, response.topology().members().size());
+
+        com.cyfuture.dbaas.dto.DatabaseResponse details = service.get("orders", "db-orders0001");
+
+        assertEquals(3, details.instanceCount());
+        assertEquals(3, details.topology().members().size());
     }
 
     @Test
@@ -266,5 +354,22 @@ class DatabaseServiceTest {
 
     private BackupSettingsRequest backup() {
         return new BackupSettingsRequest(true, 7, "0 2 * * *", "UTC", false);
+    }
+
+    private DatabaseMetadata database(String databaseId) {
+        DatabaseMetadata database = new DatabaseMetadata();
+        database.setDatabaseId(databaseId);
+        database.setProjectName("orders");
+        database.setNamespaceName("dbaas-orders");
+        database.setDisplayName("orders-db");
+        database.setEngine(DatabaseEngine.POSTGRESQL);
+        database.setMode(DatabaseMode.STANDALONE);
+        database.setDatabaseVersion("17.5.0");
+        database.setSizePlan(SizePlan.C1G2);
+        database.setStorageGi(10);
+        database.setStatus(DatabaseStatus.RUNNING);
+        database.setProvisioningStage(ProvisioningStage.READY);
+        database.setProgress(100);
+        return database;
     }
 }

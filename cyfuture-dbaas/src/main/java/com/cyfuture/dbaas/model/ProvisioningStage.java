@@ -4,6 +4,12 @@ package com.cyfuture.dbaas.model;
 public enum ProvisioningStage {
     QUEUED,
     VALIDATING,
+    CREATING_SAFETY_BACKUP,
+    ENTERING_MAINTENANCE,
+    QUIESCING_TOPOLOGY,
+    REPLACING_DATA,
+    CUTTING_OVER,
+    ROLLING_BACK,
     CREATING_DATABASE,
     RESTORING_DATA,
     CREATING_SAFETY_BACKUP,

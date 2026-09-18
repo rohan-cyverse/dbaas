@@ -45,7 +45,7 @@ public class ScheduledBackupDiscoveryService {
         if (source == null) return;
         BackupEngineStrategy strategy = strategies.require(source.getEngine());
         for (KubeBlocksClient.GeneratedBackupInfo item : kubeBlocksClient.listGeneratedBackups(
-                source.getNamespaceName(), source.getDatabaseId(), settings.getKubernetesPolicyName(),
+                source.getNamespaceName(), source.physicalClusterName(), settings.getKubernetesPolicyName(),
                 strategy.manualFullMethod(), settings.isPitrEnabled() ? strategy.continuousMethod() : null)) {
             importOne(settings, source, item);
         }

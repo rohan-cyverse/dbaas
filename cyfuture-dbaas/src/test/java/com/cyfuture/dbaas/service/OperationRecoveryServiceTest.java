@@ -49,7 +49,8 @@ class OperationRecoveryServiceTest {
         database.setDatabaseId("db-orders0001");
         database.setProjectName("orders");
         database.setStatus(DatabaseStatus.RUNNING);
-        when(operationRepository.findByStatusIn(List.of(OperationStatus.PENDING, OperationStatus.RUNNING)))
+        when(operationRepository.findByStatusIn(List.of(OperationStatus.PENDING, OperationStatus.RUNNING,
+                OperationStatus.CANCEL_REQUESTED, OperationStatus.CANCELLING)))
                 .thenReturn(List.of(operation));
         when(databaseRepository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
                 .thenReturn(Optional.of(database));

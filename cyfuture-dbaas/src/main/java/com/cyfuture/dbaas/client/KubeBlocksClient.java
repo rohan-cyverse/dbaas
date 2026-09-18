@@ -1654,7 +1654,8 @@ public class KubeBlocksClient {
         }
         int expectedPods = integerAnnotation(annotations, "dbaas.cyfuture.com/expected-pods", replicas);
         int expectedVolumes = integerAnnotation(annotations, "dbaas.cyfuture.com/expected-volumes", replicas);
-        int readyReplicas = countReadyPods(namespace, id);
+        List<V1Pod> pods = pods(namespace, id);
+        int readyReplicas = countReadyPods(pods);
         int readyVolumes = countBoundVolumes(namespace, id);
         DatabaseEngine engine = DatabaseEngine.valueOf(String.valueOf(
                 annotations.get("dbaas.cyfuture.com/engine")));
@@ -1668,6 +1669,8 @@ public class KubeBlocksClient {
                 || !serviceReady)) {
             databaseStatus = DatabaseStatus.PROVISIONING;
         }
+        Topology topology = topology(mode, replicas, integerAnnotation(annotations,
+                "dbaas.cyfuture.com/replicas", replicas), annotations, spec, pods);
 
         return new DatabaseObservation(
                 id,
@@ -1680,25 +1683,123 @@ public class KubeBlocksClient {
                 Boolean.parseBoolean(String.valueOf(annotations.getOrDefault(
                         "dbaas.cyfuture.com/deletion-protection", "false"))),
                 databaseStatus,
-                replicas,
+                topology.instanceCount(),
+                topology.primaryCount(),
+                topology.replicaCount(),
+                topology.shardCount(),
+                topology.mongosCount(),
+                topology.configServerCount(),
                 readyReplicas,
                 readyVolumes,
                 serviceReady,
                 privateHost,
                 port,
+                topology.members(),
                 readinessMessage(phase, databaseStatus, readyReplicas, expectedPods,
                         readyVolumes, expectedVolumes, serviceReady));
     }
 
     private int countReadyPods(String namespace, String databaseId) {
+        return countReadyPods(pods(namespace, databaseId));
+    }
+
+    private List<V1Pod> pods(String namespace, String databaseId) {
         try {
-            List<V1Pod> pods = coreV1Api.listNamespacedPod(namespace)
+            return coreV1Api.listNamespacedPod(namespace)
                     .labelSelector("app.kubernetes.io/instance=" + databaseId)
                     .execute().getItems();
-            return (int) pods.stream().filter(this::isReady).count();
         } catch (io.kubernetes.client.openapi.ApiException exception) {
-            return 0;
+            return List.of();
         }
+    }
+
+    private int countReadyPods(List<V1Pod> pods) {
+        return (int) pods.stream().filter(this::isReady).count();
+    }
+
+    private Topology topology(DatabaseMode mode, int componentReplicas, int annotatedReplicas,
+                              Map<String, Object> annotations, Map<String, Object> spec,
+                              List<V1Pod> pods) {
+        int shardCount = mode == DatabaseMode.SHARDING ? shardCount(spec) : 0;
+        int mongosCount = mode == DatabaseMode.SHARDING ? componentReplicas(spec, "mongos", 2) : 0;
+        int configServerCount = mode == DatabaseMode.SHARDING ? componentReplicas(spec, "config-server", 3) : 0;
+        int dataReplicas = mode == DatabaseMode.SHARDING
+                ? shardingReplicas(spec, annotatedReplicas)
+                : Math.max(1, componentReplicas);
+        int instanceCount = mode == DatabaseMode.SHARDING
+                ? shardCount * dataReplicas + mongosCount + configServerCount
+                : dataReplicas;
+        int primaryCount = mode == DatabaseMode.SHARDING ? shardCount : 1;
+        int replicaCount = Math.max(0, instanceCount - primaryCount - mongosCount - configServerCount);
+        List<DatabaseObservation.TopologyMember> members = pods.stream()
+                .map(pod -> member(pod, mode))
+                .toList();
+        if (!members.isEmpty()) {
+            instanceCount = members.size();
+            mongosCount = (int) members.stream().filter(member -> "mongos".equals(member.role())).count();
+            configServerCount = (int) members.stream().filter(member -> "config-server".equals(member.role())).count();
+            primaryCount = (int) members.stream().filter(member -> "primary".equals(member.role())).count();
+            if (primaryCount == 0 && mode != DatabaseMode.SHARDING) primaryCount = 1;
+            replicaCount = Math.max(0, instanceCount - primaryCount - mongosCount - configServerCount);
+        }
+        return new Topology(instanceCount, primaryCount, replicaCount, shardCount,
+                mongosCount, configServerCount, members);
+    }
+
+    private DatabaseObservation.TopologyMember member(V1Pod pod, DatabaseMode mode) {
+        V1ObjectMeta metadata = pod.getMetadata();
+        Map<String, String> labels = metadata == null || metadata.getLabels() == null
+                ? Map.of() : metadata.getLabels();
+        String component = firstLabel(labels,
+                "apps.kubeblocks.io/component-name",
+                "app.kubernetes.io/component",
+                "kubeblocks.io/component-name");
+        String role = firstLabel(labels,
+                "kubeblocks.io/role",
+                "apps.kubeblocks.io/role",
+                "app.kubernetes.io/role");
+        if (role == null) {
+            if ("mongos".equals(component)) role = "mongos";
+            else if ("config-server".equals(component)) role = "config-server";
+            else if (mode == DatabaseMode.STANDALONE) role = "primary";
+            else role = ordinalFromName(metadata == null ? null : metadata.getName()) == 0 ? "primary" : "replica";
+        }
+        return new DatabaseObservation.TopologyMember(
+                metadata == null ? "" : metadata.getName(),
+                role,
+                component,
+                isReady(pod));
+    }
+
+    private int ordinalFromName(String name) {
+        if (name == null) return -1;
+        Matcher matcher = Pattern.compile(".*-([0-9]+)$").matcher(name);
+        return matcher.matches() ? Integer.parseInt(matcher.group(1)) : -1;
+    }
+
+    private int shardCount(Map<String, Object> spec) {
+        List<?> shardings = (List<?>) spec.getOrDefault("shardings", List.of());
+        if (shardings.isEmpty()) return 0;
+        return number(asMap(shardings.get(0)).get("shards"));
+    }
+
+    private int shardingReplicas(Map<String, Object> spec, int fallback) {
+        List<?> shardings = (List<?>) spec.getOrDefault("shardings", List.of());
+        if (shardings.isEmpty()) return Math.max(1, fallback);
+        Map<String, Object> template = asMap(asMap(shardings.get(0)).get("template"));
+        int replicas = number(template.get("replicas"));
+        return replicas == 0 ? Math.max(1, fallback) : replicas;
+    }
+
+    private int componentReplicas(Map<String, Object> spec, String name, int fallback) {
+        for (Object item : (List<?>) spec.getOrDefault("componentSpecs", List.of())) {
+            Map<String, Object> component = asMap(item);
+            if (name.equals(component.get("name"))) {
+                int replicas = number(component.get("replicas"));
+                return replicas == 0 ? fallback : replicas;
+            }
+        }
+        return fallback;
     }
 
     private boolean isReady(V1Pod pod) {
@@ -2479,5 +2580,15 @@ public class KubeBlocksClient {
             String engine,
             String phase,
             String message
+    ) {}
+
+    private record Topology(
+            int instanceCount,
+            int primaryCount,
+            int replicaCount,
+            int shardCount,
+            int mongosCount,
+            int configServerCount,
+            List<DatabaseObservation.TopologyMember> members
     ) {}
 }

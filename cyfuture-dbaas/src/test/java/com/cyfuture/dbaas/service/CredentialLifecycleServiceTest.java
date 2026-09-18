@@ -66,8 +66,9 @@ class CredentialLifecycleServiceTest {
         when(kubeBlocks.get("dbaas-orders", "db-orders0001")).thenReturn(new DatabaseObservation(
                 "db-orders0001", "orders", DatabaseEngine.MONGODB, DatabaseMode.REPLICA_SET,
                 "8.0.17", SizePlan.C1G1, 10, false, DatabaseStatus.RUNNING,
-                3, 3, 3, true, "db-orders0001-mongodb.dbaas-orders.svc.cluster.local",
-                27017, "ready"));
+                3, 1, 2, 0, 0, 0, 3, 3, true,
+                "db-orders0001-mongodb.dbaas-orders.svc.cluster.local",
+                27017, List.of(), "ready"));
         when(kubeBlocks.clusterOwnerReference("dbaas-orders", "db-orders0001"))
                 .thenReturn(new io.kubernetes.client.openapi.models.V1OwnerReference().kind("Cluster"));
         when(kubeBlocks.adminCredentialSecretName("dbaas-orders", "db-orders0001", DatabaseEngine.MONGODB))
@@ -122,7 +123,7 @@ class CredentialLifecycleServiceTest {
         when(kubeBlocks.get("dbaas-orders", "db-orders0001")).thenReturn(new DatabaseObservation(
                 "db-orders0001", "orders", DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE,
                 "17.5.0", SizePlan.C1G1, 10, false, DatabaseStatus.RUNNING,
-                1, 1, 1, true, "orders", 5432, "ready"));
+                1, 1, 0, 0, 0, 0, 1, 1, true, "orders", 5432, List.of(), "ready"));
         when(kubeBlocks.clusterOwnerReference("dbaas-orders", "db-orders0001"))
                 .thenReturn(new io.kubernetes.client.openapi.models.V1OwnerReference().kind("Cluster"));
         when(kubeBlocks.adminCredentialSecretName("dbaas-orders", "db-orders0001", DatabaseEngine.POSTGRESQL))
@@ -248,7 +249,7 @@ class CredentialLifecycleServiceTest {
         when(kubeBlocks.get("dbaas-orders", "db-orders0001")).thenReturn(new DatabaseObservation(
                 "db-orders0001", "orders", DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE,
                 "17.5.0", SizePlan.C1G1, 10, false, DatabaseStatus.RUNNING,
-                1, 1, 1, true, "orders", 5432, "ready"));
+                1, 1, 0, 0, 0, 0, 1, 1, true, "orders", 5432, List.of(), "ready"));
         when(core.readNamespacedSecret("db-orders0001-managed-credentials", "dbaas-orders")
                 .execute()).thenReturn(secret);
         when(batch.listNamespacedJob("dbaas-orders").execute())

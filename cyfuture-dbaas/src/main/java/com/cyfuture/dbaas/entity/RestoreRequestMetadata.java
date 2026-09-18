@@ -2,6 +2,7 @@ package com.cyfuture.dbaas.entity;
 
 import com.cyfuture.dbaas.model.RestoreMode;
 import com.cyfuture.dbaas.model.RestoreStatus;
+import com.cyfuture.dbaas.model.RestoreAccessMode;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -19,8 +20,6 @@ import java.time.Instant;
 @Table(name = "restores", uniqueConstraints = {
         @UniqueConstraint(name = "uk_restore_project_source_database_idempotency",
                 columnNames = {"project_name", "source_database_id", "idempotency_key"}),
-        @UniqueConstraint(name = "uk_restore_target_database",
-                columnNames = "restored_database_id"),
         @UniqueConstraint(name = "uk_restore_ops_request",
                 columnNames = "kubernetes_ops_request_name")
 })
@@ -44,7 +43,20 @@ public class RestoreRequestMetadata {
     private RestoreMode restoreMode;
     @Column(nullable = false, length = 32)
     private String restoredDatabaseId;
+    @Column(length = 63)
+    private String temporaryClusterName;
+    @Column(length = 63)
+    private String oldClusterName;
+    @Column(nullable = false, length = 32)
+    private String targetDatabaseName;
     private Instant restoreTime;
+    @Column(nullable = false)
+    private boolean temporary = true;
+    private Integer expiresAfterHours;
+    private Instant expiresAt;
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 32)
+    private RestoreAccessMode accessMode = RestoreAccessMode.PRIVATE;
     @Column(nullable = false, length = 63)
     private String kubernetesOpsRequestName;
     @Column(length = 63)
@@ -63,5 +75,15 @@ public class RestoreRequestMetadata {
     private Instant createdAt;
     private Instant startedAt;
     private Instant completedAt;
+    private Instant promotedAt;
+    private Instant deletedAt;
+    private Instant oldClusterDeleteAt;
+    private Instant oldClusterDeletedAt;
     private Instant lastObservedAt;
+    @Column(length = 32)
+    private String safetyBackupId;
+    @Column(nullable = false)
+    private boolean dataReplacementStarted;
+    @Column(nullable = false)
+    private boolean rollbackAttempted;
 }

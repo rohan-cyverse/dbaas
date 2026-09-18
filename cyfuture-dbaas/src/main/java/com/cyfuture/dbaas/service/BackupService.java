@@ -56,6 +56,7 @@ public class BackupService {
     private final BackupDeletionSubmitter deletionSubmitter;
     private final BackupPolicyReconciler policyReconciler;
     private final BackupReconciler backupReconciler;
+    private final OperationService operationService;
 
     @Transactional
     public BackupResponse create(String project, String databaseId,
@@ -76,6 +77,7 @@ public class BackupService {
                 .orElseThrow(() -> databaseNotFound(databaseId));
         BackupEngineStrategy strategy = strategies.require(database.getEngine());
         validateSource(database, type, strategy);
+        operationService.rejectIfMutatingOperationActive(project, databaseId);
         rejectActiveWork(project, databaseId);
         BackupMetadata parent = type == BackupType.INCREMENTAL
                 ? requireIncrementalParent(project, databaseId) : null;
@@ -154,6 +156,11 @@ public class BackupService {
         }
         if (restoreRepository.existsByProjectNameAndSourceBackupIdAndStatusIn(project, backupId,
                 List.of(com.cyfuture.dbaas.model.RestoreStatus.PENDING,
+                        com.cyfuture.dbaas.model.RestoreStatus.SAFETY_BACKUP,
+                        com.cyfuture.dbaas.model.RestoreStatus.RESTORING,
+                        com.cyfuture.dbaas.model.RestoreStatus.VALIDATING,
+                        com.cyfuture.dbaas.model.RestoreStatus.CUTTING_OVER,
+                        com.cyfuture.dbaas.model.RestoreStatus.ROLLING_BACK,
                         com.cyfuture.dbaas.model.RestoreStatus.RUNNING))) {
             throw new ApiException(HttpStatus.CONFLICT, "BACKUP_RESTORE_IN_PROGRESS", false,
                     "The backup cannot be deleted while a restore is running.");
@@ -222,6 +229,11 @@ public class BackupService {
                 });
         if (restoreRepository.existsByProjectNameAndSourceDatabaseIdAndStatusIn(project, databaseId,
                 List.of(com.cyfuture.dbaas.model.RestoreStatus.PENDING,
+                        com.cyfuture.dbaas.model.RestoreStatus.SAFETY_BACKUP,
+                        com.cyfuture.dbaas.model.RestoreStatus.RESTORING,
+                        com.cyfuture.dbaas.model.RestoreStatus.VALIDATING,
+                        com.cyfuture.dbaas.model.RestoreStatus.CUTTING_OVER,
+                        com.cyfuture.dbaas.model.RestoreStatus.ROLLING_BACK,
                         com.cyfuture.dbaas.model.RestoreStatus.RUNNING))) {
             throw new ApiException(HttpStatus.CONFLICT, "RESTORE_IN_PROGRESS", false,
                     "A restore using this database is already running.");

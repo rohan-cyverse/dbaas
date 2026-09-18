@@ -21,7 +21,7 @@ class BackupRecoveryApiContractTest {
     private static final String DATABASE = "/api/v1/projects/{projectId}/databases/{databaseId}";
 
     @Test
-    void exposesOnlyTheTenDatabaseScopedBackupAndRecoveryOperations() {
+    void exposesOnlyTheDatabaseScopedBackupAndRecoveryOperations() {
         Set<String> expected = Set.of(
                 "PUT " + DATABASE + "/backup-settings",
                 "GET " + DATABASE + "/backup-settings",
@@ -32,7 +32,10 @@ class BackupRecoveryApiContractTest {
                 "DELETE " + DATABASE + "/backups/{backupId}",
                 "POST " + DATABASE + "/restores",
                 "GET " + DATABASE + "/restores",
-                "GET " + DATABASE + "/restores/{restoreId}");
+                "GET " + DATABASE + "/restores/active",
+                "GET " + DATABASE + "/restores/{restoreId}",
+                "POST " + DATABASE + "/restores/{restoreId}/promote",
+                "DELETE " + DATABASE + "/restores/{restoreId}");
 
         Set<String> actual = new LinkedHashSet<>();
         actual.addAll(routes(BackupSettingsController.class));
@@ -46,9 +49,12 @@ class BackupRecoveryApiContractTest {
     @Test
     void usesExplicitTypeAndModePayloadFields() {
         assertEquals(Set.of("type", "retentionDays"), componentNames(CreateBackupRequest.class));
-        assertEquals(Set.of("mode", "backupId", "restoreTime"), componentNames(CreateRestoreRequest.class));
-        assertEquals(Set.of("restoreId", "databaseId", "mode", "backupId", "restoreTime", "status",
-                "createdAt", "startedAt", "completedAt", "errorCode", "errorMessage"),
+        assertEquals(Set.of("mode", "backupId", "restoreTime", "targetDatabaseName",
+                "temporary", "expiresAfterHours", "accessMode", "target",
+                "createSafetyBackup", "confirmation"), componentNames(CreateRestoreRequest.class));
+        assertEquals(Set.of("restoreId", "databaseId", "operationId", "mode", "backupId", "restoreTime",
+                        "targetDatabaseName", "temporary", "expiresAt", "accessMode", "status",
+                "createdAt", "startedAt", "completedAt", "promotedAt", "deletedAt", "errorCode", "errorMessage"),
                 componentNames(RestoreResponse.class));
     }
 
