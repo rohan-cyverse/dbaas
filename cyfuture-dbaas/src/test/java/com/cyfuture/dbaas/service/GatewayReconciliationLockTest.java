@@ -16,7 +16,7 @@ import static org.mockito.Mockito.when;
 class GatewayReconciliationLockTest {
 
     @Test
-    void acquiresAndReleasesTheNamedLockOnTheSameConnection() throws Exception {
+    void holdsLeadershipUntilTheComponentCloses() throws Exception {
         DataSource dataSource = mock(DataSource.class);
         Connection connection = mock(Connection.class);
         PreparedStatement acquire = mock(PreparedStatement.class);
@@ -30,15 +30,20 @@ class GatewayReconciliationLockTest {
         when(acquire.executeQuery()).thenReturn(acquireResult);
         when(acquireResult.next()).thenReturn(true);
         when(acquireResult.getInt(1)).thenReturn(1);
+        when(connection.isValid(2)).thenReturn(true);
 
-        new GatewayReconciliationLock(dataSource).execute(task);
+        GatewayReconciliationLock lock = new GatewayReconciliationLock(dataSource);
+        lock.execute(task);
+        lock.execute(task);
+        lock.close();
 
         InOrder connectionOrder = inOrder(connection);
         connectionOrder.verify(connection).prepareStatement("SELECT GET_LOCK(?, 10)");
         connectionOrder.verify(connection).prepareStatement("SELECT RELEASE_LOCK(?)");
         verify(acquire).setString(1, "dbaas-public-gateway-reconcile");
         verify(release).setString(1, "dbaas-public-gateway-reconcile");
-        verify(task).run();
+        verify(task, org.mockito.Mockito.times(2)).run();
+        verify(dataSource).getConnection();
         verify(connection).close();
     }
 }

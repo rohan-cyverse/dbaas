@@ -49,6 +49,8 @@ public class SharedGatewayService {
             "loadbalancer.openstack.org/proxy-protocol";
     private static final Pattern EXISTING_ROUTE = Pattern.compile(
             "# route\\s+(db-[A-Za-z0-9-]+)\\s*\\R\\s*acl port_(\\d+)");
+    private static final Pattern EXISTING_BACKEND = Pattern.compile(
+            "(?m)^backend database_(\\d+)\\R\\s+server database ([^:\\s]+):(\\d+)\\b");
 
     private final DatabaseProperties properties;
     private final DatabaseMetadataRepository databaseRepository;
@@ -104,7 +106,9 @@ public class SharedGatewayService {
 
     private void reconcileUnlocked() {
         Infrastructure infrastructure = infrastructure();
-        List<Route> routes = activeRoutes();
+        String current = infrastructure.configMap().getData() == null
+                ? "" : infrastructure.configMap().getData().getOrDefault(CONFIG_KEY, "");
+        List<Route> routes = activeRoutes(current);
         String config = render(routes);
         String checksum = checksum(config);
 
@@ -112,15 +116,18 @@ public class SharedGatewayService {
             updateSourceRanges(infrastructure.service(), routes);
 
             V1ConfigMap configMap = infrastructure.configMap();
-            String current = configMap.getData() == null
-                    ? null : configMap.getData().get(CONFIG_KEY);
             if (!Objects.equals(current, config)) {
                 configMap.setData(Map.of(CONFIG_KEY, config));
                 coreV1Api.replaceNamespacedConfigMap(
                         settings().getConfigMapName(), settings().getNamespace(), configMap)
                         .execute();
 
-                V1Deployment deployment = infrastructure.deployment();
+                // Re-read after replacing the ConfigMap. A reloader or another
+                // control-plane instance may update the Deployment as soon as
+                // the ConfigMap changes, making the object captured by
+                // infrastructure() stale and causing a 409 replacement loop.
+                V1Deployment deployment = appsV1Api.readNamespacedDeployment(
+                        settings().getDeploymentName(), settings().getNamespace()).execute();
                 Map<String, String> existingAnnotations = deployment.getSpec().getTemplate()
                         .getMetadata().getAnnotations();
                 String deployedChecksum = existingAnnotations == null
@@ -197,12 +204,14 @@ public class SharedGatewayService {
         }
     }
 
-    private List<Route> activeRoutes() {
+    private List<Route> activeRoutes(String currentConfig) {
+        Map<String, Route> existing = existingRoutes(currentConfig);
         List<Route> routes = new ArrayList<>();
         for (DatabaseMetadata database : databaseRepository
                 .findByPublicPortIsNotNullOrderByPublicPortAsc()) {
             if (database.getStatus() == DatabaseStatus.DELETING
                     || database.getStatus() == DatabaseStatus.DELETED
+                    || database.getStatus() == DatabaseStatus.DEGRADED
                     || database.getStatus() == DatabaseStatus.MISSING
                     || database.getStatus() == DatabaseStatus.ORPHANED
                     || database.getStatus() == DatabaseStatus.FAILED) continue;
@@ -216,12 +225,29 @@ public class SharedGatewayService {
                     routes.add(new Route(database.getDatabaseId(), database.getPublicPort(),
                             endpoint.host(), endpoint.port(), allowed));
                 }
-            } catch (Exception ignored) {
-                // The scheduled reconciler retries while KubeBlocks creates the Service.
             }
         }
         routes.sort(Comparator.comparingInt(Route::publicPort));
         return routes;
+    }
+
+    private Map<String, Route> existingRoutes(String config) {
+        Map<Integer, String> databaseByPort = new LinkedHashMap<>();
+        Matcher routeMatcher = EXISTING_ROUTE.matcher(config == null ? "" : config);
+        while (routeMatcher.find()) {
+            databaseByPort.put(Integer.parseInt(routeMatcher.group(2)), routeMatcher.group(1));
+        }
+        Map<String, Route> result = new LinkedHashMap<>();
+        Matcher backendMatcher = EXISTING_BACKEND.matcher(config == null ? "" : config);
+        while (backendMatcher.find()) {
+            int publicPort = Integer.parseInt(backendMatcher.group(1));
+            String databaseId = databaseByPort.get(publicPort);
+            if (databaseId != null) {
+                result.put(databaseId, new Route(databaseId, publicPort,
+                        backendMatcher.group(2), Integer.parseInt(backendMatcher.group(3)), List.of()));
+            }
+        }
+        return result;
     }
 
     private void adoptExistingRoutes(V1ConfigMap configMap) {

@@ -72,6 +72,19 @@ class DatabaseBackendResolverTest {
     }
 
     @Test
+    void shardedMongoAlwaysUsesAMongosRouter() {
+        DatabaseMetadata database = database(DatabaseEngine.MONGODB, DatabaseMode.SHARDING);
+        V1Service configServer = service("db-orders-config-server", Map.of(), Map.of());
+        V1Service shard = service("db-orders-shard-a1b", Map.of(), Map.of());
+        V1Service mongos = service("db-orders-mongos-mongos-0", Map.of(), Map.of());
+
+        V1Service selected = DatabaseBackendResolver.select(
+                List.of(configServer, shard, mongos), database, 27017).orElseThrow();
+
+        assertEquals("db-orders-mongos-mongos-0", selected.getMetadata().getName());
+    }
+
+    @Test
     void resolverNeverSelectsAServiceFromAnotherDatabase() {
         DatabaseMetadata database = database(DatabaseEngine.POSTGRESQL, DatabaseMode.REPLICATION);
         V1Service other = service("db-another-postgresql", Map.of("app", "db-another"), Map.of());
