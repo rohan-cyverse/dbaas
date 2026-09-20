@@ -53,6 +53,7 @@ public class ProvisioningReconciler {
             DatabaseObservation live = kubeBlocksClient.get(
                     database.getNamespaceName(), database.physicalClusterName());
             if (live.status() == DatabaseStatus.FAILED) {
+                sharedGatewayService.removeRouteAndRelease(database);
                 progressService.failed(database, live.message());
                 return;
             }

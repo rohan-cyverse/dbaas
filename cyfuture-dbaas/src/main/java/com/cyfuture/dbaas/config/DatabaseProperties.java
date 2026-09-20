@@ -62,7 +62,7 @@ public class DatabaseProperties {
          */
         private boolean reconcileEnabled = false;
         private int portStart = 31000;
-        private int portEnd = 31009;
+        private int portEnd = 31030;
         private String publicHost;
     }
 

@@ -15,7 +15,11 @@ import io.kubernetes.client.openapi.models.V1ConfigMap;
 import io.kubernetes.client.openapi.models.V1Deployment;
 import io.kubernetes.client.openapi.models.V1LoadBalancerIngress;
 import io.kubernetes.client.openapi.models.V1Service;
+import io.kubernetes.client.openapi.models.V1ServicePort;
+import io.kubernetes.client.openapi.models.V1ServiceSpec;
+import io.kubernetes.client.custom.IntOrString;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -55,18 +59,30 @@ public class SharedGatewayService {
     private final GatewayReconciliationLock gatewayLock;
     private final DatabaseBackendResolver backendResolver;
 
+    @Autowired
     public SharedGatewayService(DatabaseProperties properties,
                                 DatabaseMetadataRepository databaseRepository,
                                 PublicPortAllocator portAllocator,
                                 KubeBlocksClient kubeBlocksClient,
                                 ApiClient apiClient, GatewayReconciliationLock gatewayLock,
                                 DatabaseBackendResolver backendResolver) {
+        this(properties, databaseRepository, portAllocator, kubeBlocksClient,
+                new CoreV1Api(apiClient), new AppsV1Api(apiClient), gatewayLock, backendResolver);
+    }
+
+    SharedGatewayService(DatabaseProperties properties,
+                         DatabaseMetadataRepository databaseRepository,
+                         PublicPortAllocator portAllocator,
+                         KubeBlocksClient kubeBlocksClient,
+                         CoreV1Api coreV1Api, AppsV1Api appsV1Api,
+                         GatewayReconciliationLock gatewayLock,
+                         DatabaseBackendResolver backendResolver) {
         this.properties = properties;
         this.databaseRepository = databaseRepository;
         this.portAllocator = portAllocator;
         this.kubeBlocksClient = kubeBlocksClient;
-        this.coreV1Api = new CoreV1Api(apiClient);
-        this.appsV1Api = new AppsV1Api(apiClient);
+        this.coreV1Api = coreV1Api;
+        this.appsV1Api = appsV1Api;
         this.gatewayLock = gatewayLock;
         this.backendResolver = backendResolver;
     }
@@ -257,6 +273,9 @@ public class SharedGatewayService {
                     settings().getConfigMapName(), settings().getNamespace()).execute();
             V1Deployment deployment = appsV1Api.readNamespacedDeployment(
                     settings().getDeploymentName(), settings().getNamespace()).execute();
+            if (settings().isReconcileEnabled()) {
+                ensureConfiguredServicePorts(service);
+            }
             verify(service);
             return new Infrastructure(service, configMap, deployment);
         } catch (io.kubernetes.client.openapi.ApiException exception) {
@@ -272,7 +291,9 @@ public class SharedGatewayService {
                     "Shared gateway Service has no listeners");
         }
         Set<Integer> actual = new LinkedHashSet<>();
-        service.getSpec().getPorts().forEach(port -> actual.add(port.getPort()));
+        service.getSpec().getPorts().stream()
+                .filter(this::isTcpServicePort)
+                .forEach(port -> actual.add(port.getPort()));
         for (int port = settings().getPortStart(); port <= settings().getPortEnd(); port++) {
             if (!actual.contains(port)) {
                 throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
@@ -289,6 +310,40 @@ public class SharedGatewayService {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
                     "Shared gateway is waiting for its permanent public IP");
         }
+    }
+
+    private void ensureConfiguredServicePorts(V1Service service)
+            throws io.kubernetes.client.openapi.ApiException {
+        if (service.getSpec() == null) {
+            service.setSpec(new V1ServiceSpec());
+        }
+        List<V1ServicePort> ports = service.getSpec().getPorts();
+        if (ports == null) {
+            ports = new ArrayList<>();
+            service.getSpec().setPorts(ports);
+        }
+        Set<Integer> actual = new LinkedHashSet<>();
+        ports.stream().filter(this::isTcpServicePort)
+                .forEach(port -> actual.add(port.getPort()));
+        boolean changed = false;
+        for (int port = settings().getPortStart(); port <= settings().getPortEnd(); port++) {
+            if (actual.contains(port)) continue;
+            ports.add(new V1ServicePort()
+                    .name("db-" + port)
+                    .port(port)
+                    .targetPort(new IntOrString(port))
+                    .protocol("TCP"));
+            changed = true;
+        }
+        if (changed) {
+            coreV1Api.replaceNamespacedService(
+                    settings().getServiceName(), settings().getNamespace(), service).execute();
+        }
+    }
+
+    private boolean isTcpServicePort(V1ServicePort port) {
+        return port.getPort() != null
+                && (port.getProtocol() == null || "TCP".equalsIgnoreCase(port.getProtocol()));
     }
 
     private void updateSourceRanges(V1Service service, List<Route> routes)
@@ -320,10 +375,11 @@ public class SharedGatewayService {
 
         value.append("  acl configured_port dst_port ");
         routes.forEach(route -> value.append(route.publicPort()).append(" "));
-        value.append("\n  tcp-request connection reject if !configured_port\n");
+        value.append("\n");
         routes.forEach(route -> value.append("  # route ").append(route.databaseId()).append("\n")
                 .append("  acl port_").append(route.publicPort()).append(" dst_port ")
                 .append(route.publicPort()).append("\n"));
+        value.append("  tcp-request connection reject if !configured_port\n");
         routes.forEach(route -> value.append("  use_backend database_")
                 .append(route.publicPort()).append(" if port_")
                 .append(route.publicPort()).append("\n"));

@@ -59,6 +59,19 @@ class ProvisioningReconcilerTest {
                 45, "Waiting for database Pods: 0/1");
     }
 
+    @Test
+    void releasesReservedPublicPortWhenProvisioningClusterFails() {
+        DatabaseMetadata database = database();
+        database.setPublicPort(31010);
+        when(client.get(database.getNamespaceName(), database.getDatabaseId()))
+                .thenReturn(live(database, DatabaseStatus.FAILED));
+
+        reconciler.reconcile(database);
+
+        verify(gateway).removeRouteAndRelease(database);
+        verify(progress).failed(database, "Waiting for database Pods: 0/1");
+    }
+
     private DatabaseMetadata database() {
         DatabaseMetadata database = new DatabaseMetadata();
         database.setDatabaseId("db-123456789012");

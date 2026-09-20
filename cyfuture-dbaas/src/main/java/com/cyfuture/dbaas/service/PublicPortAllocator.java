@@ -19,6 +19,7 @@ public class PublicPortAllocator {
             if (!databaseRepository.existsByPublicPort(port)) return port;
         }
         throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
-                "Shared public gateway capacity is exhausted");
+                "Shared public gateway capacity is exhausted for ports "
+                        + gateway.getPortStart() + "-" + gateway.getPortEnd());
     }
 }
