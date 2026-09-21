@@ -101,7 +101,7 @@ public class DatabaseService {
 
         validateVersion(request);
         validateMode(request);
-        validateNetwork(request.allowedCidrs());
+        validateNetwork(request.allowedCidrs(), true);
 
         String databaseId = "db-" + shortId();
         String operationId = "op-" + shortId();
@@ -312,7 +312,7 @@ public class DatabaseService {
         DatabaseMetadata database = requireDatabase(project, databaseId);
         List<String> cidrs = normalizeAccessRules(request.allowedCidrs(),
                 request.includeCurrentClientIp(), clientIp);
-        validateNetwork(cidrs);
+        validateNetwork(cidrs, database.getPublicPort() != null);
         database.setAllowedCidrs(cidrs.toString());
         database.setUpdatedAt(Instant.now());
         databaseRepository.save(database);
@@ -636,9 +636,14 @@ public class DatabaseService {
     }
 
     private void validateNetwork(List<String> allowedCidrs) {
+        validateNetwork(allowedCidrs, true);
+    }
+
+    private void validateNetwork(List<String> allowedCidrs, boolean requireAtLeastOne) {
         List<String> cidrs = safeCidrs(allowedCidrs);
-        if (cidrs.isEmpty())
-            throw new ApiException(HttpStatus.BAD_REQUEST, "Could not determine an allowed client IP");
+        if (requireAtLeastOne && cidrs.isEmpty())
+            throw new ApiException(HttpStatus.BAD_REQUEST, "ACCESS_RULE_REQUIRED", false,
+                    "At least one access rule is required for a public database.");
         if (cidrs.size() > MAX_ALLOWED_CIDRS)
             throw new ApiException(HttpStatus.BAD_REQUEST,
                     "A database can have at most " + MAX_ALLOWED_CIDRS + " access rules");
@@ -684,6 +689,7 @@ public class DatabaseService {
         safeCidrs(allowedCidrs).stream()
                 .filter(cidr -> cidr != null && !cidr.isBlank())
                 .map(String::trim)
+                .map(cidr -> cidr.matches("^(\\d{1,3}\\.){3}\\d{1,3}$") ? cidr + "/32" : cidr)
                 .forEach(normalized::add);
         if (includeCurrentClientIp) {
             if (clientIp == null || clientIp.isBlank()) {

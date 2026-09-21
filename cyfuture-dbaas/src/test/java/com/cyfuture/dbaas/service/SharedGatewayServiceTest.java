@@ -168,12 +168,83 @@ class SharedGatewayServiceTest {
         String rendered = replacement.getValue().getData().get("haproxy.cfg");
         assertTrue(rendered.contains("bind *:31000-31030 accept-proxy"));
         assertTrue(rendered.contains("acl configured_port dst_port 31030"));
+        assertTrue(rendered.contains("acl allowed_31030 src 49.50.73.146/32"));
+        assertTrue(rendered.contains(
+                "tcp-request connection reject if port_31030 !allowed_31030"));
         assertTrue(rendered.contains("backend database_31030"));
         assertTrue(rendered.indexOf("acl configured_port") < rendered.indexOf("acl port_31030"));
         assertTrue(rendered.indexOf("acl port_31030") < rendered.indexOf("tcp-request connection reject"));
         assertTrue(rendered.indexOf("tcp-request connection reject") < rendered.indexOf("use_backend database_31030"));
         assertFalse(rendered.contains("backend database_31010"));
         assertFalse(rendered.contains("backend database_31031"));
+    }
+
+    @Test
+    void rendersAccessRulesIndependentlyForEveryDatabasePort() throws Exception {
+        DatabaseProperties properties = enabledProperties();
+        DatabaseMetadata databaseA = database(31000);
+        databaseA.setAllowedCidrs("[49.50.73.146/32]");
+        DatabaseMetadata databaseB = database(31001);
+        databaseB.setDatabaseId("db-billing0001");
+        databaseB.setAllowedCidrs("[47.31.130.31/32, 152.58.123.106/32]");
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        KubeBlocksClient kubeBlocksClient = mock(KubeBlocksClient.class);
+        DatabaseBackendResolver backendResolver = mock(DatabaseBackendResolver.class);
+        CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        AppsV1Api apps = mock(AppsV1Api.class, RETURNS_DEEP_STUBS);
+        when(core.readNamespacedService(any(), any()).execute()).thenReturn(gatewayService(31000, 31030));
+        when(core.readNamespacedConfigMap(any(), any()).execute()).thenReturn(configMap("old"));
+        when(apps.readNamespacedDeployment(any(), any()).execute()).thenReturn(deployment());
+        when(repository.findByPublicPortIsNotNullOrderByPublicPortAsc())
+                .thenReturn(List.of(databaseA, databaseB));
+        when(kubeBlocksClient.get(any(), any())).thenReturn(observation());
+        when(backendResolver.resolve(databaseA)).thenReturn(new DatabaseBackendResolver.DatabaseBackendEndpoint(
+                "orders", "dbaas-orders", "orders.dbaas-orders.svc.cluster.local", 5432));
+        when(backendResolver.resolve(databaseB)).thenReturn(new DatabaseBackendResolver.DatabaseBackendEndpoint(
+                "billing", "dbaas-orders", "billing.dbaas-orders.svc.cluster.local", 5432));
+        SharedGatewayService sharedGateway = service(properties, runningLock(), repository, core, apps,
+                kubeBlocksClient, backendResolver);
+
+        sharedGateway.reconcileNow();
+
+        ArgumentCaptor<V1ConfigMap> replacement = ArgumentCaptor.forClass(V1ConfigMap.class);
+        verify(core).replaceNamespacedConfigMap(any(), any(), replacement.capture());
+        String rendered = replacement.getValue().getData().get("haproxy.cfg");
+        assertTrue(rendered.contains("acl allowed_31000 src 49.50.73.146/32"));
+        assertTrue(rendered.contains(
+                "acl allowed_31001 src 47.31.130.31/32 152.58.123.106/32"));
+        assertFalse(rendered.contains("acl allowed_31000 src 47.31.130.31/32"));
+        assertTrue(rendered.contains("use_backend database_31000 if port_31000"));
+        assertTrue(rendered.contains("use_backend database_31001 if port_31001"));
+        verify(core, never()).replaceNamespacedService(any(), any(), any());
+    }
+
+    @Test
+    void privateAndDeletedDatabasesHaveNoRouteOrAccessAcl() throws Exception {
+        DatabaseProperties properties = enabledProperties();
+        DatabaseMetadata privateDatabase = database(31000);
+        privateDatabase.setPublicPort(null);
+        DatabaseMetadata deletedDatabase = database(31001);
+        deletedDatabase.setStatus(DatabaseStatus.DELETED);
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        AppsV1Api apps = mock(AppsV1Api.class, RETURNS_DEEP_STUBS);
+        when(core.readNamespacedService(any(), any()).execute()).thenReturn(gatewayService(31000, 31030));
+        when(core.readNamespacedConfigMap(any(), any()).execute()).thenReturn(configMap("old"));
+        when(apps.readNamespacedDeployment(any(), any()).execute()).thenReturn(deployment());
+        when(repository.findByPublicPortIsNotNullOrderByPublicPortAsc()).thenReturn(List.of(deletedDatabase));
+        SharedGatewayService sharedGateway = service(properties, runningLock(), repository, core, apps,
+                mock(KubeBlocksClient.class), mock(DatabaseBackendResolver.class));
+
+        sharedGateway.reconcileNow();
+
+        ArgumentCaptor<V1ConfigMap> replacement = ArgumentCaptor.forClass(V1ConfigMap.class);
+        verify(core).replaceNamespacedConfigMap(any(), any(), replacement.capture());
+        String rendered = replacement.getValue().getData().get("haproxy.cfg");
+        assertFalse(rendered.contains("port_31000"));
+        assertFalse(rendered.contains("port_31001"));
+        assertFalse(rendered.contains("allowed_31000"));
+        assertFalse(rendered.contains("allowed_31001"));
     }
 
     @Test

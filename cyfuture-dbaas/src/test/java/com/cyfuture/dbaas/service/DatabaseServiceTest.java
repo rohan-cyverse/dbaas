@@ -200,16 +200,52 @@ class DatabaseServiceTest {
     @Test
     void updatesAccessRulesAndReconcilesGateway() {
         DatabaseMetadata database = database("db-orders0001");
+        database.setPublicPort(31000);
         database.setAllowedCidrs("[49.50.73.146/32]");
         when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
                 .thenReturn(Optional.of(database));
 
         var response = service.updateAccessRules("orders", "db-orders0001",
-                new AccessRulesRequest(List.of("203.0.113.0/24"), true),
+                new AccessRulesRequest(List.of("203.0.113.0/24", "203.0.113.0/24", "157.37.137.185"), true),
                 "157.37.137.185");
 
         assertEquals(List.of("157.37.137.185/32", "203.0.113.0/24"), response.allowedCidrs());
         assertEquals("[157.37.137.185/32, 203.0.113.0/24]", database.getAllowedCidrs());
+        verify(repository).save(database);
+        verify(sharedGatewayService).reconcileNow();
+    }
+
+    @Test
+    void rejectsRemovingFinalRuleFromPublicDatabase() {
+        DatabaseMetadata database = database("db-orders0001");
+        database.setPublicPort(31000);
+        database.setAllowedCidrs("[49.50.73.146/32]");
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.updateAccessRules("orders", "db-orders0001",
+                        new AccessRulesRequest(List.of(), false), null));
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatus());
+        assertEquals("ACCESS_RULE_REQUIRED", exception.getCode());
+        verify(repository, never()).save(database);
+        verify(sharedGatewayService, never()).reconcileNow();
+    }
+
+    @Test
+    void privateDatabaseMayHaveNoPublicAccessRules() {
+        DatabaseMetadata database = database("db-orders0001");
+        database.setPublicPort(null);
+        database.setAllowedCidrs("[49.50.73.146/32]");
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+
+        var response = service.updateAccessRules("orders", "db-orders0001",
+                new AccessRulesRequest(List.of(), false), null);
+
+        assertTrue(response.allowedCidrs().isEmpty());
+        assertEquals("[]", database.getAllowedCidrs());
         verify(repository).save(database);
         verify(sharedGatewayService).reconcileNow();
     }

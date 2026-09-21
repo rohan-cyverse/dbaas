@@ -51,6 +51,8 @@ public class SharedGatewayService {
             "# route\\s+(db-[A-Za-z0-9-]+)\\s*\\R\\s*acl port_(\\d+)");
     private static final Pattern EXISTING_BACKEND = Pattern.compile(
             "(?m)^backend database_(\\d+)\\R\\s+server database ([^:\\s]+):(\\d+)\\b");
+    private static final Pattern EXISTING_ALLOWED = Pattern.compile(
+            "(?m)^\\s*acl allowed_(\\d+) src (.+)$");
 
     private final DatabaseProperties properties;
     private final DatabaseMetadataRepository databaseRepository;
@@ -113,8 +115,6 @@ public class SharedGatewayService {
         String checksum = checksum(config);
 
         try {
-            updateSourceRanges(infrastructure.service(), routes);
-
             V1ConfigMap configMap = infrastructure.configMap();
             if (!Objects.equals(current, config)) {
                 configMap.setData(Map.of(CONFIG_KEY, config));
@@ -243,9 +243,15 @@ public class SharedGatewayService {
 
     private Map<String, Route> existingRoutes(String config) {
         Map<Integer, String> databaseByPort = new LinkedHashMap<>();
+        Map<Integer, List<String>> allowedByPort = new LinkedHashMap<>();
         Matcher routeMatcher = EXISTING_ROUTE.matcher(config == null ? "" : config);
         while (routeMatcher.find()) {
             databaseByPort.put(Integer.parseInt(routeMatcher.group(2)), routeMatcher.group(1));
+        }
+        Matcher allowedMatcher = EXISTING_ALLOWED.matcher(config == null ? "" : config);
+        while (allowedMatcher.find()) {
+            allowedByPort.put(Integer.parseInt(allowedMatcher.group(1)),
+                    List.of(allowedMatcher.group(2).trim().split("\\s+")));
         }
         Map<String, Route> result = new LinkedHashMap<>();
         Matcher backendMatcher = EXISTING_BACKEND.matcher(config == null ? "" : config);
@@ -254,7 +260,8 @@ public class SharedGatewayService {
             String databaseId = databaseByPort.get(publicPort);
             if (databaseId != null) {
                 result.put(databaseId, new Route(databaseId, publicPort,
-                        backendMatcher.group(2), Integer.parseInt(backendMatcher.group(3)), List.of()));
+                        backendMatcher.group(2), Integer.parseInt(backendMatcher.group(3)),
+                        allowedByPort.getOrDefault(publicPort, List.of())));
             }
         }
         return result;
@@ -382,20 +389,6 @@ public class SharedGatewayService {
                 && (port.getProtocol() == null || "TCP".equalsIgnoreCase(port.getProtocol()));
     }
 
-    private void updateSourceRanges(V1Service service, List<Route> routes)
-            throws io.kubernetes.client.openapi.ApiException {
-        List<String> desired = routes.stream().flatMap(route -> route.allowedCidrs().stream())
-                .distinct().sorted().toList();
-        List<String> current = service.getSpec().getLoadBalancerSourceRanges() == null
-                ? List.of() : service.getSpec().getLoadBalancerSourceRanges().stream()
-                .sorted().toList();
-        if (!desired.isEmpty() && !desired.equals(current)) {
-            service.getSpec().setLoadBalancerSourceRanges(desired);
-            coreV1Api.replaceNamespacedService(
-                    settings().getServiceName(), settings().getNamespace(), service).execute();
-        }
-    }
-
     private String render(List<Route> routes) {
         StringBuilder value = new StringBuilder()
                 .append("global\n  log stdout format raw local0\n  maxconn 10000\n\n")
@@ -412,10 +405,23 @@ public class SharedGatewayService {
         value.append("  acl configured_port dst_port ");
         routes.forEach(route -> value.append(route.publicPort()).append(" "));
         value.append("\n");
-        routes.forEach(route -> value.append("  # route ").append(route.databaseId()).append("\n")
-                .append("  acl port_").append(route.publicPort()).append(" dst_port ")
-                .append(route.publicPort()).append("\n"));
+        routes.forEach(route -> {
+            value.append("  # route ").append(route.databaseId()).append("\n")
+                    .append("  acl port_").append(route.publicPort()).append(" dst_port ")
+                    .append(route.publicPort()).append("\n");
+            if (!route.allowedCidrs().isEmpty()) {
+                value.append("  acl allowed_").append(route.publicPort()).append(" src ")
+                        .append(String.join(" ", route.allowedCidrs())).append("\n");
+            }
+        });
         value.append("  tcp-request connection reject if !configured_port\n");
+        routes.forEach(route -> {
+            value.append("  tcp-request connection reject if port_").append(route.publicPort());
+            if (!route.allowedCidrs().isEmpty()) {
+                value.append(" !allowed_").append(route.publicPort());
+            }
+            value.append("\n");
+        });
         routes.forEach(route -> value.append("  use_backend database_")
                 .append(route.publicPort()).append(" if port_")
                 .append(route.publicPort()).append("\n"));

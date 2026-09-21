@@ -69,7 +69,7 @@ public class GlobalExceptionHandler {
             case "PROJECT_DELETION_IN_PROGRESS" -> "Project deletion is in progress.";
             case "PROJECT_BACKUP_OPERATION_IN_PROGRESS", "BACKUP_OR_RESTORE_IN_PROGRESS",
                     "RESTORE_IN_PROGRESS", "DATABASE_OPERATION_IN_PROGRESS",
-                    "INVALID_ACCESS_RULE" -> exception.getMessage();
+                    "INVALID_ACCESS_RULE", "ACCESS_RULE_REQUIRED" -> exception.getMessage();
             case "VALIDATION_FAILED", "INVALID_REQUEST_BODY" -> "The request is invalid.";
             default -> switch (exception.getStatus().value()) {
                 case 400 -> "The request is invalid.";
