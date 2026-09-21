@@ -670,12 +670,16 @@ public class DatabaseService {
     }
 
     private List<String> safeCidrs(List<String> cidrs) {
-        return cidrs == null ? List.of() : List.copyOf(cidrs);
+        return cidrs == null ? List.of() : cidrs;
     }
 
     private List<String> normalizeAccessRules(List<String> allowedCidrs,
                                               boolean includeCurrentClientIp,
                                               String clientIp) {
+        if (safeCidrs(allowedCidrs).stream().anyMatch(java.util.Objects::isNull)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_ACCESS_RULE", false,
+                    "allowedCidrs cannot contain null values. Use an IPv4 CIDR such as 49.50.73.146/32.");
+        }
         java.util.LinkedHashSet<String> normalized = new java.util.LinkedHashSet<>();
         safeCidrs(allowedCidrs).stream()
                 .filter(cidr -> cidr != null && !cidr.isBlank())

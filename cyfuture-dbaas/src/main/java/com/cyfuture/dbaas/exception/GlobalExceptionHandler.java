@@ -2,6 +2,7 @@ package com.cyfuture.dbaas.exception;
 
 import com.cyfuture.dbaas.dto.ApiErrorResponse;
 import com.cyfuture.dbaas.service.OperationService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -10,6 +11,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @RestControllerAdvice
+@Slf4j
 public class GlobalExceptionHandler {
     @ExceptionHandler(ApiException.class)
     ResponseEntity<ApiErrorResponse> handleApiException(ApiException exception) {
@@ -47,6 +49,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     ResponseEntity<ApiErrorResponse> handleUnexpected(Exception exception) {
+        log.error("Unexpected API failure", exception);
         return ResponseEntity.internalServerError().body(new ApiErrorResponse(
                 "INTERNAL_ERROR", "An unexpected error occurred. Please try again.", true));
     }
@@ -65,7 +68,8 @@ public class GlobalExceptionHandler {
                     "Restart requests do not accept a request body. Retry without a body to restart the full database.";
             case "PROJECT_DELETION_IN_PROGRESS" -> "Project deletion is in progress.";
             case "PROJECT_BACKUP_OPERATION_IN_PROGRESS", "BACKUP_OR_RESTORE_IN_PROGRESS",
-                    "RESTORE_IN_PROGRESS", "DATABASE_OPERATION_IN_PROGRESS" -> exception.getMessage();
+                    "RESTORE_IN_PROGRESS", "DATABASE_OPERATION_IN_PROGRESS",
+                    "INVALID_ACCESS_RULE" -> exception.getMessage();
             case "VALIDATION_FAILED", "INVALID_REQUEST_BODY" -> "The request is invalid.";
             default -> switch (exception.getStatus().value()) {
                 case 400 -> "The request is invalid.";

@@ -83,4 +83,18 @@ class GlobalExceptionHandlerTest {
                 body.message());
         assertFalse(body.retryable());
     }
+
+    @Test
+    void invalidAccessRuleReturnsActionableMessage() {
+        GlobalExceptionHandler handler = new GlobalExceptionHandler();
+        ApiException exception = new ApiException(HttpStatus.BAD_REQUEST,
+                "INVALID_ACCESS_RULE", false,
+                "allowedCidrs cannot contain null values. Use an IPv4 CIDR such as 49.50.73.146/32.");
+
+        var response = handler.handleApiException(exception);
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+        assertEquals(exception.getMessage(), response.getBody().message());
+        assertFalse(response.getBody().retryable());
+    }
 }

@@ -229,6 +229,22 @@ class DatabaseServiceTest {
     }
 
     @Test
+    void rejectsNullAccessRuleWithAClientError() {
+        DatabaseMetadata database = database("db-orders0001");
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.updateAccessRules("orders", "db-orders0001",
+                        new AccessRulesRequest(java.util.Arrays.asList("203.0.113.0/24", null), false), null));
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatus());
+        assertEquals("INVALID_ACCESS_RULE", exception.getCode());
+        verify(repository, never()).save(database);
+        verify(sharedGatewayService, never()).reconcileNow();
+    }
+
+    @Test
     void listsOneLogicalDatabaseWithObservedHaInstanceCounts() {
         DatabaseMetadata database = new DatabaseMetadata();
         database.setDatabaseId("db-orders0001");
