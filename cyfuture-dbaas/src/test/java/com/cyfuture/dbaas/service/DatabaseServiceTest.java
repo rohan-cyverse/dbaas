@@ -48,6 +48,7 @@ class DatabaseServiceTest {
     private FriendlyNameGenerator friendlyNames;
     private KubeBlocksClient kubeBlocksClient;
     private BackupPolicyService backupPolicyService;
+    private BackupRetentionService backupRetentionService;
     private SharedGatewayService sharedGatewayService;
     private DatabaseService service;
 
@@ -68,6 +69,8 @@ class DatabaseServiceTest {
                 .thenReturn(Optional.empty());
         kubeBlocksClient = mock(KubeBlocksClient.class);
         backupPolicyService = mock(BackupPolicyService.class);
+        backupRetentionService = mock(BackupRetentionService.class);
+        when(backupRetentionService.readyForClusterDeletion(anyString(), anyString())).thenReturn(true);
         sharedGatewayService = mock(SharedGatewayService.class);
         when(backupPolicyService.normalizeForCreation(any(BackupSettingsRequest.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -78,7 +81,7 @@ class DatabaseServiceTest {
                 provisioning, metadataCreation, mock(CredentialLifecycleService.class),
                 projects, sharedGatewayService, mock(OperationMetadataRepository.class), friendlyNames,
                 mock(BackupMetadataRepository.class), mock(RestoreRequestMetadataRepository.class),
-                backupPolicyService, mock(BackupRetentionService.class));
+                backupPolicyService, backupRetentionService);
     }
 
     @Test
@@ -299,7 +302,7 @@ class DatabaseServiceTest {
     }
 
     @Test
-    void blocksDeletionWhenKubernetesReportsAnUnimportedActiveBackup() {
+    void acceptsDeletionAndWaitsWhenKubernetesReportsAnUnimportedActiveBackup() {
         DatabaseMetadata database = new DatabaseMetadata();
         database.setDatabaseId("db-orders0001");
         database.setProjectName("orders");
@@ -311,11 +314,13 @@ class DatabaseServiceTest {
                 .thenReturn(Optional.of(database));
         when(kubeBlocksClient.hasActiveBackup("dbaas-orders", "db-orders0001")).thenReturn(true);
 
-        ApiException exception = assertThrows(ApiException.class,
-                () -> service.delete("orders", "db-orders0001"));
+        var response = service.delete("orders", "db-orders0001");
 
-        assertEquals(HttpStatus.CONFLICT, exception.getStatus());
-        assertEquals("BACKUP_OR_RESTORE_IN_PROGRESS", exception.getCode());
+        assertEquals(DatabaseStatus.DELETING, response.status());
+        assertEquals(DatabaseStatus.DELETING, database.getStatus());
+        assertEquals("Database deletion is removing backups before deleting the database",
+                database.getMessage());
+        verify(backupRetentionService).prepareDatabaseBackupDeletion("orders", "db-orders0001");
         verify(kubeBlocksClient, never()).requestDelete("dbaas-orders", "db-orders0001");
     }
 

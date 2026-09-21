@@ -43,7 +43,6 @@ public final class ClientMessages {
         return switch (stage) {
             case QUEUED -> "Provisioning is queued.";
             case VALIDATING -> "Validating configuration.";
-            case CREATING_SAFETY_BACKUP -> "Creating safety backup.";
             case ENTERING_MAINTENANCE -> "Entering maintenance mode.";
             case QUIESCING_TOPOLOGY -> "Quiescing database topology.";
             case REPLACING_DATA -> "Replacing database data.";

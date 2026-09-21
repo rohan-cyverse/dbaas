@@ -126,7 +126,7 @@ class ProjectServiceTest {
     }
 
     @Test
-    void projectDeletionBlocksAnActiveKubernetesBackupBeforeNamespaceDeletionStarts() {
+    void projectDeletionIsAcceptedAndWaitsForAnActiveKubernetesBackup() {
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-orders0001");
         project.setNamespaceName("dbaas-p-prj-orders0001");
@@ -140,11 +140,10 @@ class ProjectServiceTest {
         when(kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), database.getDatabaseId()))
                 .thenReturn(true);
 
-        ApiException exception = assertThrows(ApiException.class,
-                () -> service.delete(project.getProjectId()));
+        var response = service.delete(project.getProjectId());
 
-        assertEquals("PROJECT_BACKUP_OPERATION_IN_PROGRESS", exception.getCode());
-        assertEquals(ResourceStatus.ACTIVE, project.getStatus());
+        assertEquals(ResourceStatus.DELETING, response.status());
+        assertEquals(ResourceStatus.DELETING, project.getStatus());
         verify(kubeBlocksClient, never()).prepareProjectDatabaseDeletion(any(), any());
         verify(kubeBlocksClient, never()).deleteProjectNamespace(any(), any());
     }

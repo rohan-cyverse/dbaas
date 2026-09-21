@@ -334,19 +334,16 @@ public class DatabaseService {
                     "Deletion protection is enabled for " + databaseId
                             + ". Disable it before deleting.");
         }
-        if (backupRepository.existsByProjectNameAndDatabaseIdAndStatusIn(project, databaseId,
-                List.of(BackupStatus.PENDING, BackupStatus.RUNNING, BackupStatus.DELETING))
-                || restoreRepository.existsByProjectNameAndSourceDatabaseIdAndStatusIn(project, databaseId,
+        if (restoreRepository.existsByProjectNameAndSourceDatabaseIdAndStatusIn(project, databaseId,
                 List.of(RestoreStatus.PENDING, RestoreStatus.SAFETY_BACKUP, RestoreStatus.RESTORING,
                         RestoreStatus.VALIDATING, RestoreStatus.CUTTING_OVER, RestoreStatus.ROLLING_BACK,
                         RestoreStatus.RUNNING))
                 || restoreRepository.existsByRestoredDatabaseIdAndStatusIn(databaseId,
                 List.of(RestoreStatus.PENDING, RestoreStatus.SAFETY_BACKUP, RestoreStatus.RESTORING,
                         RestoreStatus.VALIDATING, RestoreStatus.CUTTING_OVER, RestoreStatus.ROLLING_BACK,
-                        RestoreStatus.RUNNING))
-                || kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), database.physicalClusterName())) {
-            throw new ApiException(HttpStatus.CONFLICT, "BACKUP_OR_RESTORE_IN_PROGRESS", false,
-                    "Database deletion is blocked while a backup or restore is active.");
+                        RestoreStatus.RUNNING))) {
+            throw new ApiException(HttpStatus.CONFLICT, "RESTORE_IN_PROGRESS", false,
+                    "A restore is using this database. Wait for it to finish before deleting the database.");
         }
         operationRepository.findByDatabaseIdAndProjectNameAndStatusIn(databaseId, project,
                         List.of(OperationStatus.PENDING, OperationStatus.RUNNING))
@@ -354,9 +351,9 @@ public class DatabaseService {
                 .filter(operation -> operation.getType() != OperationType.DELETE)
                 .findFirst()
                 .ifPresent(operation -> {
-                    throw new ApiException(HttpStatus.CONFLICT,
-                            "Operation " + operation.getOperationId()
-                                    + " is already running for database " + databaseId);
+                    throw new ApiException(HttpStatus.CONFLICT, "DATABASE_OPERATION_IN_PROGRESS", false,
+                            "Operation " + operation.getOperationId() + " is still running. "
+                                    + "Wait for it to finish before deleting the database.");
                 });
 
         OperationMetadata operation = deleteOperation(database);
@@ -367,9 +364,10 @@ public class DatabaseService {
         database.setUpdatedAt(Instant.now());
         databaseRepository.save(database);
 
+        backupRetentionService.prepareDatabaseBackupDeletion(project, databaseId);
         if (!backupRetentionService.readyForClusterDeletion(project, databaseId)
                 || kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), database.physicalClusterName())) {
-            database.setMessage("Database deletion is waiting for active backup or restore work");
+            database.setMessage("Database deletion is removing backups before deleting the database");
             database.setUpdatedAt(Instant.now());
             databaseRepository.save(database);
             return deletionResponse(database);

@@ -42,6 +42,11 @@ public record DatabaseObservation(
         if (members == null) members = List.of();
     }
 
+    /** Backwards-compatible name used by topology observation callers. */
+    public int replicas() {
+        return mode == DatabaseMode.SHARDING ? shardCount : instanceCount;
+    }
+
     public record TopologyMember(
             String name,
             String role,

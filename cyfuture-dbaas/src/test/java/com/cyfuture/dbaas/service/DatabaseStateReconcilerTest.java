@@ -185,7 +185,9 @@ class DatabaseStateReconcilerTest {
         reconciler.reconcile(database);
 
         assertEquals(DatabaseStatus.DELETING, database.getStatus());
-        assertEquals("Database deletion is waiting for active backup or restore work", database.getMessage());
+        assertEquals("Database deletion is removing backups before deleting the database", database.getMessage());
+        verify(retention).prepareDatabaseBackupDeletion(
+                database.getProjectName(), database.getDatabaseId());
         verify(kubeBlocksClient, never()).requestDelete("dbaas-orders", "db-orders0001");
         verify(gateway, never()).removeRoute(database);
     }

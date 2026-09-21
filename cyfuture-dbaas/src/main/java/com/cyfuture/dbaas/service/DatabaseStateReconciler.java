@@ -176,13 +176,15 @@ public class DatabaseStateReconciler {
             if (database.getDeleteRequestedAt() == null) {
                 update(database::setDeleteRequestedAt, Instant.now());
             }
+            backupRetentionService.prepareDatabaseBackupDeletion(
+                    database.getProjectName(), database.getDatabaseId());
             if (!backupRetentionService.readyForClusterDeletion(
                     database.getProjectName(), database.getDatabaseId())
                     || kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), database.physicalClusterName())) {
                 update(database::setMessage,
-                        "Database deletion is waiting for active backup or restore work");
+                        "Database deletion is removing backups before deleting the database");
                 finishDeleteOperation(database, OperationStatus.RUNNING,
-                        "Waiting for backup retention processing");
+                        "Removing database backups");
                 saveIfChanged(database);
                 return;
             }

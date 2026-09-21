@@ -64,6 +64,8 @@ public class GlobalExceptionHandler {
             case "RESTART_REQUEST_BODY_NOT_ALLOWED" ->
                     "Restart requests do not accept a request body. Retry without a body to restart the full database.";
             case "PROJECT_DELETION_IN_PROGRESS" -> "Project deletion is in progress.";
+            case "PROJECT_BACKUP_OPERATION_IN_PROGRESS", "BACKUP_OR_RESTORE_IN_PROGRESS",
+                    "RESTORE_IN_PROGRESS", "DATABASE_OPERATION_IN_PROGRESS" -> exception.getMessage();
             case "VALIDATION_FAILED", "INVALID_REQUEST_BODY" -> "The request is invalid.";
             default -> switch (exception.getStatus().value()) {
                 case 400 -> "The request is invalid.";

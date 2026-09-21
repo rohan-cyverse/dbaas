@@ -52,9 +52,24 @@ public class BackupRetentionService {
     /** Project deletion removes known backup data through the same backup DELETE path. */
     @Transactional
     public boolean prepareProjectBackupDeletion(String project) {
+        return prepareBackupDeletion(project, null);
+    }
+
+    /** Database deletion removes every known backup before deleting its source cluster. */
+    @Transactional
+    public boolean prepareDatabaseBackupDeletion(String project, String databaseId) {
+        return prepareBackupDeletion(project, databaseId);
+    }
+
+    private boolean prepareBackupDeletion(String project, String databaseId) {
         boolean pending = false;
-        for (BackupMetadata backup : backupRepository.findByProjectNameOrderByCreatedAtDesc(project)) {
-            if (backup.getStatus() == BackupStatus.COMPLETED || backup.getStatus() == BackupStatus.FAILED) {
+        List<BackupMetadata> backups = databaseId == null
+                ? backupRepository.findByProjectNameOrderByCreatedAtDesc(project)
+                : backupRepository.findByProjectNameAndDatabaseIdOrderByCreatedAtDesc(project, databaseId);
+        for (BackupMetadata backup : backups) {
+            if (backup.getStatus() != BackupStatus.DELETED
+                    && backup.getStatus() != BackupStatus.EXPIRED
+                    && backup.getStatus() != BackupStatus.DELETING) {
                 if (restoreRepository.existsByProjectNameAndSourceBackupIdAndStatusIn(project, backup.getBackupId(),
                         List.of(com.cyfuture.dbaas.model.RestoreStatus.PENDING,
                                 com.cyfuture.dbaas.model.RestoreStatus.SAFETY_BACKUP,
@@ -74,8 +89,7 @@ public class BackupRetentionService {
                 String backupId = backup.getBackupId();
                 submitAfterCommit(() -> deletionSubmitter.delete(backupId));
                 pending = true;
-            } else if (backup.getStatus() == BackupStatus.PENDING || backup.getStatus() == BackupStatus.RUNNING
-                    || backup.getStatus() == BackupStatus.DELETING) {
+            } else if (backup.getStatus() == BackupStatus.DELETING) {
                 pending = true;
             }
         }

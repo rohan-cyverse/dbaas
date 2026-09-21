@@ -225,6 +225,16 @@ public class SharedGatewayService {
                     routes.add(new Route(database.getDatabaseId(), database.getPublicPort(),
                             endpoint.host(), endpoint.port(), allowed));
                 }
+            } catch (ApiException exception) {
+                // Keep the last known route during a transient observation failure.
+                // Removing it would turn a control-plane read error into an outage.
+                Route previous = existing.get(database.getDatabaseId());
+                if (previous != null) {
+                    routes.add(new Route(previous.databaseId(), previous.publicPort(),
+                            previous.host(), previous.targetPort(), allowed));
+                }
+                log.debug("Keeping the existing gateway route for {} until observation recovers: {}",
+                        database.getDatabaseId(), exception.getMessage());
             }
         }
         routes.sort(Comparator.comparingInt(Route::publicPort));
