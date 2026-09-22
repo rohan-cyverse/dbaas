@@ -356,9 +356,9 @@ public class SharedGatewayService {
         Map<String, String> annotations = service.getMetadata() == null
                 ? null : service.getMetadata().getAnnotations();
         String proxy = annotations == null ? null : annotations.get(PROXY_PROTOCOL);
-        if (!"false".equals(proxy)) {
+        if (!"true".equals(proxy)) {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
-                    "Shared gateway OpenStack PROXY protocol must be disabled for CIDR enforcement");
+                    "Shared gateway OpenStack PROXY protocol is not enabled");
         }
         if (externalHost(service) == null) {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
@@ -386,8 +386,8 @@ public class SharedGatewayService {
             service.getMetadata().setAnnotations(
                     new LinkedHashMap<>(service.getMetadata().getAnnotations()));
         }
-        if (!"false".equals(service.getMetadata().getAnnotations().get(PROXY_PROTOCOL))) {
-            service.getMetadata().getAnnotations().put(PROXY_PROTOCOL, "false");
+        if (!"true".equals(service.getMetadata().getAnnotations().get(PROXY_PROTOCOL))) {
+            service.getMetadata().getAnnotations().put(PROXY_PROTOCOL, "true");
             changed = true;
         }
         if (ports.removeIf(port -> isTcpServicePort(port)
@@ -444,7 +444,7 @@ public class SharedGatewayService {
                 .append("  http-request return status 200 content-type text/plain string ok\n\n")
                 .append("frontend public_databases\n  bind *:")
                 .append(PUBLIC_PORT_START).append("-")
-                .append(PUBLIC_PORT_END).append("\n");
+                .append(PUBLIC_PORT_END).append(" accept-proxy\n");
         if (routes.isEmpty()) return value.append("  tcp-request connection reject\n").toString();
 
         value.append("  acl configured_port dst_port ");
@@ -453,14 +453,9 @@ public class SharedGatewayService {
         routes.forEach(route -> {
             value.append("  # route ").append(route.databaseId()).append("\n")
                     .append("  acl port_").append(route.publicPort()).append(" dst_port ")
-                    .append(route.publicPort()).append("\n")
-                    .append("  acl allowed_").append(route.publicPort()).append(" src ")
-                    .append(String.join(" ", route.allowedCidrs())).append("\n");
+                    .append(route.publicPort()).append("\n");
         });
         value.append("  tcp-request content reject if !configured_port\n");
-        routes.forEach(route -> value.append("  tcp-request content reject if port_")
-                .append(route.publicPort()).append(" !allowed_")
-                .append(route.publicPort()).append("\n"));
         routes.forEach(route -> value.append("  use_backend database_")
                 .append(route.publicPort()).append(" if port_")
                 .append(route.publicPort()).append("\n"));
@@ -489,10 +484,7 @@ public class SharedGatewayService {
         Route route = existingRoutes(config).get(database.getDatabaseId());
         return route != null
                 && route.publicPort() == publicPort
-                && managedPort(publicPort)
-                && config.contains("acl allowed_" + publicPort + " src ")
-                && config.contains("tcp-request content reject if port_" + publicPort
-                + " !allowed_" + publicPort);
+                && managedPort(publicPort);
     }
 
     private boolean backendConfigured(String config, DatabaseMetadata database, int publicPort) {
