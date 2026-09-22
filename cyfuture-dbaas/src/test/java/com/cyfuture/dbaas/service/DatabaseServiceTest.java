@@ -263,6 +263,25 @@ class DatabaseServiceTest {
     }
 
     @Test
+    void addAccessRuleAcceptsSingleCidrApiPayloadAlias() {
+        DatabaseMetadata database = database("db-orders0001");
+        database.setPublicPort(31000);
+        database.setAllowedCidrs("[49.50.73.146/32]");
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+
+        var response = service.updateAccessRules("orders", "db-orders0001",
+                new AccessRulesRequest(List.of(), false, List.of(), List.of(),
+                        "157.49.126.77/32", null, null),
+                null);
+
+        assertEquals(List.of("157.49.126.77/32", "49.50.73.146/32"), response.allowedCidrs());
+        assertEquals("[157.49.126.77/32, 49.50.73.146/32]", database.getAllowedCidrs());
+        verify(repository).save(database);
+        verify(sharedGatewayService).reconcileNow();
+    }
+
+    @Test
     void removesOnlySelectedAccessRuleAndKeepsTheRest() {
         DatabaseMetadata database = database("db-orders0001");
         database.setPublicPort(31000);
@@ -276,6 +295,25 @@ class DatabaseServiceTest {
 
         assertEquals(List.of("157.37.137.185/32", "49.50.73.146/32"), response.allowedCidrs());
         assertEquals("[157.37.137.185/32, 49.50.73.146/32]", database.getAllowedCidrs());
+        verify(repository).save(database);
+        verify(sharedGatewayService).reconcileNow();
+    }
+
+    @Test
+    void removeAccessRuleAcceptsSingleCidrApiPayloadAlias() {
+        DatabaseMetadata database = database("db-orders0001");
+        database.setPublicPort(31000);
+        database.setAllowedCidrs("[49.50.73.146/32, 157.49.126.77/32]");
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+
+        var response = service.updateAccessRules("orders", "db-orders0001",
+                new AccessRulesRequest(List.of(), false, List.of(), List.of(),
+                        null, null, "157.49.126.77/32"),
+                null);
+
+        assertEquals(List.of("49.50.73.146/32"), response.allowedCidrs());
+        assertEquals("[49.50.73.146/32]", database.getAllowedCidrs());
         verify(repository).save(database);
         verify(sharedGatewayService).reconcileNow();
     }

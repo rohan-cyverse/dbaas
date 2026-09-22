@@ -677,9 +677,9 @@ public class DatabaseService {
                                                 AccessRulesRequest request,
                                                 String clientIp) {
         java.util.LinkedHashSet<String> merged = new java.util.LinkedHashSet<>(metadataCidrs(database));
-        normalizeAccessRules(request.allowedCidrs(), request.addCidrs(),
-                request.includeCurrentClientIp(), clientIp).forEach(merged::add);
-        normalizeAccessRules(request.removeCidrs(), List.of(), false, null)
+        normalizeAccessRules(request.cidrsToAdd(), List.of(), request.includeCurrentClientIp(), clientIp)
+                .forEach(merged::add);
+        normalizeAccessRules(request.cidrsToRemove(), List.of(), false, null)
                 .forEach(merged::remove);
         return merged.stream().sorted().toList();
     }
