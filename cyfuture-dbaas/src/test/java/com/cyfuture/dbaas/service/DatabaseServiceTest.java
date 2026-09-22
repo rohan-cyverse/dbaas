@@ -251,17 +251,19 @@ class DatabaseServiceTest {
     }
 
     @Test
-    void rejectsOpenInternetAccessRule() {
+    void allowsOpenInternetAccessRuleWhenExplicitlyRequested() {
         DatabaseMetadata database = database("db-orders0001");
+        database.setPublicPort(31000);
         when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
                 .thenReturn(Optional.of(database));
 
-        ApiException exception = assertThrows(ApiException.class,
-                () -> service.updateAccessRules("orders", "db-orders0001",
-                        new AccessRulesRequest(List.of("0.0.0.0/0"), false), null));
+        var response = service.updateAccessRules("orders", "db-orders0001",
+                new AccessRulesRequest(List.of("0.0.0.0/0"), false), null);
 
-        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatus());
-        verify(repository, never()).save(database);
+        assertEquals(List.of("0.0.0.0/0"), response.allowedCidrs());
+        assertEquals("[0.0.0.0/0]", database.getAllowedCidrs());
+        verify(repository).save(database);
+        verify(sharedGatewayService).reconcileNow();
     }
 
     @Test

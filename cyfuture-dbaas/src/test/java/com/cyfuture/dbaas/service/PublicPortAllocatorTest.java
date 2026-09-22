@@ -41,6 +41,17 @@ class PublicPortAllocatorTest {
         assertTrue(exception.getMessage().contains("31000-31030"));
     }
 
+    @Test
+    void ignoresConfiguredRangeOverrides() {
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        DatabaseProperties properties = properties();
+        properties.getGateway().setPortStart(32000);
+        properties.getGateway().setPortEnd(32010);
+        when(repository.existsByPublicPort(31000)).thenReturn(false);
+
+        assertEquals(31000, new PublicPortAllocator(repository, properties).allocate());
+    }
+
     private int allocateFirstAvailable(int firstAvailable) {
         DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
         for (int port = 31000; port < firstAvailable; port++) {

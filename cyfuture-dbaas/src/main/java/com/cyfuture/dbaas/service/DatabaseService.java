@@ -650,9 +650,6 @@ public class DatabaseService {
         if (cidrs.stream().anyMatch(cidr -> cidr == null || !CIDR.matcher(cidr).matches()))
             throw new ApiException(HttpStatus.BAD_REQUEST,
                     "Every allowedCidrs value must be a valid IPv4 CIDR such as 49.50.73.146/32");
-        if (cidrs.contains("0.0.0.0/0"))
-            throw new ApiException(HttpStatus.BAD_REQUEST,
-                    "0.0.0.0/0 is not allowed. Restrict access to customer IP ranges");
     }
 
     /** New database requests must make backup behavior an explicit customer choice. */

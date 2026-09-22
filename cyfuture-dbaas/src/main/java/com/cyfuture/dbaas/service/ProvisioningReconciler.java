@@ -64,9 +64,11 @@ public class ProvisioningReconciler {
                 return;
             }
 
-            progressService.update(database, ProvisioningStage.CREATING_CREDENTIALS, 65,
-                    "Creating a dedicated least-privilege database user");
-            if (!credentialLifecycleService.ready(database)) return;
+            if (!credentialLifecycleService.ready(database)) {
+                progressService.update(database, ProvisioningStage.CREATING_CREDENTIALS, 65,
+                        "Creating a dedicated least-privilege database user");
+                return;
+            }
 
             progressService.update(database, ProvisioningStage.CONFIGURING_NETWORK, 80,
                     "Activating a route on the shared public gateway");

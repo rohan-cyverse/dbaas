@@ -14,12 +14,15 @@ import io.kubernetes.client.openapi.apis.CoreV1Api;
 import io.kubernetes.client.openapi.models.V1ConfigMap;
 import io.kubernetes.client.openapi.models.V1Deployment;
 import io.kubernetes.client.openapi.models.V1LoadBalancerIngress;
+import io.kubernetes.client.openapi.models.V1ObjectMeta;
 import io.kubernetes.client.openapi.models.V1Service;
 import io.kubernetes.client.openapi.models.V1ServicePort;
 import io.kubernetes.client.openapi.models.V1ServiceSpec;
 import io.kubernetes.client.custom.IntOrString;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -47,6 +50,8 @@ public class SharedGatewayService {
     private static final String CHECKSUM = "dbaas.cyfuture.com/config-checksum";
     private static final String PROXY_PROTOCOL =
             "loadbalancer.openstack.org/proxy-protocol";
+    static final int PUBLIC_PORT_START = 31000;
+    static final int PUBLIC_PORT_END = 31030;
     private static final Pattern EXISTING_ROUTE = Pattern.compile(
             "# route\\s+(db-[A-Za-z0-9-]+)\\s*\\R\\s*acl port_(\\d+)");
     private static final Pattern EXISTING_BACKEND = Pattern.compile(
@@ -115,34 +120,37 @@ public class SharedGatewayService {
         String checksum = checksum(config);
 
         try {
+            ensureConfiguredService(infrastructure.service(), sourceRanges(routes));
+            verify(infrastructure.service());
             V1ConfigMap configMap = infrastructure.configMap();
+            boolean configChanged = !Objects.equals(current, config);
             if (!Objects.equals(current, config)) {
                 configMap.setData(Map.of(CONFIG_KEY, config));
                 coreV1Api.replaceNamespacedConfigMap(
                         settings().getConfigMapName(), settings().getNamespace(), configMap)
                         .execute();
+            }
 
-                // Re-read after replacing the ConfigMap. A reloader or another
-                // control-plane instance may update the Deployment as soon as
-                // the ConfigMap changes, making the object captured by
-                // infrastructure() stale and causing a 409 replacement loop.
-                V1Deployment deployment = appsV1Api.readNamespacedDeployment(
-                        settings().getDeploymentName(), settings().getNamespace()).execute();
-                Map<String, String> existingAnnotations = deployment.getSpec().getTemplate()
-                        .getMetadata().getAnnotations();
-                String deployedChecksum = existingAnnotations == null
-                        ? null : existingAnnotations.get(CHECKSUM);
-                if (!checksum.equals(deployedChecksum)) {
-                    Map<String, String> annotations = deployment.getSpec().getTemplate()
-                            .getMetadata().getAnnotations();
-                    annotations = annotations == null
-                            ? new LinkedHashMap<>() : new LinkedHashMap<>(annotations);
-                    annotations.put(CHECKSUM, checksum);
-                    deployment.getSpec().getTemplate().getMetadata().setAnnotations(annotations);
-                    appsV1Api.replaceNamespacedDeployment(
-                            settings().getDeploymentName(), settings().getNamespace(), deployment)
-                            .execute();
-                }
+            // Re-read after replacing the ConfigMap. A reloader or another
+            // control-plane instance may update the Deployment as soon as
+            // the ConfigMap changes, making the object captured by
+            // infrastructure() stale and causing a 409 replacement loop.
+            V1Deployment deployment = configChanged
+                    ? appsV1Api.readNamespacedDeployment(
+                    settings().getDeploymentName(), settings().getNamespace()).execute()
+                    : infrastructure.deployment();
+            Map<String, String> existingAnnotations = deployment.getSpec().getTemplate()
+                    .getMetadata().getAnnotations();
+            String deployedChecksum = existingAnnotations == null
+                    ? null : existingAnnotations.get(CHECKSUM);
+            if (!checksum.equals(deployedChecksum)) {
+                Map<String, String> annotations = existingAnnotations == null
+                        ? new LinkedHashMap<>() : new LinkedHashMap<>(existingAnnotations);
+                annotations.put(CHECKSUM, checksum);
+                deployment.getSpec().getTemplate().getMetadata().setAnnotations(annotations);
+                appsV1Api.replaceNamespacedDeployment(
+                        settings().getDeploymentName(), settings().getNamespace(), deployment)
+                        .execute();
             }
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             throw kubernetesError("Could not update shared public gateway", exception);
@@ -156,14 +164,18 @@ public class SharedGatewayService {
 
         try {
             Infrastructure infrastructure = infrastructure();
+            verify(infrastructure.service());
             String host = externalHost(infrastructure.service());
             String config = infrastructure.configMap().getData() == null ? ""
                     : infrastructure.configMap().getData().getOrDefault(CONFIG_KEY, "");
+            DatabaseObservation live = kubeBlocksClient.get(
+                    database.getNamespaceName(), database.physicalClusterName());
+            boolean databaseReady = live.status() == DatabaseStatus.RUNNING && live.serviceReady();
             boolean declared = infrastructure.service().getSpec().getPorts().stream()
                     .anyMatch(item -> Integer.valueOf(port).equals(item.getPort()));
-            boolean configured = config.contains("# route " + database.getDatabaseId());
+            boolean configured = routeConfigured(config, database.getDatabaseId(), port);
             boolean ready = host != null && declared && configured
-                    && rolloutReady(infrastructure.deployment(), config);
+                    && databaseReady && rolloutReady(infrastructure.deployment(), config);
             return new PublicEndpointResponse(host, port, ready, cidrs);
         } catch (ApiException exception) {
             return new PublicEndpointResponse(null, port, false, cidrs);
@@ -204,6 +216,11 @@ public class SharedGatewayService {
         }
     }
 
+    @EventListener(ApplicationReadyEvent.class)
+    public void reconcileOnStartup() {
+        scheduledReconcile();
+    }
+
     private List<Route> activeRoutes(String currentConfig) {
         Map<String, Route> existing = existingRoutes(currentConfig);
         List<Route> routes = new ArrayList<>();
@@ -215,6 +232,7 @@ public class SharedGatewayService {
                     || database.getStatus() == DatabaseStatus.MISSING
                     || database.getStatus() == DatabaseStatus.ORPHANED
                     || database.getStatus() == DatabaseStatus.FAILED) continue;
+            if (!managedPort(database.getPublicPort())) continue;
             List<String> allowed = cidrs(database.getAllowedCidrs());
             if (allowed.isEmpty()) continue;
             try {
@@ -274,7 +292,7 @@ public class SharedGatewayService {
         while (matcher.find()) {
             String databaseId = matcher.group(1);
             int port = Integer.parseInt(matcher.group(2));
-            if (port < settings().getPortStart() || port > settings().getPortEnd()) continue;
+            if (!managedPort(port)) continue;
             databaseRepository.findById(databaseId).ifPresent(database -> {
                 if (database.getPublicPort() == null
                         && !databaseRepository.existsByPublicPort(port)) {
@@ -316,10 +334,6 @@ public class SharedGatewayService {
                     settings().getConfigMapName(), settings().getNamespace()).execute();
             V1Deployment deployment = appsV1Api.readNamespacedDeployment(
                     settings().getDeploymentName(), settings().getNamespace()).execute();
-            if (settings().isReconcileEnabled()) {
-                ensureConfiguredServicePorts(service);
-            }
-            verify(service);
             return new Infrastructure(service, configMap, deployment);
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             throw kubernetesError(
@@ -337,15 +351,16 @@ public class SharedGatewayService {
         service.getSpec().getPorts().stream()
                 .filter(this::isTcpServicePort)
                 .forEach(port -> actual.add(port.getPort()));
-        for (int port = settings().getPortStart(); port <= settings().getPortEnd(); port++) {
+        for (int port = PUBLIC_PORT_START; port <= PUBLIC_PORT_END; port++) {
             if (!actual.contains(port)) {
                 throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
                         "Shared gateway Service is missing pre-created port " + port);
             }
         }
-        Map<String, String> annotations = service.getMetadata().getAnnotations();
+        Map<String, String> annotations = service.getMetadata() == null
+                ? null : service.getMetadata().getAnnotations();
         String proxy = annotations == null ? null : annotations.get(PROXY_PROTOCOL);
-        if (!"true".equalsIgnoreCase(proxy) && !"v2".equalsIgnoreCase(proxy)) {
+        if (!"true".equals(proxy)) {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
                     "Shared gateway OpenStack PROXY protocol is not enabled");
         }
@@ -355,7 +370,7 @@ public class SharedGatewayService {
         }
     }
 
-    private void ensureConfiguredServicePorts(V1Service service)
+    private void ensureConfiguredService(V1Service service, List<String> desiredSourceRanges)
             throws io.kubernetes.client.openapi.ApiException {
         if (service.getSpec() == null) {
             service.setSpec(new V1ServiceSpec());
@@ -365,11 +380,32 @@ public class SharedGatewayService {
             ports = new ArrayList<>();
             service.getSpec().setPorts(ports);
         }
+        boolean changed = false;
+        if (service.getMetadata() == null) {
+            service.setMetadata(new V1ObjectMeta());
+        }
+        if (service.getMetadata().getAnnotations() == null) {
+            service.getMetadata().setAnnotations(new LinkedHashMap<>());
+        } else {
+            service.getMetadata().setAnnotations(
+                    new LinkedHashMap<>(service.getMetadata().getAnnotations()));
+        }
+        if (!"true".equals(service.getMetadata().getAnnotations().get(PROXY_PROTOCOL))) {
+            service.getMetadata().getAnnotations().put(PROXY_PROTOCOL, "true");
+            changed = true;
+        }
+        if (ports.removeIf(port -> isTcpServicePort(port)
+                && (port.getPort() > PUBLIC_PORT_END || outsideManagedDbPort(port)))) {
+            changed = true;
+        }
+        if (!Objects.equals(service.getSpec().getLoadBalancerSourceRanges(), desiredSourceRanges)) {
+            service.getSpec().setLoadBalancerSourceRanges(desiredSourceRanges);
+            changed = true;
+        }
         Set<Integer> actual = new LinkedHashSet<>();
         ports.stream().filter(this::isTcpServicePort)
                 .forEach(port -> actual.add(port.getPort()));
-        boolean changed = false;
-        for (int port = settings().getPortStart(); port <= settings().getPortEnd(); port++) {
+        for (int port = PUBLIC_PORT_START; port <= PUBLIC_PORT_END; port++) {
             if (actual.contains(port)) continue;
             ports.add(new V1ServicePort()
                     .name("db-" + port)
@@ -389,6 +425,19 @@ public class SharedGatewayService {
                 && (port.getProtocol() == null || "TCP".equalsIgnoreCase(port.getProtocol()));
     }
 
+    private boolean outsideManagedDbPort(V1ServicePort port) {
+        if (port.getName() == null || !port.getName().startsWith("db-")) return false;
+        return port.getPort() < PUBLIC_PORT_START || port.getPort() > PUBLIC_PORT_END;
+    }
+
+    private List<String> sourceRanges(List<Route> routes) {
+        return routes.stream()
+                .flatMap(route -> route.allowedCidrs().stream())
+                .distinct()
+                .sorted()
+                .toList();
+    }
+
     private String render(List<Route> routes) {
         StringBuilder value = new StringBuilder()
                 .append("global\n  log stdout format raw local0\n  maxconn 10000\n\n")
@@ -398,8 +447,8 @@ public class SharedGatewayService {
                 .append("frontend health\n  bind *:8404\n  mode http\n")
                 .append("  http-request return status 200 content-type text/plain string ok\n\n")
                 .append("frontend public_databases\n  bind *:")
-                .append(settings().getPortStart()).append("-")
-                .append(settings().getPortEnd()).append(" accept-proxy\n");
+                .append(PUBLIC_PORT_START).append("-")
+                .append(PUBLIC_PORT_END).append(" accept-proxy\n");
         if (routes.isEmpty()) return value.append("  tcp-request connection reject\n").toString();
 
         value.append("  acl configured_port dst_port ");
@@ -414,9 +463,9 @@ public class SharedGatewayService {
                         .append(String.join(" ", route.allowedCidrs())).append("\n");
             }
         });
-        value.append("  tcp-request connection reject if !configured_port\n");
+        value.append("  tcp-request content reject if !configured_port\n");
         routes.forEach(route -> {
-            value.append("  tcp-request connection reject if port_").append(route.publicPort());
+            value.append("  tcp-request content reject if port_").append(route.publicPort());
             if (!route.allowedCidrs().isEmpty()) {
                 value.append(" !allowed_").append(route.publicPort());
             }
@@ -444,6 +493,15 @@ public class SharedGatewayService {
                 || deployment.getStatus().getUpdatedReplicas() == null
                 ? 0 : deployment.getStatus().getUpdatedReplicas();
         return checksum(config).equals(deployed) && available >= desired && updated >= desired;
+    }
+
+    private boolean routeConfigured(String config, String databaseId, int publicPort) {
+        Route route = existingRoutes(config).get(databaseId);
+        return route != null && route.publicPort() == publicPort && managedPort(publicPort);
+    }
+
+    private boolean managedPort(Integer publicPort) {
+        return publicPort != null && publicPort >= PUBLIC_PORT_START && publicPort <= PUBLIC_PORT_END;
     }
 
     private void waitForRollout() {

@@ -27,10 +27,14 @@ import io.kubernetes.client.openapi.models.V1ServiceStatus;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -41,6 +45,7 @@ import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -107,10 +112,43 @@ class SharedGatewayServiceTest {
         assertEquals("LoadBalancer", updated.getSpec().getType());
         assertEquals(Map.of("app", "haproxy"), updated.getSpec().getSelector());
         assertEquals("Local", updated.getSpec().getExternalTrafficPolicy());
-        assertEquals(List.of("49.50.73.146/32"), updated.getSpec().getLoadBalancerSourceRanges());
+        assertTrue(updated.getSpec().getLoadBalancerSourceRanges().isEmpty());
         assertEquals("203.0.113.10", updated.getStatus().getLoadBalancer().getIngress().get(0).getIp());
         assertEquals("true", updated.getMetadata().getAnnotations()
                 .get("loadbalancer.openstack.org/proxy-protocol"));
+    }
+
+    @Test
+    void reconcileEnforcesExactProxyAnnotationAndRemovesPortsAboveRange() throws Exception {
+        DatabaseProperties properties = enabledProperties();
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        AppsV1Api apps = mock(AppsV1Api.class, RETURNS_DEEP_STUBS);
+        V1Service service = gatewayService(31000, 31031);
+        service.getMetadata().setAnnotations(Map.of("loadbalancer.openstack.org/proxy-protocol", "v2"));
+        when(core.readNamespacedService("dbaas-public-gateway", "dbaas-gateway").execute()).thenReturn(service);
+        when(core.readNamespacedConfigMap("dbaas-public-gateway-config", "dbaas-gateway").execute())
+                .thenReturn(configMap(renderedEmptyGateway()));
+        when(apps.readNamespacedDeployment("dbaas-public-gateway", "dbaas-gateway").execute())
+                .thenReturn(deployment());
+        when(repository.findByPublicPortIsNotNullOrderByPublicPortAsc()).thenReturn(List.of());
+        SharedGatewayService sharedGateway = service(properties, runningLock(), repository, core, apps,
+                mock(KubeBlocksClient.class), mock(DatabaseBackendResolver.class));
+
+        sharedGateway.reconcileNow();
+
+        ArgumentCaptor<V1Service> replacement = ArgumentCaptor.forClass(V1Service.class);
+        verify(core).replaceNamespacedService(any(), any(), replacement.capture());
+        V1Service updated = replacement.getValue();
+        assertEquals(31, updated.getSpec().getPorts().size());
+        assertTrue(updated.getSpec().getLoadBalancerSourceRanges().isEmpty());
+        assertEquals("true", updated.getMetadata().getAnnotations()
+                .get("loadbalancer.openstack.org/proxy-protocol"));
+        assertEquals(32000, port(updated, 31000).getNodePort());
+        assertEquals(32030, port(updated, 31030).getNodePort());
+        assertTrue(updated.getSpec().getPorts().stream()
+                .noneMatch(candidate -> Integer.valueOf(31031).equals(candidate.getPort())));
+        assertEquals("203.0.113.10", updated.getStatus().getLoadBalancer().getIngress().get(0).getIp());
     }
 
     @Test
@@ -119,8 +157,10 @@ class SharedGatewayServiceTest {
         DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
         CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
         AppsV1Api apps = mock(AppsV1Api.class, RETURNS_DEEP_STUBS);
+        V1Service service = gatewayService(31000, 31030);
+        service.getSpec().setLoadBalancerSourceRanges(List.of());
         when(core.readNamespacedService("dbaas-public-gateway", "dbaas-gateway").execute())
-                .thenReturn(gatewayService(31000, 31030));
+                .thenReturn(service);
         when(core.readNamespacedConfigMap("dbaas-public-gateway-config", "dbaas-gateway").execute())
                 .thenReturn(configMap(renderedEmptyGateway()));
         when(apps.readNamespacedDeployment("dbaas-public-gateway", "dbaas-gateway").execute())
@@ -170,13 +210,66 @@ class SharedGatewayServiceTest {
         assertTrue(rendered.contains("acl configured_port dst_port 31030"));
         assertTrue(rendered.contains("acl allowed_31030 src 49.50.73.146/32"));
         assertTrue(rendered.contains(
-                "tcp-request connection reject if port_31030 !allowed_31030"));
+                "tcp-request content reject if port_31030 !allowed_31030"));
         assertTrue(rendered.contains("backend database_31030"));
         assertTrue(rendered.indexOf("acl configured_port") < rendered.indexOf("acl port_31030"));
-        assertTrue(rendered.indexOf("acl port_31030") < rendered.indexOf("tcp-request connection reject"));
-        assertTrue(rendered.indexOf("tcp-request connection reject") < rendered.indexOf("use_backend database_31030"));
+        assertTrue(rendered.indexOf("acl port_31030") < rendered.indexOf("tcp-request content reject"));
+        assertTrue(rendered.indexOf("tcp-request content reject") < rendered.indexOf("use_backend database_31030"));
+        assertTrue(rendered.indexOf("use_backend database_31030") < rendered.indexOf("backend database_31030"));
+        assertNoMissingAclReferences(rendered);
         assertFalse(rendered.contains("backend database_31010"));
         assertFalse(rendered.contains("backend database_31031"));
+    }
+
+    @Test
+    void configMapChangeTriggersOneChecksumBasedDeploymentRollout() throws Exception {
+        DatabaseProperties properties = enabledProperties();
+        DatabaseMetadata database = database(31000);
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        KubeBlocksClient kubeBlocksClient = mock(KubeBlocksClient.class);
+        DatabaseBackendResolver backendResolver = mock(DatabaseBackendResolver.class);
+        CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        AppsV1Api apps = mock(AppsV1Api.class, RETURNS_DEEP_STUBS);
+        when(core.readNamespacedService(any(), any()).execute()).thenReturn(gatewayService(31000, 31030));
+        when(core.readNamespacedConfigMap(any(), any()).execute()).thenReturn(configMap("old"));
+        when(apps.readNamespacedDeployment(any(), any()).execute()).thenReturn(deployment());
+        when(repository.findByPublicPortIsNotNullOrderByPublicPortAsc()).thenReturn(List.of(database));
+        when(kubeBlocksClient.get(any(), any())).thenReturn(observation());
+        when(backendResolver.resolve(database)).thenReturn(new DatabaseBackendResolver.DatabaseBackendEndpoint(
+                "orders", "dbaas-orders", "orders.dbaas-orders.svc.cluster.local", 5432));
+        SharedGatewayService sharedGateway = service(properties, runningLock(), repository, core, apps,
+                kubeBlocksClient, backendResolver);
+
+        sharedGateway.reconcileNow();
+
+        ArgumentCaptor<V1ConfigMap> configReplacement = ArgumentCaptor.forClass(V1ConfigMap.class);
+        ArgumentCaptor<V1Deployment> deploymentReplacement = ArgumentCaptor.forClass(V1Deployment.class);
+        verify(core).replaceNamespacedConfigMap(any(), any(), configReplacement.capture());
+        verify(apps, times(1)).replaceNamespacedDeployment(any(), any(), deploymentReplacement.capture());
+        String rendered = configReplacement.getValue().getData().get("haproxy.cfg");
+        assertEquals(sha256(rendered), deploymentReplacement.getValue().getSpec().getTemplate()
+                .getMetadata().getAnnotations().get("dbaas.cyfuture.com/config-checksum"));
+    }
+
+    @Test
+    void endpointIsReadyOnlyAfterDatabaseServiceRouteAndDeploymentAreReady() throws Exception {
+        DatabaseProperties properties = enabledProperties();
+        DatabaseMetadata database = database(31000);
+        String config = renderedRoute(database, 31000);
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        KubeBlocksClient kubeBlocksClient = mock(KubeBlocksClient.class);
+        CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        AppsV1Api apps = mock(AppsV1Api.class, RETURNS_DEEP_STUBS);
+        when(core.readNamespacedService(any(), any()).execute()).thenReturn(gatewayService(31000, 31030));
+        when(core.readNamespacedConfigMap(any(), any()).execute()).thenReturn(configMap(config));
+        when(apps.readNamespacedDeployment(any(), any()).execute()).thenReturn(deployment(sha256(config), 2, 2));
+        when(kubeBlocksClient.get(database.getNamespaceName(), database.physicalClusterName()))
+                .thenReturn(observationWithServiceReady(false), observation());
+        SharedGatewayService sharedGateway = service(properties, runningLock(), repository, core, apps,
+                kubeBlocksClient, mock(DatabaseBackendResolver.class));
+
+        assertFalse(sharedGateway.endpoint(database).ready());
+        assertTrue(sharedGateway.endpoint(database).ready());
     }
 
     @Test
@@ -216,7 +309,41 @@ class SharedGatewayServiceTest {
         assertFalse(rendered.contains("acl allowed_31000 src 47.31.130.31/32"));
         assertTrue(rendered.contains("use_backend database_31000 if port_31000"));
         assertTrue(rendered.contains("use_backend database_31001 if port_31001"));
-        verify(core, never()).replaceNamespacedService(any(), any(), any());
+        ArgumentCaptor<V1Service> serviceReplacement = ArgumentCaptor.forClass(V1Service.class);
+        verify(core).replaceNamespacedService(any(), any(), serviceReplacement.capture());
+        assertEquals(List.of("152.58.123.106/32", "47.31.130.31/32", "49.50.73.146/32"),
+                serviceReplacement.getValue().getSpec().getLoadBalancerSourceRanges());
+    }
+
+    @Test
+    void loadBalancerSourceRangesRemoveStaleCidrsAndOpenInternetUnlessActiveRouteAllowsIt() throws Exception {
+        DatabaseProperties properties = enabledProperties();
+        DatabaseMetadata database = database(31007);
+        database.setAllowedCidrs("[160.202.36.173/32]");
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        KubeBlocksClient kubeBlocksClient = mock(KubeBlocksClient.class);
+        DatabaseBackendResolver backendResolver = mock(DatabaseBackendResolver.class);
+        CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        AppsV1Api apps = mock(AppsV1Api.class, RETURNS_DEEP_STUBS);
+        V1Service service = gatewayService(31000, 31030);
+        service.getSpec().setLoadBalancerSourceRanges(
+                List.of("0.0.0.0/0", "160.202.36.173/32", "203.0.113.10/32"));
+        when(core.readNamespacedService(any(), any()).execute()).thenReturn(service);
+        when(core.readNamespacedConfigMap(any(), any()).execute()).thenReturn(configMap("old"));
+        when(apps.readNamespacedDeployment(any(), any()).execute()).thenReturn(deployment());
+        when(repository.findByPublicPortIsNotNullOrderByPublicPortAsc()).thenReturn(List.of(database));
+        when(kubeBlocksClient.get(any(), any())).thenReturn(observation());
+        when(backendResolver.resolve(database)).thenReturn(new DatabaseBackendResolver.DatabaseBackendEndpoint(
+                "orders", "dbaas-orders", "orders.dbaas-orders.svc.cluster.local", 5432));
+        SharedGatewayService sharedGateway = service(properties, runningLock(), repository, core, apps,
+                kubeBlocksClient, backendResolver);
+
+        sharedGateway.reconcileNow();
+
+        ArgumentCaptor<V1Service> replacement = ArgumentCaptor.forClass(V1Service.class);
+        verify(core).replaceNamespacedService(any(), any(), replacement.capture());
+        assertEquals(List.of("160.202.36.173/32"),
+                replacement.getValue().getSpec().getLoadBalancerSourceRanges());
     }
 
     @Test
@@ -333,6 +460,10 @@ class SharedGatewayServiceTest {
     }
 
     private V1Deployment deployment() {
+        return deployment("1c326efa7602848bc03510df22beaa0a8e01ceb8ed907f21439dc1fb9239e8fa", 2, 2);
+    }
+
+    private V1Deployment deployment(String checksum, int available, int updated) {
         return new V1Deployment()
                 .metadata(new V1ObjectMeta().name("dbaas-public-gateway"))
                 .spec(new V1DeploymentSpec()
@@ -340,8 +471,8 @@ class SharedGatewayServiceTest {
                         .template(new V1PodTemplateSpec()
                                 .metadata(new V1ObjectMeta().annotations(Map.of(
                                         "dbaas.cyfuture.com/config-checksum",
-                                        "1c413d19dc975273388b0c5b6d43845e7cb275d4d1813cf1f855400d2a65e114")))))
-                .status(new V1DeploymentStatus().availableReplicas(2).updatedReplicas(2));
+                                        checksum)))))
+                .status(new V1DeploymentStatus().availableReplicas(available).updatedReplicas(updated));
     }
 
     private String renderedEmptyGateway() {
@@ -389,10 +520,80 @@ class SharedGatewayServiceTest {
     }
 
     private DatabaseObservation observation() {
+        return observationWithServiceReady(true);
+    }
+
+    private DatabaseObservation observationWithServiceReady(boolean serviceReady) {
         return new DatabaseObservation("db-orders0001", "orders-db",
                 DatabaseEngine.POSTGRESQL, DatabaseMode.REPLICATION, "17.5.0", SizePlan.C1G1,
                 10, false, DatabaseStatus.RUNNING, 2, 1, 1, 0, 0, 0, 2, 2,
-                true, "db-orders0001-postgresql.dbaas-orders.svc.cluster.local", 5432,
-                List.of(), "ready");
+                serviceReady, "db-orders0001-postgresql.dbaas-orders.svc.cluster.local", 5432,
+                List.of(), serviceReady ? "ready" : "service not ready");
+    }
+
+    private String renderedRoute(DatabaseMetadata database, int port) {
+        return """
+                global
+                  log stdout format raw local0
+                  maxconn 10000
+
+                defaults
+                  mode tcp
+                  log global
+                  option tcplog
+                  timeout connect 5s
+                  timeout client 1h
+                  timeout server 1h
+
+                resolvers kubernetes
+                  parse-resolv-conf
+                  hold valid 10s
+
+                frontend health
+                  bind *:8404
+                  mode http
+                  http-request return status 200 content-type text/plain string ok
+
+                frontend public_databases
+                  bind *:31000-31030 accept-proxy
+                  acl configured_port dst_port 31000
+                  # route %s
+                  acl port_%d dst_port %d
+                  acl allowed_%d src 49.50.73.146/32
+                  tcp-request content reject if !configured_port
+                  tcp-request content reject if port_%d !allowed_%d
+                  use_backend database_%d if port_%d
+
+                backend database_%d
+                  server database db-orders0001-postgresql.dbaas-orders.svc.cluster.local:5432 check resolvers kubernetes init-addr libc,none
+
+                """.formatted(database.getDatabaseId(), port, port, port, port, port, port, port, port);
+    }
+
+    private String sha256(String value) throws Exception {
+        return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(value.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private void assertNoMissingAclReferences(String rendered) {
+        Set<String> defined = new HashSet<>();
+        for (String line : rendered.lines().toList()) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("acl ")) {
+                defined.add(trimmed.split("\\s+")[1]);
+            }
+        }
+        for (String line : rendered.lines().toList()) {
+            String trimmed = line.trim();
+            if (!trimmed.startsWith("tcp-request content reject if ")
+                    && !trimmed.startsWith("use_backend ")) continue;
+            for (String token : trimmed.split("\\s+")) {
+                String acl = token.startsWith("!") ? token.substring(1) : token;
+                if (acl.equals("if") || acl.startsWith("database_")) continue;
+                if (acl.equals("configured_port") || acl.startsWith("port_") || acl.startsWith("allowed_")) {
+                    assertTrue(defined.contains(acl), "Missing ACL definition for " + acl);
+                }
+            }
+        }
     }
 }

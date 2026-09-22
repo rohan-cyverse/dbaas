@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -57,6 +58,24 @@ class ProvisioningReconcilerTest {
 
         verify(progress).update(database, ProvisioningStage.WAITING_FOR_REPLICAS,
                 45, "Waiting for database Pods: 0/1");
+    }
+
+    @Test
+    void doesNotBounceBackToCreatingCredentialsWhileGatewayRolloutIsPending() {
+        DatabaseMetadata database = database();
+        List<String> cidrs = List.of("49.50.73.146/32");
+        when(client.get(database.getNamespaceName(), database.getDatabaseId()))
+                .thenReturn(live(database, DatabaseStatus.RUNNING));
+        when(credentials.ready(database)).thenReturn(true);
+        when(gateway.configure(database)).thenReturn(
+                new PublicEndpointResponse("49.50.116.140", 31000, false, cidrs));
+
+        reconciler.reconcile(database);
+
+        verify(progress, never()).update(database, ProvisioningStage.CREATING_CREDENTIALS,
+                65, "Creating a dedicated least-privilege database user");
+        verify(progress).update(database, ProvisioningStage.CONFIGURING_NETWORK,
+                80, "Activating a route on the shared public gateway");
     }
 
     @Test
