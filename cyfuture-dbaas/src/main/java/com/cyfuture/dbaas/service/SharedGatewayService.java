@@ -356,9 +356,9 @@ public class SharedGatewayService {
         Map<String, String> annotations = service.getMetadata() == null
                 ? null : service.getMetadata().getAnnotations();
         String proxy = annotations == null ? null : annotations.get(PROXY_PROTOCOL);
-        if (!"true".equals(proxy)) {
+        if (!"false".equals(proxy)) {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
-                    "Shared gateway OpenStack PROXY protocol is not enabled");
+                    "Shared gateway OpenStack PROXY protocol must be disabled");
         }
         if (externalHost(service) == null) {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE,
@@ -386,8 +386,8 @@ public class SharedGatewayService {
             service.getMetadata().setAnnotations(
                     new LinkedHashMap<>(service.getMetadata().getAnnotations()));
         }
-        if (!"true".equals(service.getMetadata().getAnnotations().get(PROXY_PROTOCOL))) {
-            service.getMetadata().getAnnotations().put(PROXY_PROTOCOL, "true");
+        if (!"false".equals(service.getMetadata().getAnnotations().get(PROXY_PROTOCOL))) {
+            service.getMetadata().getAnnotations().put(PROXY_PROTOCOL, "false");
             changed = true;
         }
         if (ports.removeIf(port -> isTcpServicePort(port)
@@ -444,7 +444,7 @@ public class SharedGatewayService {
                 .append("  http-request return status 200 content-type text/plain string ok\n\n")
                 .append("frontend public_databases\n  bind *:")
                 .append(PUBLIC_PORT_START).append("-")
-                .append(PUBLIC_PORT_END).append(" accept-proxy\n");
+                .append(PUBLIC_PORT_END).append("\n");
         if (routes.isEmpty()) return value.append("  tcp-request connection reject\n").toString();
 
         value.append("  acl configured_port dst_port ");
