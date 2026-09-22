@@ -114,7 +114,7 @@ class SharedGatewayServiceTest {
         assertEquals("Local", updated.getSpec().getExternalTrafficPolicy());
         assertTrue(updated.getSpec().getLoadBalancerSourceRanges().isEmpty());
         assertEquals("203.0.113.10", updated.getStatus().getLoadBalancer().getIngress().get(0).getIp());
-        assertEquals("true", updated.getMetadata().getAnnotations()
+        assertEquals("false", updated.getMetadata().getAnnotations()
                 .get("loadbalancer.openstack.org/proxy-protocol"));
     }
 
@@ -142,7 +142,7 @@ class SharedGatewayServiceTest {
         V1Service updated = replacement.getValue();
         assertEquals(31, updated.getSpec().getPorts().size());
         assertTrue(updated.getSpec().getLoadBalancerSourceRanges().isEmpty());
-        assertEquals("true", updated.getMetadata().getAnnotations()
+        assertEquals("false", updated.getMetadata().getAnnotations()
                 .get("loadbalancer.openstack.org/proxy-protocol"));
         assertEquals(32000, port(updated, 31000).getNodePort());
         assertEquals(32030, port(updated, 31030).getNodePort());
@@ -206,7 +206,8 @@ class SharedGatewayServiceTest {
         ArgumentCaptor<V1ConfigMap> replacement = ArgumentCaptor.forClass(V1ConfigMap.class);
         verify(core).replaceNamespacedConfigMap(any(), any(), replacement.capture());
         String rendered = replacement.getValue().getData().get("haproxy.cfg");
-        assertTrue(rendered.contains("bind *:31000-31030 accept-proxy"));
+        assertTrue(rendered.contains("bind *:31000-31030"));
+        assertFalse(rendered.contains("accept-proxy"));
         assertTrue(rendered.contains("acl configured_port dst_port 31030"));
         assertTrue(rendered.contains("backend database_31030"));
         assertTrue(rendered.contains("acl allowed_31030 src 49.50.73.146/32"));
@@ -573,7 +574,7 @@ class SharedGatewayServiceTest {
         }
         return new V1Service()
                 .metadata(new V1ObjectMeta().name("dbaas-public-gateway")
-                        .annotations(Map.of("loadbalancer.openstack.org/proxy-protocol", "true")))
+                        .annotations(Map.of("loadbalancer.openstack.org/proxy-protocol", "false")))
                 .spec(new V1ServiceSpec()
                         .type("LoadBalancer")
                         .selector(Map.of("app", "haproxy"))
@@ -596,8 +597,8 @@ class SharedGatewayServiceTest {
                 .data(Map.of("haproxy.cfg", config));
     }
 
-    private V1Deployment deployment() {
-        return deployment("1c326efa7602848bc03510df22beaa0a8e01ceb8ed907f21439dc1fb9239e8fa", 2, 2);
+    private V1Deployment deployment() throws Exception {
+        return deployment(sha256(renderedEmptyGateway()), 2, 2);
     }
 
     private V1Deployment deployment(String checksum, int available, int updated) {
@@ -636,7 +637,7 @@ class SharedGatewayServiceTest {
                   http-request return status 200 content-type text/plain string ok
 
                 frontend public_databases
-                  bind *:31000-31030 accept-proxy
+                  bind *:31000-31030
                   tcp-request connection reject
                 """;
     }
@@ -675,7 +676,7 @@ class SharedGatewayServiceTest {
                 + "resolvers kubernetes\n  parse-resolv-conf\n  hold valid 10s\n\n"
                 + "frontend health\n  bind *:8404\n  mode http\n"
                 + "  http-request return status 200 content-type text/plain string ok\n\n"
-                + "frontend public_databases\n  bind *:31000-31030 accept-proxy\n"
+                + "frontend public_databases\n  bind *:31000-31030\n"
                 + "  acl configured_port dst_port " + port + " \n"
                 + "  # route " + database.getDatabaseId() + "\n"
                 + "  acl port_" + port + " dst_port " + port + "\n"
