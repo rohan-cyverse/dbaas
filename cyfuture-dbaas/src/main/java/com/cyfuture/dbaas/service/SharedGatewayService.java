@@ -453,9 +453,14 @@ public class SharedGatewayService {
         routes.forEach(route -> {
             value.append("  # route ").append(route.databaseId()).append("\n")
                     .append("  acl port_").append(route.publicPort()).append(" dst_port ")
-                    .append(route.publicPort()).append("\n");
+                    .append(route.publicPort()).append("\n")
+                    .append("  acl allowed_").append(route.publicPort()).append(" src ")
+                    .append(String.join(" ", route.allowedCidrs())).append("\n");
         });
         value.append("  tcp-request content reject if !configured_port\n");
+        routes.forEach(route -> value.append("  tcp-request content reject if port_")
+                .append(route.publicPort()).append(" !allowed_")
+                .append(route.publicPort()).append("\n"));
         routes.forEach(route -> value.append("  use_backend database_")
                 .append(route.publicPort()).append(" if port_")
                 .append(route.publicPort()).append("\n"));
@@ -484,7 +489,10 @@ public class SharedGatewayService {
         Route route = existingRoutes(config).get(database.getDatabaseId());
         return route != null
                 && route.publicPort() == publicPort
-                && managedPort(publicPort);
+                && managedPort(publicPort)
+                && config.contains("acl allowed_" + publicPort + " src ")
+                && config.contains("tcp-request content reject if port_" + publicPort
+                + " !allowed_" + publicPort);
     }
 
     private boolean backendConfigured(String config, DatabaseMetadata database, int publicPort) {

@@ -209,10 +209,11 @@ class SharedGatewayServiceTest {
         assertTrue(rendered.contains("bind *:31000-31030 accept-proxy"));
         assertTrue(rendered.contains("acl configured_port dst_port 31030"));
         assertTrue(rendered.contains("backend database_31030"));
-        assertFalse(rendered.contains("acl allowed_31030 src"));
-        assertFalse(rendered.contains("!allowed_31030"));
+        assertTrue(rendered.contains("acl allowed_31030 src 49.50.73.146/32"));
+        assertTrue(rendered.contains("tcp-request content reject if port_31030 !allowed_31030"));
         assertTrue(rendered.indexOf("acl configured_port") < rendered.indexOf("acl port_31030"));
-        assertTrue(rendered.indexOf("acl port_31030") < rendered.indexOf("tcp-request content reject"));
+        assertTrue(rendered.indexOf("acl port_31030") < rendered.indexOf("acl allowed_31030"));
+        assertTrue(rendered.indexOf("acl allowed_31030") < rendered.indexOf("tcp-request content reject if !configured_port"));
         assertTrue(rendered.indexOf("tcp-request content reject") < rendered.indexOf("use_backend database_31030"));
         assertTrue(rendered.indexOf("use_backend database_31030") < rendered.indexOf("backend database_31030"));
         assertNoMissingAclReferences(rendered);
@@ -251,11 +252,12 @@ class SharedGatewayServiceTest {
     }
 
     @Test
-    void cidrOnlyServiceUpdateDoesNotRolloutHaproxyDeployment() throws Exception {
+    void cidrOnlyServiceUpdateRollsOutHaproxyAclChange() throws Exception {
         DatabaseProperties properties = enabledProperties();
         DatabaseMetadata database = database(31000);
         database.setAllowedCidrs("[49.50.73.146/32, 157.49.126.77/32]");
-        String config = renderedRoute(database, 31000);
+        DatabaseMetadata previous = database(31000);
+        String config = renderedRoute(previous, 31000);
         DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
         KubeBlocksClient kubeBlocksClient = mock(KubeBlocksClient.class);
         DatabaseBackendResolver backendResolver = mock(DatabaseBackendResolver.class);
@@ -281,8 +283,14 @@ class SharedGatewayServiceTest {
         verify(core).replaceNamespacedService(any(), any(), serviceReplacement.capture());
         assertEquals(List.of("157.49.126.77/32", "49.50.73.146/32"),
                 serviceReplacement.getValue().getSpec().getLoadBalancerSourceRanges());
-        verify(core, never()).replaceNamespacedConfigMap(any(), any(), any());
-        verify(apps, never()).replaceNamespacedDeployment(any(), any(), any());
+        ArgumentCaptor<V1ConfigMap> configReplacement = ArgumentCaptor.forClass(V1ConfigMap.class);
+        ArgumentCaptor<V1Deployment> deploymentReplacement = ArgumentCaptor.forClass(V1Deployment.class);
+        verify(core).replaceNamespacedConfigMap(any(), any(), configReplacement.capture());
+        String rendered = configReplacement.getValue().getData().get("haproxy.cfg");
+        assertTrue(rendered.contains("acl allowed_31000 src 49.50.73.146/32 157.49.126.77/32"));
+        verify(apps).replaceNamespacedDeployment(any(), any(), deploymentReplacement.capture());
+        assertEquals(sha256(rendered), deploymentReplacement.getValue().getSpec().getTemplate()
+                .getMetadata().getAnnotations().get("dbaas.cyfuture.com/config-checksum"));
     }
 
     @Test
@@ -388,9 +396,10 @@ class SharedGatewayServiceTest {
         ArgumentCaptor<V1ConfigMap> replacement = ArgumentCaptor.forClass(V1ConfigMap.class);
         verify(core).replaceNamespacedConfigMap(any(), any(), replacement.capture());
         String rendered = replacement.getValue().getData().get("haproxy.cfg");
-        assertFalse(rendered.contains("acl allowed_"));
-        assertFalse(rendered.contains(" src "));
-        assertFalse(rendered.contains("!allowed_"));
+        assertTrue(rendered.contains("acl allowed_31000 src 49.50.73.146/32"));
+        assertTrue(rendered.contains("acl allowed_31001 src 47.31.130.31/32 152.58.123.106/32"));
+        assertTrue(rendered.contains("tcp-request content reject if port_31000 !allowed_31000"));
+        assertTrue(rendered.contains("tcp-request content reject if port_31001 !allowed_31001"));
         assertTrue(rendered.contains("use_backend database_31000 if port_31000"));
         assertTrue(rendered.contains("use_backend database_31001 if port_31001"));
         ArgumentCaptor<V1Service> serviceReplacement = ArgumentCaptor.forClass(V1Service.class);
@@ -670,7 +679,9 @@ class SharedGatewayServiceTest {
                 + "  acl configured_port dst_port " + port + " \n"
                 + "  # route " + database.getDatabaseId() + "\n"
                 + "  acl port_" + port + " dst_port " + port + "\n"
+                + "  acl allowed_" + port + " src 49.50.73.146/32\n"
                 + "  tcp-request content reject if !configured_port\n"
+                + "  tcp-request content reject if port_" + port + " !allowed_" + port + "\n"
                 + "  use_backend database_" + port + " if port_" + port + "\n\n"
                 + "backend database_" + port + "\n"
                 + "  server database db-orders0001-postgresql.dbaas-orders.svc.cluster.local:5432"
