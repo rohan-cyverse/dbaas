@@ -102,6 +102,20 @@ class DatabaseServiceTest {
     }
 
     @Test
+    void createMergesRequestedAllowedCidrsWithCallerCidr() {
+        CreateDatabaseRequest request = new CreateDatabaseRequest("orders-db", "Orders",
+                DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2,
+                10, 1, 0, "Asia/Kolkata",
+                List.of("0.0.0.0/0", "157.37.137.185/32"), true, Map.of("env", "test"), backup());
+
+        service.create("orders", "create-orders-cidrs", request, "157.37.137.185");
+
+        ArgumentCaptor<DatabaseMetadata> database = ArgumentCaptor.forClass(DatabaseMetadata.class);
+        verify(metadataCreation).save(database.capture(), any(OperationMetadata.class), any(BackupPolicyMetadata.class));
+        assertEquals("[0.0.0.0/0, 157.37.137.185/32]", database.getValue().getAllowedCidrs());
+    }
+
+    @Test
     void createRequiresDetectableCallerIp() {
         assertThrows(ApiException.class,
                 () -> service.create("orders", "create-orders-002", request(), null));

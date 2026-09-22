@@ -720,7 +720,7 @@ public class DatabaseService {
             throw new ApiException(HttpStatus.BAD_REQUEST,
                     "Could not detect the caller public IP for database access");
         }
-        List<String> cidrs = List.of(clientIp + "/32");
+        List<String> cidrs = normalizeAccessRules(request.allowedCidrs(), List.of(), true, clientIp);
         return new CreateDatabaseRequest(request.name(), request.remark(), request.engine(),
                 request.mode(), request.version(), request.size(), request.storageGi(),
                 request.replicas(), request.shards(), request.timezone(), cidrs,
