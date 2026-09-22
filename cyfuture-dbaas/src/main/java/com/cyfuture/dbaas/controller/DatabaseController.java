@@ -255,7 +255,7 @@ public class DatabaseController {
     @PutMapping("/{databaseId}/access-rules")
     @Operation(
             summary = "Update public access rules",
-            description = "Replaces the allowed IPv4 CIDRs for the public endpoint. Use includeCurrentClientIp to add the caller's detected public IP as /32."
+            description = "Adds or removes IPv4 CIDRs for the public endpoint. Use includeCurrentClientIp to add the caller's detected public IP as /32."
     )
     public AccessRulesResponse updateAccessRules(
             @PathVariable String project,

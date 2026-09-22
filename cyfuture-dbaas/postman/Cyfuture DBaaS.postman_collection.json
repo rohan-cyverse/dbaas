@@ -849,7 +849,7 @@
           ]
         },
         {
-          "name": "Update Access Rules",
+          "name": "Add Access Rule CIDR",
           "request": {
             "method": "PUT",
             "header": [
@@ -873,10 +873,10 @@
                 "access-rules"
               ]
             },
-            "description": "Replaces the database public access rules with the listed IPv4 CIDRs. 0.0.0.0/0 is intentionally rejected by the API.",
+            "description": "Adds the listed IPv4 CIDRs to the database public access rules. Existing CIDRs are preserved and the gateway reconciles immediately.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"allowedCidrs\": [\"{{accessRuleCidr}}\"],\n  \"includeCurrentClientIp\": false\n}"
+              "raw": "{\n  \"addCidrs\": [\"{{accessRuleCidr}}\"],\n  \"includeCurrentClientIp\": false\n}"
             }
           },
           "response": [],
@@ -885,10 +885,58 @@
               "listen": "test",
               "script": {
                 "exec": [
-                  "pm.test('Access rules updated', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Access rule CIDR added', function () { pm.response.to.have.status(200); });",
                   "if (pm.response.code === 200) {",
                   "  const body = pm.response.json();",
                   "  pm.expect(body.allowedCidrs).to.include(pm.collectionVariables.get('accessRuleCidr'));",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Remove Access Rule CIDR",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases/{{databaseId}}/access-rules",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "projects",
+                "{{projectId}}",
+                "databases",
+                "{{databaseId}}",
+                "access-rules"
+              ]
+            },
+            "description": "Removes only the selected IPv4 CIDR from the database public access rules. Other CIDRs remain allowed and the gateway reconciles immediately.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"removeCidrs\": [\"{{accessRuleCidr}}\"],\n  \"includeCurrentClientIp\": false\n}"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Access rule CIDR removed', function () { pm.response.to.have.status(200); });",
+                  "if (pm.response.code === 200) {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.allowedCidrs).to.not.include(pm.collectionVariables.get('accessRuleCidr'));",
                   "}"
                 ],
                 "type": "text/javascript"
@@ -921,10 +969,10 @@
                 "access-rules"
               ]
             },
-            "description": "Replaces the list with the listed CIDRs plus the caller public IP detected by the API as /32. Useful after switching network or VPN.",
+            "description": "Adds the caller public IP detected by the API as /32. Existing CIDRs are preserved and the gateway reconciles immediately.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"allowedCidrs\": [\"{{accessRuleCidr}}\"],\n  \"includeCurrentClientIp\": true\n}"
+              "raw": "{\n  \"includeCurrentClientIp\": true\n}"
             }
           },
           "response": [],
@@ -1822,7 +1870,7 @@
     },
     {
       "key": "accessRuleCidr",
-      "value": "203.0.113.10/32"
+      "value": "157.49.126.77/32"
     },
     {
       "key": "databaseName",

@@ -6,6 +6,7 @@ import com.cyfuture.dbaas.client.DatabaseObservation;
 import com.cyfuture.dbaas.config.DatabaseProperties;
 import com.cyfuture.dbaas.dto.BackupSettingsRequest;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
+import com.cyfuture.dbaas.dto.PublicEndpointResponse;
 import com.cyfuture.dbaas.entity.BackupPolicyMetadata;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.OperationMetadata;
@@ -49,6 +50,7 @@ class DatabaseServiceTest {
     private KubeBlocksClient kubeBlocksClient;
     private BackupPolicyService backupPolicyService;
     private BackupRetentionService backupRetentionService;
+    private CredentialLifecycleService credentialLifecycleService;
     private SharedGatewayService sharedGatewayService;
     private DatabaseService service;
 
@@ -71,6 +73,7 @@ class DatabaseServiceTest {
         backupPolicyService = mock(BackupPolicyService.class);
         backupRetentionService = mock(BackupRetentionService.class);
         when(backupRetentionService.readyForClusterDeletion(anyString(), anyString())).thenReturn(true);
+        credentialLifecycleService = mock(CredentialLifecycleService.class);
         sharedGatewayService = mock(SharedGatewayService.class);
         when(backupPolicyService.normalizeForCreation(any(BackupSettingsRequest.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -78,7 +81,7 @@ class DatabaseServiceTest {
                 any(BackupSettingsRequest.class), anyString()))
                 .thenReturn(new BackupPolicyMetadata());
         service = new DatabaseService(kubeBlocksClient, properties, repository,
-                provisioning, metadataCreation, mock(CredentialLifecycleService.class),
+                provisioning, metadataCreation, credentialLifecycleService,
                 projects, sharedGatewayService, mock(OperationMetadataRepository.class), friendlyNames,
                 mock(BackupMetadataRepository.class), mock(RestoreRequestMetadataRepository.class),
                 backupPolicyService, backupRetentionService);
@@ -141,6 +144,30 @@ class DatabaseServiceTest {
     }
 
     @Test
+    void connectionDetailsDoNotMutateAccessRulesOrReconcileGateway() {
+        DatabaseMetadata database = database("db-orders0001");
+        database.setStatus(DatabaseStatus.RUNNING);
+        database.setProvisioningStage(ProvisioningStage.READY);
+        database.setPublicPort(31000);
+        database.setAllowedCidrs("[49.50.73.146/32]");
+        when(repository.findByDatabaseIdAndProjectNameForUpdate("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(kubeBlocksClient.get("dbaas-orders", "db-orders0001"))
+                .thenReturn(observation(DatabaseStatus.RUNNING, true));
+        when(credentialLifecycleService.credentials(database))
+                .thenReturn(new ManagedCredential("app_user", "secret", "app_db"));
+        when(sharedGatewayService.endpoint(database))
+                .thenReturn(new PublicEndpointResponse("49.50.73.146", 31000,
+                        true, List.of("49.50.73.146/32")));
+
+        service.connection("orders", "db-orders0001", "203.0.113.55");
+
+        assertEquals("[49.50.73.146/32]", database.getAllowedCidrs());
+        verify(repository, never()).save(database);
+        verify(sharedGatewayService, never()).reconcileNow();
+    }
+
+    @Test
     void mongoConnectionUriAuthenticatesAgainstManagedDatabase() throws Exception {
         var connectionUri = DatabaseService.class.getDeclaredMethod("connectionUri",
                 DatabaseEngine.class, DatabaseMode.class, boolean.class,
@@ -198,7 +225,7 @@ class DatabaseServiceTest {
     }
 
     @Test
-    void updatesAccessRulesAndReconcilesGateway() {
+    void addsAccessRulesByAppendingAndReconcilesGateway() {
         DatabaseMetadata database = database("db-orders0001");
         database.setPublicPort(31000);
         database.setAllowedCidrs("[49.50.73.146/32]");
@@ -209,8 +236,46 @@ class DatabaseServiceTest {
                 new AccessRulesRequest(List.of("203.0.113.0/24", "203.0.113.0/24", "157.37.137.185"), true),
                 "157.37.137.185");
 
-        assertEquals(List.of("157.37.137.185/32", "203.0.113.0/24"), response.allowedCidrs());
-        assertEquals("[157.37.137.185/32, 203.0.113.0/24]", database.getAllowedCidrs());
+        assertEquals(List.of("157.37.137.185/32", "203.0.113.0/24", "49.50.73.146/32"),
+                response.allowedCidrs());
+        assertEquals("[157.37.137.185/32, 203.0.113.0/24, 49.50.73.146/32]",
+                database.getAllowedCidrs());
+        verify(repository).save(database);
+        verify(sharedGatewayService).reconcileNow();
+    }
+
+    @Test
+    void addAccessRuleTrimsCidrAndDoesNotReplaceExistingRules() {
+        DatabaseMetadata database = database("db-orders0001");
+        database.setPublicPort(31000);
+        database.setAllowedCidrs("[49.50.73.146/32]");
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+
+        var response = service.updateAccessRules("orders", "db-orders0001",
+                new AccessRulesRequest(List.of(), false, List.of("157.49.126.77/32 "), List.of()),
+                null);
+
+        assertEquals(List.of("157.49.126.77/32", "49.50.73.146/32"), response.allowedCidrs());
+        assertEquals("[157.49.126.77/32, 49.50.73.146/32]", database.getAllowedCidrs());
+        verify(repository).save(database);
+        verify(sharedGatewayService).reconcileNow();
+    }
+
+    @Test
+    void removesOnlySelectedAccessRuleAndKeepsTheRest() {
+        DatabaseMetadata database = database("db-orders0001");
+        database.setPublicPort(31000);
+        database.setAllowedCidrs("[49.50.73.146/32, 203.0.113.0/24, 157.37.137.185/32]");
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+
+        var response = service.updateAccessRules("orders", "db-orders0001",
+                new AccessRulesRequest(List.of(), false, List.of(), List.of("203.0.113.0/24")),
+                null);
+
+        assertEquals(List.of("157.37.137.185/32", "49.50.73.146/32"), response.allowedCidrs());
+        assertEquals("[157.37.137.185/32, 49.50.73.146/32]", database.getAllowedCidrs());
         verify(repository).save(database);
         verify(sharedGatewayService).reconcileNow();
     }
@@ -225,7 +290,8 @@ class DatabaseServiceTest {
 
         ApiException exception = assertThrows(ApiException.class,
                 () -> service.updateAccessRules("orders", "db-orders0001",
-                        new AccessRulesRequest(List.of(), false), null));
+                        new AccessRulesRequest(List.of(), false, List.of(), List.of("49.50.73.146/32")),
+                        null));
 
         assertEquals(HttpStatus.BAD_REQUEST, exception.getStatus());
         assertEquals("ACCESS_RULE_REQUIRED", exception.getCode());
@@ -242,7 +308,8 @@ class DatabaseServiceTest {
                 .thenReturn(Optional.of(database));
 
         var response = service.updateAccessRules("orders", "db-orders0001",
-                new AccessRulesRequest(List.of(), false), null);
+                new AccessRulesRequest(List.of(), false, List.of(), List.of("49.50.73.146/32")),
+                null);
 
         assertTrue(response.allowedCidrs().isEmpty());
         assertEquals("[]", database.getAllowedCidrs());
@@ -413,6 +480,15 @@ class DatabaseServiceTest {
 
     private BackupSettingsRequest backup() {
         return new BackupSettingsRequest(true, 7, "0 2 * * *", "UTC", false);
+    }
+
+    private DatabaseObservation observation(DatabaseStatus status, boolean serviceReady) {
+        return new DatabaseObservation("db-orders0001", "orders-db",
+                DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE, "17.5.0",
+                SizePlan.C1G2, 10, false, status, 1, 1, 0, 0, 0, 0,
+                1, serviceReady ? 1 : 0, serviceReady,
+                "db-orders0001.dbaas-orders.svc", 5432, List.of(),
+                serviceReady ? "ready" : "service not ready");
     }
 
     private DatabaseMetadata database(String databaseId) {

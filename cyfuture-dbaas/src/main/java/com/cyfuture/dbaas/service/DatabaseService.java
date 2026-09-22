@@ -253,7 +253,6 @@ public class DatabaseService {
             throw new ApiException(HttpStatus.CONFLICT, "DATABASE_NOT_READY", true,
                     "Database connection is not ready; current stage is " + stage(database));
         }
-        authorizeCaller(database, clientIp);
         DatabaseObservation live = kubeBlocksClient.get(database.getNamespaceName(), database.physicalClusterName());
         if (live.status() != DatabaseStatus.RUNNING || !live.serviceReady()) {
             throw new ApiException(HttpStatus.CONFLICT, "DATABASE_NOT_READY", true,
@@ -310,8 +309,7 @@ public class DatabaseService {
     public AccessRulesResponse updateAccessRules(String project, String databaseId,
                                                  AccessRulesRequest request, String clientIp) {
         DatabaseMetadata database = requireDatabase(project, databaseId);
-        List<String> cidrs = normalizeAccessRules(request.allowedCidrs(),
-                request.includeCurrentClientIp(), clientIp);
+        List<String> cidrs = applyAccessRuleChanges(database, request, clientIp);
         validateNetwork(cidrs, database.getPublicPort() != null);
         database.setAllowedCidrs(cidrs.toString());
         database.setUpdatedAt(Instant.now());
@@ -675,15 +673,33 @@ public class DatabaseService {
         return cidrs == null ? List.of() : cidrs;
     }
 
+    private List<String> applyAccessRuleChanges(DatabaseMetadata database,
+                                                AccessRulesRequest request,
+                                                String clientIp) {
+        java.util.LinkedHashSet<String> merged = new java.util.LinkedHashSet<>(metadataCidrs(database));
+        normalizeAccessRules(request.allowedCidrs(), request.addCidrs(),
+                request.includeCurrentClientIp(), clientIp).forEach(merged::add);
+        normalizeAccessRules(request.removeCidrs(), List.of(), false, null)
+                .forEach(merged::remove);
+        return merged.stream().sorted().toList();
+    }
+
     private List<String> normalizeAccessRules(List<String> allowedCidrs,
+                                              List<String> addCidrs,
                                               boolean includeCurrentClientIp,
                                               String clientIp) {
-        if (safeCidrs(allowedCidrs).stream().anyMatch(java.util.Objects::isNull)) {
+        if (safeCidrs(allowedCidrs).stream().anyMatch(java.util.Objects::isNull)
+                || safeCidrs(addCidrs).stream().anyMatch(java.util.Objects::isNull)) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_ACCESS_RULE", false,
                     "allowedCidrs cannot contain null values. Use an IPv4 CIDR such as 49.50.73.146/32.");
         }
         java.util.LinkedHashSet<String> normalized = new java.util.LinkedHashSet<>();
         safeCidrs(allowedCidrs).stream()
+                .filter(cidr -> cidr != null && !cidr.isBlank())
+                .map(String::trim)
+                .map(cidr -> cidr.matches("^(\\d{1,3}\\.){3}\\d{1,3}$") ? cidr + "/32" : cidr)
+                .forEach(normalized::add);
+        safeCidrs(addCidrs).stream()
                 .filter(cidr -> cidr != null && !cidr.isBlank())
                 .map(String::trim)
                 .map(cidr -> cidr.matches("^(\\d{1,3}\\.){3}\\d{1,3}$") ? cidr + "/32" : cidr)
@@ -764,20 +780,6 @@ public class DatabaseService {
     private String appendSuffix(String name, String suffix) {
         int baseLength = MAX_DISPLAY_NAME_LENGTH - suffix.length() - 1;
         return name.substring(0, Math.min(name.length(), baseLength)) + "-" + suffix;
-    }
-
-    private void authorizeCaller(DatabaseMetadata database, String clientIp) {
-        if (clientIp == null || clientIp.isBlank()) return;
-        String callerCidr = clientIp + "/32";
-        List<String> existing = new java.util.ArrayList<>(metadataCidrs(database));
-        if (!existing.contains(callerCidr)) {
-            existing.add(callerCidr);
-            while (existing.size() > 10) existing.remove(0);
-            database.setAllowedCidrs(existing.stream().sorted().toList().toString());
-            database.setUpdatedAt(Instant.now());
-            databaseRepository.save(database);
-            sharedGatewayService.reconcileNow();
-        }
     }
 
     private String connectionUri(DatabaseEngine engine, DatabaseMode mode, boolean publicRoute,

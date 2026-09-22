@@ -56,8 +56,6 @@ public class SharedGatewayService {
             "# route\\s+(db-[A-Za-z0-9-]+)\\s*\\R\\s*acl port_(\\d+)");
     private static final Pattern EXISTING_BACKEND = Pattern.compile(
             "(?m)^backend database_(\\d+)\\R\\s+server database ([^:\\s]+):(\\d+)\\b");
-    private static final Pattern EXISTING_ALLOWED = Pattern.compile(
-            "(?m)^\\s*acl allowed_(\\d+) src (.+)$");
 
     private final DatabaseProperties properties;
     private final DatabaseMetadataRepository databaseRepository;
@@ -173,9 +171,12 @@ public class SharedGatewayService {
             boolean databaseReady = live.status() == DatabaseStatus.RUNNING && live.serviceReady();
             boolean declared = infrastructure.service().getSpec().getPorts().stream()
                     .anyMatch(item -> Integer.valueOf(port).equals(item.getPort()));
-            boolean configured = routeConfigured(config, database.getDatabaseId(), port);
+            boolean rangesReady = sourceRangesContain(infrastructure.service(), cidrs);
+            boolean configured = routeConfigured(config, database, port);
+            boolean backendReady = backendConfigured(config, database, port);
             boolean ready = host != null && declared && configured
-                    && databaseReady && rolloutReady(infrastructure.deployment(), config);
+                    && rangesReady && backendReady && databaseReady
+                    && rolloutReady(infrastructure.deployment(), config);
             return new PublicEndpointResponse(host, port, ready, cidrs);
         } catch (ApiException exception) {
             return new PublicEndpointResponse(null, port, false, cidrs);
@@ -202,6 +203,7 @@ public class SharedGatewayService {
         Integer reservedPort = database.getPublicPort();
         if (reservedPort == null) return;
         database.setPublicPort(null);
+        database.setAllowedCidrs(List.of().toString());
         database.setUpdatedAt(Instant.now());
         databaseRepository.save(database);
     }
@@ -261,15 +263,9 @@ public class SharedGatewayService {
 
     private Map<String, Route> existingRoutes(String config) {
         Map<Integer, String> databaseByPort = new LinkedHashMap<>();
-        Map<Integer, List<String>> allowedByPort = new LinkedHashMap<>();
         Matcher routeMatcher = EXISTING_ROUTE.matcher(config == null ? "" : config);
         while (routeMatcher.find()) {
             databaseByPort.put(Integer.parseInt(routeMatcher.group(2)), routeMatcher.group(1));
-        }
-        Matcher allowedMatcher = EXISTING_ALLOWED.matcher(config == null ? "" : config);
-        while (allowedMatcher.find()) {
-            allowedByPort.put(Integer.parseInt(allowedMatcher.group(1)),
-                    List.of(allowedMatcher.group(2).trim().split("\\s+")));
         }
         Map<String, Route> result = new LinkedHashMap<>();
         Matcher backendMatcher = EXISTING_BACKEND.matcher(config == null ? "" : config);
@@ -279,7 +275,7 @@ public class SharedGatewayService {
             if (databaseId != null) {
                 result.put(databaseId, new Route(databaseId, publicPort,
                         backendMatcher.group(2), Integer.parseInt(backendMatcher.group(3)),
-                        allowedByPort.getOrDefault(publicPort, List.of())));
+                        List.of()));
             }
         }
         return result;
@@ -458,19 +454,8 @@ public class SharedGatewayService {
             value.append("  # route ").append(route.databaseId()).append("\n")
                     .append("  acl port_").append(route.publicPort()).append(" dst_port ")
                     .append(route.publicPort()).append("\n");
-            if (!route.allowedCidrs().isEmpty()) {
-                value.append("  acl allowed_").append(route.publicPort()).append(" src ")
-                        .append(String.join(" ", route.allowedCidrs())).append("\n");
-            }
         });
         value.append("  tcp-request content reject if !configured_port\n");
-        routes.forEach(route -> {
-            value.append("  tcp-request content reject if port_").append(route.publicPort());
-            if (!route.allowedCidrs().isEmpty()) {
-                value.append(" !allowed_").append(route.publicPort());
-            }
-            value.append("\n");
-        });
         routes.forEach(route -> value.append("  use_backend database_")
                 .append(route.publicPort()).append(" if port_")
                 .append(route.publicPort()).append("\n"));
@@ -495,9 +480,26 @@ public class SharedGatewayService {
         return checksum(config).equals(deployed) && available >= desired && updated >= desired;
     }
 
-    private boolean routeConfigured(String config, String databaseId, int publicPort) {
-        Route route = existingRoutes(config).get(databaseId);
-        return route != null && route.publicPort() == publicPort && managedPort(publicPort);
+    private boolean routeConfigured(String config, DatabaseMetadata database, int publicPort) {
+        Route route = existingRoutes(config).get(database.getDatabaseId());
+        return route != null
+                && route.publicPort() == publicPort
+                && managedPort(publicPort);
+    }
+
+    private boolean backendConfigured(String config, DatabaseMetadata database, int publicPort) {
+        Route route = existingRoutes(config).get(database.getDatabaseId());
+        if (route == null || route.publicPort() != publicPort) return false;
+        DatabaseBackendResolver.DatabaseBackendEndpoint endpoint = backendResolver.resolve(database);
+        return Objects.equals(route.host(), endpoint.host())
+                && route.targetPort() == endpoint.port();
+    }
+
+    private boolean sourceRangesContain(V1Service service, List<String> requiredCidrs) {
+        List<String> ranges = service.getSpec() == null
+                || service.getSpec().getLoadBalancerSourceRanges() == null
+                ? List.of() : service.getSpec().getLoadBalancerSourceRanges();
+        return ranges.containsAll(requiredCidrs);
     }
 
     private boolean managedPort(Integer publicPort) {
