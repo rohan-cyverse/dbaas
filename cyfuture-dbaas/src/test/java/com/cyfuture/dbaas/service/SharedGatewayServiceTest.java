@@ -251,6 +251,41 @@ class SharedGatewayServiceTest {
     }
 
     @Test
+    void cidrOnlyServiceUpdateDoesNotRolloutHaproxyDeployment() throws Exception {
+        DatabaseProperties properties = enabledProperties();
+        DatabaseMetadata database = database(31000);
+        database.setAllowedCidrs("[49.50.73.146/32, 157.49.126.77/32]");
+        String config = renderedRoute(database, 31000);
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        KubeBlocksClient kubeBlocksClient = mock(KubeBlocksClient.class);
+        DatabaseBackendResolver backendResolver = mock(DatabaseBackendResolver.class);
+        CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        AppsV1Api apps = mock(AppsV1Api.class, RETURNS_DEEP_STUBS);
+        V1Service service = gatewayService(31000, 31030);
+        service.getSpec().setLoadBalancerSourceRanges(List.of("49.50.73.146/32"));
+        when(core.readNamespacedService(any(), any()).execute()).thenReturn(service);
+        when(core.readNamespacedConfigMap(any(), any()).execute()).thenReturn(configMap(config));
+        when(apps.readNamespacedDeployment(any(), any()).execute())
+                .thenReturn(deployment(sha256(config), 2, 2));
+        when(repository.findByPublicPortIsNotNullOrderByPublicPortAsc()).thenReturn(List.of(database));
+        when(kubeBlocksClient.get(any(), any())).thenReturn(observation());
+        when(backendResolver.resolve(database)).thenReturn(new DatabaseBackendResolver.DatabaseBackendEndpoint(
+                "orders", "dbaas-orders",
+                "db-orders0001-postgresql.dbaas-orders.svc.cluster.local", 5432));
+        SharedGatewayService sharedGateway = service(properties, runningLock(), repository, core, apps,
+                kubeBlocksClient, backendResolver);
+
+        sharedGateway.reconcileNow();
+
+        ArgumentCaptor<V1Service> serviceReplacement = ArgumentCaptor.forClass(V1Service.class);
+        verify(core).replaceNamespacedService(any(), any(), serviceReplacement.capture());
+        assertEquals(List.of("157.49.126.77/32", "49.50.73.146/32"),
+                serviceReplacement.getValue().getSpec().getLoadBalancerSourceRanges());
+        verify(core, never()).replaceNamespacedConfigMap(any(), any(), any());
+        verify(apps, never()).replaceNamespacedDeployment(any(), any(), any());
+    }
+
+    @Test
     void endpointIsReadyOnlyAfterDatabaseServiceRouteAndDeploymentAreReady() throws Exception {
         DatabaseProperties properties = enabledProperties();
         DatabaseMetadata database = database(31000);
@@ -625,40 +660,21 @@ class SharedGatewayServiceTest {
     }
 
     private String renderedRoute(DatabaseMetadata database, int port) {
-        return """
-                global
-                  log stdout format raw local0
-                  maxconn 10000
-
-                defaults
-                  mode tcp
-                  log global
-                  option tcplog
-                  timeout connect 5s
-                  timeout client 1h
-                  timeout server 1h
-
-                resolvers kubernetes
-                  parse-resolv-conf
-                  hold valid 10s
-
-                frontend health
-                  bind *:8404
-                  mode http
-                  http-request return status 200 content-type text/plain string ok
-
-                frontend public_databases
-                  bind *:31000-31030 accept-proxy
-                  acl configured_port dst_port 31000
-                  # route %s
-                  acl port_%d dst_port %d
-                  tcp-request content reject if !configured_port
-                  use_backend database_%d if port_%d
-
-                backend database_%d
-                  server database db-orders0001-postgresql.dbaas-orders.svc.cluster.local:5432 check resolvers kubernetes init-addr libc,none
-
-                """.formatted(database.getDatabaseId(), port, port, port, port, port);
+        return "global\n  log stdout format raw local0\n  maxconn 10000\n\n"
+                + "defaults\n  mode tcp\n  log global\n  option tcplog\n"
+                + "  timeout connect 5s\n  timeout client 1h\n  timeout server 1h\n\n"
+                + "resolvers kubernetes\n  parse-resolv-conf\n  hold valid 10s\n\n"
+                + "frontend health\n  bind *:8404\n  mode http\n"
+                + "  http-request return status 200 content-type text/plain string ok\n\n"
+                + "frontend public_databases\n  bind *:31000-31030 accept-proxy\n"
+                + "  acl configured_port dst_port " + port + " \n"
+                + "  # route " + database.getDatabaseId() + "\n"
+                + "  acl port_" + port + " dst_port " + port + "\n"
+                + "  tcp-request content reject if !configured_port\n"
+                + "  use_backend database_" + port + " if port_" + port + "\n\n"
+                + "backend database_" + port + "\n"
+                + "  server database db-orders0001-postgresql.dbaas-orders.svc.cluster.local:5432"
+                + " check resolvers kubernetes init-addr libc,none\n\n";
     }
 
     private String sha256(String value) throws Exception {
