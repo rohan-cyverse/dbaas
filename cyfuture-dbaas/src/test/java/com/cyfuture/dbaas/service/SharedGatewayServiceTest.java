@@ -457,7 +457,7 @@ class SharedGatewayServiceTest {
 
         ArgumentCaptor<V1Service> replacement = ArgumentCaptor.forClass(V1Service.class);
         verify(core).replaceNamespacedService(any(), any(), replacement.capture());
-        assertEquals(List.of("0.0.0.0/0", "160.202.36.173/32"),
+        assertEquals(List.of("0.0.0.0/0"),
                 replacement.getValue().getSpec().getLoadBalancerSourceRanges());
     }
 

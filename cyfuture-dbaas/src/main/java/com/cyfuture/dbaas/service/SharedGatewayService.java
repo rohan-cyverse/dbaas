@@ -427,6 +427,10 @@ public class SharedGatewayService {
     }
 
     private List<String> sourceRanges(List<Route> routes) {
+        if (routes.stream().flatMap(route -> route.allowedCidrs().stream())
+                .anyMatch("0.0.0.0/0"::equals)) {
+            return List.of("0.0.0.0/0");
+        }
         return routes.stream()
                 .flatMap(route -> route.allowedCidrs().stream())
                 .distinct()
@@ -499,6 +503,7 @@ public class SharedGatewayService {
         List<String> ranges = service.getSpec() == null
                 || service.getSpec().getLoadBalancerSourceRanges() == null
                 ? List.of() : service.getSpec().getLoadBalancerSourceRanges();
+        if (ranges.contains("0.0.0.0/0")) return true;
         return ranges.containsAll(requiredCidrs);
     }
 
