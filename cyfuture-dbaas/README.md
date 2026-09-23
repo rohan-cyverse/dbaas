@@ -62,9 +62,9 @@ Kubernetes `CronJob`. When `scheduled` is `false`, that entry remains disabled
 and no scheduled-backup CronJob is created. The schedule can appear a few
 seconds after the database Cluster because it is controller-generated.
 
-Database and project deletion are blocked while DBaaS metadata or KubeBlocks
-reports an active backup or restore. Wait for that work to complete before
-retrying deletion.
+Database deletion automatically disables deletion protection and starts
+associated backup cleanup without waiting for backups to finish. Database and
+project deletion are still blocked while a restore is active.
 
 Create a full backup with an optional retention override:
 
