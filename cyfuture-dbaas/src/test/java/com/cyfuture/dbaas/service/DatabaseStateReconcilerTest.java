@@ -174,10 +174,14 @@ class DatabaseStateReconcilerTest {
     }
 
     @Test
-    void deletionWaitsForAnActiveKubernetesBackupBeforeRequestingClusterDeletion() {
+    void deletionDoesNotWaitForAnActiveKubernetesBackupBeforeRequestingClusterDeletion() {
         DatabaseMetadata database = database(DatabaseStatus.DELETING);
         OperationMetadata operation = deleteOperation();
+        database.setDeletionProtection(true);
         when(kubeBlocksClient.hasActiveBackup("dbaas-orders", "db-orders0001")).thenReturn(true);
+        when(kubeBlocksClient.observeCluster("dbaas-orders", "db-orders0001"))
+                .thenReturn(new KubeBlocksClient.ClusterObservation(true, "dbaas-orders",
+                        "db-orders0001", "Deleting", 1, 1, false, "deleting"));
         when(operationRepository.findByDatabaseIdAndProjectNameAndStatusIn(
                 "db-orders0001", "orders", List.of(OperationStatus.PENDING, OperationStatus.RUNNING)))
                 .thenReturn(List.of(operation));
@@ -185,11 +189,12 @@ class DatabaseStateReconcilerTest {
         reconciler.reconcile(database);
 
         assertEquals(DatabaseStatus.DELETING, database.getStatus());
-        assertEquals("Database deletion is removing backups before deleting the database", database.getMessage());
+        assertEquals("KubeBlocks deletion is running", database.getMessage());
+        assertEquals(false, database.isDeletionProtection());
         verify(retention).prepareDatabaseBackupDeletion(
                 database.getProjectName(), database.getDatabaseId());
-        verify(kubeBlocksClient, never()).requestDelete("dbaas-orders", "db-orders0001");
-        verify(gateway, never()).removeRoute(database);
+        verify(kubeBlocksClient).requestDelete("dbaas-orders", "db-orders0001");
+        verify(gateway).removeRoute(database);
     }
 
     @Test

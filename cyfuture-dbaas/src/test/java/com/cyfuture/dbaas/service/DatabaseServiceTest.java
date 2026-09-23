@@ -32,6 +32,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -113,6 +114,22 @@ class DatabaseServiceTest {
         ArgumentCaptor<DatabaseMetadata> database = ArgumentCaptor.forClass(DatabaseMetadata.class);
         verify(metadataCreation).save(database.capture(), any(OperationMetadata.class), any(BackupPolicyMetadata.class));
         assertEquals("[0.0.0.0/0, 157.37.137.185/32]", database.getValue().getAllowedCidrs());
+    }
+
+    @Test
+    void createPassesRequestedPasswordToProvisioning() {
+        CreateDatabaseRequest request = new CreateDatabaseRequest("orders-db", "Orders",
+                DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2,
+                10, 1, 0, "Asia/Kolkata",
+                null, true, Map.of("env", "test"), "S3cure_Pass-2026", backup());
+
+        service.create("orders", "create-orders-password", request, "157.37.137.185");
+
+        ArgumentCaptor<CreateDatabaseRequest> provisioningRequest =
+                ArgumentCaptor.forClass(CreateDatabaseRequest.class);
+        verify(provisioning).provision(anyString(), anyString(), anyString(), anyString(),
+                provisioningRequest.capture());
+        assertEquals("S3cure_Pass-2026", provisioningRequest.getValue().password());
     }
 
     @Test
@@ -455,27 +472,32 @@ class DatabaseServiceTest {
     }
 
     @Test
-    void explainsWhenDatabaseDeletionIsBlockedByDeletionProtection() {
+    void deleteIgnoresDeletionProtectionAndRequestsClusterDeletion() {
         DatabaseMetadata database = new DatabaseMetadata();
         database.setDatabaseId("db-orders0001");
         database.setProjectName("orders");
+        database.setNamespaceName("dbaas-orders");
         database.setStatus(DatabaseStatus.RUNNING);
         database.setProvisioningStage(ProvisioningStage.READY);
         database.setDeletionProtection(true);
         when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
                 .thenReturn(Optional.of(database));
+        when(credentialLifecycleService.cleanupDatabaseResources(database)).thenReturn(
+                new CredentialLifecycleService.CredentialCleanupObservation(true, 0, 0, 0, "gone"));
+        when(kubeBlocksClient.observeCluster("dbaas-orders", "db-orders0001"))
+                .thenReturn(new KubeBlocksClient.ClusterObservation(true, "dbaas-orders",
+                        "db-orders0001", "Deleting", 1, 1, false, "deleting"));
 
-        ApiException exception = assertThrows(ApiException.class,
-                () -> service.delete("orders", "db-orders0001"));
+        var response = service.delete("orders", "db-orders0001");
 
-        assertEquals(org.springframework.http.HttpStatus.CONFLICT, exception.getStatus());
-        assertEquals("DELETION_PROTECTION_ENABLED", exception.getCode());
-        assertEquals("Deletion protection is enabled for db-orders0001. Disable it before deleting.",
-                exception.getMessage());
+        assertEquals(DatabaseStatus.DELETING, response.status());
+        assertEquals(DatabaseStatus.DELETING, database.getStatus());
+        assertFalse(database.isDeletionProtection());
+        verify(kubeBlocksClient).requestDelete("dbaas-orders", "db-orders0001");
     }
 
     @Test
-    void acceptsDeletionAndWaitsWhenKubernetesReportsAnUnimportedActiveBackup() {
+    void deleteDoesNotWaitWhenKubernetesReportsAnUnimportedActiveBackup() {
         DatabaseMetadata database = new DatabaseMetadata();
         database.setDatabaseId("db-orders0001");
         database.setProjectName("orders");
@@ -486,15 +508,18 @@ class DatabaseServiceTest {
         when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
                 .thenReturn(Optional.of(database));
         when(kubeBlocksClient.hasActiveBackup("dbaas-orders", "db-orders0001")).thenReturn(true);
+        when(credentialLifecycleService.cleanupDatabaseResources(database)).thenReturn(
+                new CredentialLifecycleService.CredentialCleanupObservation(true, 0, 0, 0, "gone"));
+        when(kubeBlocksClient.observeCluster("dbaas-orders", "db-orders0001"))
+                .thenReturn(new KubeBlocksClient.ClusterObservation(true, "dbaas-orders",
+                        "db-orders0001", "Deleting", 1, 1, false, "deleting"));
 
         var response = service.delete("orders", "db-orders0001");
 
         assertEquals(DatabaseStatus.DELETING, response.status());
         assertEquals(DatabaseStatus.DELETING, database.getStatus());
-        assertEquals("Database deletion is removing backups before deleting the database",
-                database.getMessage());
         verify(backupRetentionService).prepareDatabaseBackupDeletion("orders", "db-orders0001");
-        verify(kubeBlocksClient, never()).requestDelete("dbaas-orders", "db-orders0001");
+        verify(kubeBlocksClient).requestDelete("dbaas-orders", "db-orders0001");
     }
 
     @Test

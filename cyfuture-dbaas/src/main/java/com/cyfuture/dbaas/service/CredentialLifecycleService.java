@@ -101,6 +101,16 @@ public class CredentialLifecycleService {
         reconcile(metadata, null, null, false, metadata.physicalClusterName());
     }
 
+    public void prepareInitialSecret(DatabaseMetadata metadata, String initialPassword) {
+        if (initialPassword == null || initialPassword.isBlank()) return;
+        try {
+            readOrCreateSecret(metadata, null, null, initialPassword, false);
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not prepare managed credentials: " + exception.getMessage());
+        }
+    }
+
     /**
      * Creates/rotates the DBaaS credential against an already restored logical
      * database. This avoids creating a target-ID-named empty database after a
@@ -348,6 +358,19 @@ public class CredentialLifecycleService {
     private V1Secret readOrCreateSecret(DatabaseMetadata metadata, String logicalDatabaseName,
                                         String logicalUsername)
             throws io.kubernetes.client.openapi.ApiException {
+        return readOrCreateSecret(metadata, logicalDatabaseName, logicalUsername, null);
+    }
+
+    private V1Secret readOrCreateSecret(DatabaseMetadata metadata, String logicalDatabaseName,
+                                        String logicalUsername, String initialPassword)
+            throws io.kubernetes.client.openapi.ApiException {
+        return readOrCreateSecret(metadata, logicalDatabaseName, logicalUsername, initialPassword, true);
+    }
+
+    private V1Secret readOrCreateSecret(DatabaseMetadata metadata, String logicalDatabaseName,
+                                        String logicalUsername, String initialPassword,
+                                        boolean includeOwnerReference)
+            throws io.kubernetes.client.openapi.ApiException {
         String name = secretName(metadata.getDatabaseId());
         String requestedDatabase = logicalDatabaseName == null || logicalDatabaseName.isBlank()
                 ? managedDatabaseName(metadata.getDatabaseId()) : logicalDatabaseName;
@@ -381,20 +404,23 @@ public class CredentialLifecycleService {
             return secret;
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             if (exception.getCode() != 404) throw exception;
+            V1ObjectMeta secretMetadata = new V1ObjectMeta()
+                    .name(name)
+                    .namespace(metadata.getNamespaceName())
+                    .labels(helperLabels(metadata))
+                    .annotations(new LinkedHashMap<>(Map.of(
+                            STATUS, PENDING,
+                            GENERATION, "1",
+                            SETUP_VERSION, CURRENT_SETUP_VERSION)));
+            if (includeOwnerReference) {
+                secretMetadata.ownerReferences(ownerReferences(metadata));
+            }
             V1Secret secret = new V1Secret()
-                    .metadata(new V1ObjectMeta()
-                            .name(name)
-                            .namespace(metadata.getNamespaceName())
-                            .labels(helperLabels(metadata))
-                            .ownerReferences(ownerReferences(metadata))
-                            .annotations(new LinkedHashMap<>(Map.of(
-                                    STATUS, PENDING,
-                                    GENERATION, "1",
-                                    SETUP_VERSION, CURRENT_SETUP_VERSION))))
+                    .metadata(secretMetadata)
                     .type("Opaque")
                     .stringData(Map.of(
                             "username", requestedUsername,
-                            "password", randomPassword(),
+                            "password", initialPassword == null ? randomPassword() : initialPassword,
                             "database", requestedDatabase));
             return coreV1Api.createNamespacedSecret(metadata.getNamespaceName(), secret).execute();
         }

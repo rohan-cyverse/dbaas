@@ -158,6 +158,32 @@ class CredentialLifecycleServiceTest {
     }
 
     @Test
+    void initialSecretUsesRequestedPasswordWhenProvided() throws Exception {
+        CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        BatchV1Api batch = mock(BatchV1Api.class, RETURNS_DEEP_STUBS);
+        KubeBlocksClient kubeBlocks = mock(KubeBlocksClient.class);
+        CredentialLifecycleService service = new CredentialLifecycleService(
+                kubeBlocks, new DatabaseProperties(), mock(OperationMetadataRepository.class),
+                new OperationMapper(), core, batch);
+        DatabaseMetadata database = database();
+        when(kubeBlocks.clusterOwnerReference("dbaas-orders", "db-orders0001"))
+                .thenReturn(new io.kubernetes.client.openapi.models.V1OwnerReference().kind("Cluster"));
+        when(core.readNamespacedSecret("db-orders0001-managed-credentials", "dbaas-orders")
+                .execute()).thenThrow(new io.kubernetes.client.openapi.ApiException(404, "missing"));
+        when(core.createNamespacedSecret(org.mockito.ArgumentMatchers.eq("dbaas-orders"), any()).execute())
+                .thenReturn(new V1Secret().metadata(new V1ObjectMeta()
+                        .name("db-orders0001-managed-credentials")));
+
+        service.prepareInitialSecret(database, "S3cure_Pass-2026");
+
+        ArgumentCaptor<V1Secret> secret = ArgumentCaptor.forClass(V1Secret.class);
+        verify(core).createNamespacedSecret(org.mockito.ArgumentMatchers.eq("dbaas-orders"), secret.capture());
+        assertEquals("S3cure_Pass-2026", secret.getValue().getStringData().get("password"));
+        assertEquals("dbaas_orders0001", secret.getValue().getStringData().get("username"));
+        assertEquals("appdb_orders0001", secret.getValue().getStringData().get("database"));
+    }
+
+    @Test
     void removesOnlyDatabaseSpecificCredentialHelpersAndLeavesSharedResourcesAlone() throws Exception {
         CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
         BatchV1Api batch = mock(BatchV1Api.class, RETURNS_DEEP_STUBS);

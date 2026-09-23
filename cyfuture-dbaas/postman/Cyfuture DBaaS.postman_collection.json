@@ -1145,7 +1145,7 @@
                 "{{databaseId}}"
               ]
             },
-            "description": "Disable deletion protection before calling this endpoint. DBaaS keeps the database in DELETING until the KubeBlocks Cluster and all database-specific credential/helper resources are gone; shared services and KubeBlocks child resources are not manually deleted."
+            "description": "Requests database deletion immediately. DBaaS automatically disables deletion protection and cleans associated backups asynchronously while keeping the database in DELETING until the KubeBlocks Cluster and all database-specific credential/helper resources are gone; shared services and KubeBlocks child resources are not manually deleted."
           },
           "response": []
         }

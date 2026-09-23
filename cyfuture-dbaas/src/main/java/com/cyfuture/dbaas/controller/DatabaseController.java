@@ -301,7 +301,7 @@ public class DatabaseController {
     @DeleteMapping("/{databaseId}")
     @Operation(
             summary = "Delete a database",
-            description = "Deletion is rejected with DELETION_PROTECTION_ENABLED while deletion protection is enabled."
+            description = "Deletion automatically disables deletion protection and requests database removal. Associated backups are cleaned up asynchronously."
     )
     public ResponseEntity<DeleteDatabaseResponse> delete(
             @PathVariable String project,

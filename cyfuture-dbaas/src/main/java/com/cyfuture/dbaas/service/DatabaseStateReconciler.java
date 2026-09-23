@@ -176,18 +176,9 @@ public class DatabaseStateReconciler {
             if (database.getDeleteRequestedAt() == null) {
                 update(database::setDeleteRequestedAt, Instant.now());
             }
+            update(database::setDeletionProtection, false);
             backupRetentionService.prepareDatabaseBackupDeletion(
                     database.getProjectName(), database.getDatabaseId());
-            if (!backupRetentionService.readyForClusterDeletion(
-                    database.getProjectName(), database.getDatabaseId())
-                    || kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), database.physicalClusterName())) {
-                update(database::setMessage,
-                        "Database deletion is removing backups before deleting the database");
-                finishDeleteOperation(database, OperationStatus.RUNNING,
-                        "Removing database backups");
-                saveIfChanged(database);
-                return;
-            }
             sharedGatewayService.removeRoute(database);
             CredentialLifecycleService.CredentialCleanupObservation credentialCleanup =
                     credentialLifecycleService.cleanupDatabaseResources(database);

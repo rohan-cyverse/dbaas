@@ -35,6 +35,15 @@ public record CreateDatabaseRequest(
         @Schema(example = "{\"environment\":\"test\",\"team\":\"orders\"}")
         @Size(max = 20) Map<String, String> tags,
         @Schema(
+                example = "S3cure_Pass-2026",
+                accessMode = Schema.AccessMode.WRITE_ONLY,
+                description = "Optional managed database password. Omit to let DBaaS generate one."
+        )
+        @Size(min = 8, max = 128)
+        @Pattern(regexp = "^[A-Za-z0-9_@#%+=:,.?-]+$",
+                message = "must be 8-128 characters using letters, numbers, and _ @ # % + = : , . ? -")
+        String password,
+        @Schema(
                 description = "Required scheduled-backup configuration. Explicitly set scheduled, retentionDays, timezone, and pitrEnabled; schedule is required when scheduled is true. PITR is available for supported database configurations.",
                 requiredMode = Schema.RequiredMode.REQUIRED
         )
@@ -54,6 +63,15 @@ public record CreateDatabaseRequest(
                                  String timezone, List<String> allowedCidrs,
                                  boolean deletionProtection, Map<String, String> tags) {
         this(name, remark, engine, mode, version, size, storageGi, replicas, shards, timezone,
-                allowedCidrs, deletionProtection, tags, null);
+                allowedCidrs, deletionProtection, tags, null, null);
+    }
+
+    public CreateDatabaseRequest(String name, String remark, DatabaseEngine engine, DatabaseMode mode,
+                                 String version, SizePlan size, int storageGi, int replicas, int shards,
+                                 String timezone, List<String> allowedCidrs,
+                                 boolean deletionProtection, Map<String, String> tags,
+                                 BackupSettingsRequest backup) {
+        this(name, remark, engine, mode, version, size, storageGi, replicas, shards, timezone,
+                allowedCidrs, deletionProtection, tags, null, backup);
     }
 }

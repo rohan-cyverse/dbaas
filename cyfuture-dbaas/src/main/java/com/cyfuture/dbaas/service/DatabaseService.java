@@ -59,6 +59,7 @@ public class DatabaseService {
     private static final Pattern CIDR = Pattern.compile(
             "^((25[0-5]|2[0-4]\\d|1?\\d?\\d)\\.){3}(25[0-5]|2[0-4]\\d|1?\\d?\\d)/(3[0-2]|[12]?\\d)$");
     private static final Pattern IDEMPOTENCY_KEY = Pattern.compile("^[A-Za-z0-9._:-]{8,128}$");
+    private static final Pattern MANAGED_PASSWORD = Pattern.compile("^[A-Za-z0-9_@#%+=:,.?-]{8,128}$");
     private static final int MAX_ALLOWED_CIDRS = 10;
     private static final int MAX_DISPLAY_NAME_LENGTH = 32;
     private static final int NAME_ALLOCATION_ATTEMPTS = 12;
@@ -90,6 +91,7 @@ public class DatabaseService {
         validateIdempotencyKey(idempotencyKey);
         request = publicRequest(request, clientIp);
         validateBackupConfigurationForCreation(request.backup());
+        validateInitialPassword(request.password());
         request = withBackup(request, backupPolicyService.normalizeForCreation(request.backup()));
         String requestHash = requestHash(request);
         DatabaseMetadata existing = databaseRepository
@@ -201,7 +203,7 @@ public class DatabaseService {
                 + "|" + request.mode() + "|" + request.version() + "|" + request.size()
                 + "|" + request.storageGi() + "|" + request.replicas() + "|" + request.shards()
                 + "|" + request.timezone() + "|" + request.deletionProtection() + "|" + tags
-                + "|" + backupHash(request);
+                + "|" + request.password() + "|" + backupHash(request);
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(value.getBytes(StandardCharsets.UTF_8));
@@ -327,11 +329,6 @@ public class DatabaseService {
         if (database.getStatus() == DatabaseStatus.DELETING) {
             return deletionResponse(database);
         }
-        if (database.isDeletionProtection()) {
-            throw new ApiException(HttpStatus.CONFLICT, "DELETION_PROTECTION_ENABLED", false,
-                    "Deletion protection is enabled for " + databaseId
-                            + ". Disable it before deleting.");
-        }
         if (restoreRepository.existsByProjectNameAndSourceDatabaseIdAndStatusIn(project, databaseId,
                 List.of(RestoreStatus.PENDING, RestoreStatus.SAFETY_BACKUP, RestoreStatus.RESTORING,
                         RestoreStatus.VALIDATING, RestoreStatus.CUTTING_OVER, RestoreStatus.ROLLING_BACK,
@@ -357,19 +354,13 @@ public class DatabaseService {
         OperationMetadata operation = deleteOperation(database);
         database.setDesiredState(DesiredState.DELETED);
         database.setStatus(DatabaseStatus.DELETING);
+        database.setDeletionProtection(false);
         database.setDeleteRequestedAt(Instant.now());
         database.setMessage("Database deletion requested; removing public route");
         database.setUpdatedAt(Instant.now());
         databaseRepository.save(database);
 
         backupRetentionService.prepareDatabaseBackupDeletion(project, databaseId);
-        if (!backupRetentionService.readyForClusterDeletion(project, databaseId)
-                || kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), database.physicalClusterName())) {
-            database.setMessage("Database deletion is removing backups before deleting the database");
-            database.setUpdatedAt(Instant.now());
-            databaseRepository.save(database);
-            return deletionResponse(database);
-        }
 
         try {
             sharedGatewayService.removeRoute(database);
@@ -669,6 +660,14 @@ public class DatabaseService {
         }
     }
 
+    private void validateInitialPassword(String password) {
+        if (password == null) return;
+        if (!MANAGED_PASSWORD.matcher(password).matches()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_DATABASE_PASSWORD", false,
+                    "password must be 8-128 characters using letters, numbers, and _ @ # % + = : , . ? -");
+        }
+    }
+
     private List<String> safeCidrs(List<String> cidrs) {
         return cidrs == null ? List.of() : cidrs;
     }
@@ -724,7 +723,7 @@ public class DatabaseService {
         return new CreateDatabaseRequest(request.name(), request.remark(), request.engine(),
                 request.mode(), request.version(), request.size(), request.storageGi(),
                 request.replicas(), request.shards(), request.timezone(), cidrs,
-                request.deletionProtection(), request.tags(), request.backup());
+                request.deletionProtection(), request.tags(), request.password(), request.backup());
     }
 
     private CreateDatabaseRequest withAllocatedName(String project, CreateDatabaseRequest request) {
@@ -735,14 +734,15 @@ public class DatabaseService {
         return new CreateDatabaseRequest(displayName, request.remark(), request.engine(),
                 request.mode(), request.version(), request.size(), request.storageGi(),
                 request.replicas(), request.shards(), request.timezone(), request.allowedCidrs(),
-                request.deletionProtection(), request.tags(), request.backup());
+                request.deletionProtection(), request.tags(), request.password(), request.backup());
     }
 
     private CreateDatabaseRequest withBackup(CreateDatabaseRequest request,
                                              com.cyfuture.dbaas.dto.BackupSettingsRequest backup) {
         return new CreateDatabaseRequest(request.name(), request.remark(), request.engine(), request.mode(),
                 request.version(), request.size(), request.storageGi(), request.replicas(), request.shards(),
-                request.timezone(), request.allowedCidrs(), request.deletionProtection(), request.tags(), backup);
+                request.timezone(), request.allowedCidrs(), request.deletionProtection(), request.tags(),
+                request.password(), backup);
     }
 
     private String backupHash(CreateDatabaseRequest request) {

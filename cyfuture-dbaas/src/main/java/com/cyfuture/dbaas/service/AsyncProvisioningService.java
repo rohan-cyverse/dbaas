@@ -17,6 +17,7 @@ public class AsyncProvisioningService {
     private final KubeBlocksClient kubeBlocksClient;
     private final DatabaseMetadataRepository databaseRepository;
     private final ProvisioningProgressService progressService;
+    private final CredentialLifecycleService credentialLifecycleService;
 
     @Async
     public void provision(String operationId, String databaseId, String project,
@@ -39,6 +40,7 @@ public class AsyncProvisioningService {
             progressService.update(database, ProvisioningStage.CREATING_DATABASE, 25,
                     "Creating the KubeBlocks database cluster");
             kubeBlocksClient.create(namespace, project, databaseId, request);
+            credentialLifecycleService.prepareInitialSecret(database, request.password());
             progressService.update(database, ProvisioningStage.WAITING_FOR_REPLICAS, 40,
                     "KubeBlocks accepted the request; waiting for database replicas");
         } catch (Exception exception) {
