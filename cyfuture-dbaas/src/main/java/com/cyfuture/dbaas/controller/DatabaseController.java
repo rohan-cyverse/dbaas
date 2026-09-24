@@ -3,6 +3,7 @@ package com.cyfuture.dbaas.controller;
 import com.cyfuture.dbaas.dto.AccessRulesRequest;
 import com.cyfuture.dbaas.dto.AccessRulesResponse;
 import com.cyfuture.dbaas.dto.ConnectionResponse;
+import com.cyfuture.dbaas.dto.ChangeDatabasePasswordRequest;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
 import com.cyfuture.dbaas.dto.CreateDatabaseResponse;
 import com.cyfuture.dbaas.dto.DatabaseResponse;
@@ -268,18 +269,23 @@ public class DatabaseController {
         return databaseService.updateAccessRules(project, databaseId, request, clientIp);
     }
 
-    @PostMapping("/{databaseId}/credentials/rotate")
-    @Operation(summary = "Rotate managed database credentials")
-    public ResponseEntity<OperationResponse> rotateCredentials(
+    @PutMapping("/{databaseId}/credentials/password")
+    @Operation(
+            summary = "Change the managed database password",
+            description = "Asynchronously changes the managed database user's password to the supplied value. The previous password remains active if the update fails."
+    )
+    public ResponseEntity<OperationResponse> changePassword(
             @PathVariable String project,
-            @PathVariable String databaseId
+            @PathVariable String databaseId,
+            @Valid @RequestBody ChangeDatabasePasswordRequest request
     ) {
         return ResponseEntity
                 .status(HttpStatus.ACCEPTED)
                 .body(
-                        databaseService.rotateCredentials(
+                        databaseService.changePassword(
                                 project,
-                                databaseId
+                                databaseId,
+                                request.password()
                         )
                 );
     }

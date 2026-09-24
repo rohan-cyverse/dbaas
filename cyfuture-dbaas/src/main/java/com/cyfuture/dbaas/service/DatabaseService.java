@@ -296,10 +296,11 @@ public class DatabaseService {
                         publicEndpoint.port(), credential.database()), publicEndpoint);
     }
 
-    public OperationResponse rotateCredentials(String project,
-                                               String databaseId) {
+    public OperationResponse changePassword(String project, String databaseId,
+                                            String password) {
+        validatePassword(password);
         return credentialLifecycleService.rotate(
-                requireDatabase(project, databaseId));
+                requireDatabase(project, databaseId), password);
     }
 
     public AccessRulesResponse accessRules(String project, String databaseId) {
@@ -661,7 +662,14 @@ public class DatabaseService {
     }
 
     private void validateInitialPassword(String password) {
-        if (password == null) return;
+        validatePassword(password);
+    }
+
+    private void validatePassword(String password) {
+        if (password == null || password.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "DATABASE_PASSWORD_REQUIRED", false,
+                    "password is required");
+        }
         if (!MANAGED_PASSWORD.matcher(password).matches()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_DATABASE_PASSWORD", false,
                     "password must be 8-128 characters using letters, numbers, and _ @ # % + = : , . ? -");

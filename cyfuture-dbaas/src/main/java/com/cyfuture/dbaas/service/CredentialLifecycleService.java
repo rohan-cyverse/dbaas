@@ -36,8 +36,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
-import java.security.SecureRandom;
 import java.time.Instant;
+import java.security.SecureRandom;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -102,7 +102,10 @@ public class CredentialLifecycleService {
     }
 
     public void prepareInitialSecret(DatabaseMetadata metadata, String initialPassword) {
-        if (initialPassword == null || initialPassword.isBlank()) return;
+        if (initialPassword == null || initialPassword.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "DATABASE_PASSWORD_REQUIRED", false,
+                    "password is required");
+        }
         try {
             readOrCreateSecret(metadata, null, null, initialPassword, false);
         } catch (io.kubernetes.client.openapi.ApiException exception) {
@@ -311,7 +314,7 @@ public class CredentialLifecycleService {
         }
     }
 
-    public OperationResponse rotate(DatabaseMetadata metadata) {
+    public OperationResponse rotate(DatabaseMetadata metadata, String newPassword) {
         try {
             V1Secret secret = coreV1Api.readNamespacedSecret(
                     secretName(metadata.getDatabaseId()), metadata.getNamespaceName()).execute();
@@ -340,7 +343,7 @@ public class CredentialLifecycleService {
                         "Managed credential Secret is missing password");
             }
             data.put("previous-password", currentPassword);
-            data.put("password", randomPassword().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            data.put("password", newPassword.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             secret.setData(data);
             replaceSecret(metadata.getNamespaceName(), secret);
             reconcile(metadata);
@@ -404,6 +407,11 @@ public class CredentialLifecycleService {
             return secret;
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             if (exception.getCode() != 404) throw exception;
+            if (initialPassword == null && logicalDatabaseName == null
+                    && metadata.getStatus() == DatabaseStatus.PROVISIONING) {
+                throw new ApiException(HttpStatus.CONFLICT, "DATABASE_PASSWORD_NOT_PREPARED", true,
+                        "Waiting for the user-supplied database password to be prepared");
+            }
             V1ObjectMeta secretMetadata = new V1ObjectMeta()
                     .name(name)
                     .namespace(metadata.getNamespaceName())
@@ -420,6 +428,9 @@ public class CredentialLifecycleService {
                     .type("Opaque")
                     .stringData(Map.of(
                             "username", requestedUsername,
+                            // Creation requests always pre-seed this value with the user password.
+                            // The fallback is retained only for internal restore/recovery flows that
+                            // need to recreate a missing managed credential Secret.
                             "password", initialPassword == null ? randomPassword() : initialPassword,
                             "database", requestedDatabase));
             return coreV1Api.createNamespacedSecret(metadata.getNamespaceName(), secret).execute();

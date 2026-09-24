@@ -37,4 +37,6 @@ public interface RestoreRequestMetadataRepository extends JpaRepository<RestoreR
     boolean existsByProjectNameAndStatusIn(String projectName, Collection<RestoreStatus> statuses);
     List<RestoreRequestMetadata> findByOldClusterDeleteAtBeforeAndOldClusterDeletedAtIsNullAndStatus(
             Instant oldClusterDeleteAt, RestoreStatus status);
+    void deleteByProjectNameAndSourceDatabaseId(String projectName, String sourceDatabaseId);
+    void deleteByProjectName(String projectName);
 }

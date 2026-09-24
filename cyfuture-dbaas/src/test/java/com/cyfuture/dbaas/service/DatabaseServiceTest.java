@@ -107,7 +107,8 @@ class DatabaseServiceTest {
         CreateDatabaseRequest request = new CreateDatabaseRequest("orders-db", "Orders",
                 DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2,
                 10, 1, 0, "Asia/Kolkata",
-                List.of("0.0.0.0/0", "157.37.137.185/32"), true, Map.of("env", "test"), backup());
+                List.of("0.0.0.0/0", "157.37.137.185/32"), true, Map.of("env", "test"),
+                "S3cure_Pass-2026", backup());
 
         service.create("orders", "create-orders-cidrs", request, "157.37.137.185");
 
@@ -144,7 +145,8 @@ class DatabaseServiceTest {
                 .thenReturn("pg-quiet-mango-a7k9");
         CreateDatabaseRequest unnamed = new CreateDatabaseRequest(null, "Orders", DatabaseEngine.POSTGRESQL,
                 DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2, 10, 1, 0,
-                "Asia/Kolkata", null, true, Map.of("env", "test"), backup());
+                "Asia/Kolkata", null, true, Map.of("env", "test"),
+                "S3cure_Pass-2026", backup());
 
         var response = service.create("orders", "create-orders-003", unnamed, "157.37.137.185");
 
@@ -536,6 +538,21 @@ class DatabaseServiceTest {
     }
 
     @Test
+    void createRequiresUserSuppliedPassword() {
+        CreateDatabaseRequest missingPassword = new CreateDatabaseRequest("orders-db", "Orders",
+                DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2,
+                10, 1, 0, "Asia/Kolkata", null, true, Map.of("env", "test"), backup());
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.create("orders", "create-orders-no-password", missingPassword,
+                        "157.37.137.185"));
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatus());
+        assertEquals("DATABASE_PASSWORD_REQUIRED", exception.getCode());
+        verify(provisioning, never()).provision(anyString(), anyString(), anyString(), anyString(), any());
+    }
+
+    @Test
     void createRequiresCompleteBackupConfiguration() {
         CreateDatabaseRequest incompleteBackup = new CreateDatabaseRequest("orders-db", "Orders",
                 DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2,
@@ -552,7 +569,8 @@ class DatabaseServiceTest {
     private CreateDatabaseRequest request() {
         return new CreateDatabaseRequest("orders-db", "Orders", DatabaseEngine.POSTGRESQL,
                 DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2, 10, 1, 0,
-                "Asia/Kolkata", null, true, Map.of("env", "test"), backup());
+                "Asia/Kolkata", null, true, Map.of("env", "test"),
+                "S3cure_Pass-2026", backup());
     }
 
     private BackupSettingsRequest backup() {
