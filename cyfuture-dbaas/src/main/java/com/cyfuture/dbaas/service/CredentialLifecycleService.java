@@ -102,13 +102,14 @@ public class CredentialLifecycleService {
     }
 
     public void prepareInitialSecret(DatabaseMetadata metadata, String logicalDatabaseName,
+                                     String logicalUsername,
                                      String initialPassword) {
         if (initialPassword == null || initialPassword.isBlank()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "DATABASE_PASSWORD_REQUIRED", false,
                     "password is required");
         }
         try {
-            readOrCreateSecret(metadata, logicalDatabaseName, null, initialPassword, false);
+            readOrCreateSecret(metadata, logicalDatabaseName, logicalUsername, initialPassword, false);
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             throw new ApiException(HttpStatus.BAD_GATEWAY,
                     "Could not prepare managed credentials: " + exception.getMessage());
@@ -181,6 +182,11 @@ public class CredentialLifecycleService {
     public static String logicalDatabaseName(DatabaseMetadata metadata) {
         return metadata.getLogicalDatabaseName() == null || metadata.getLogicalDatabaseName().isBlank()
                 ? managedDatabaseName(metadata.getDatabaseId()) : metadata.getLogicalDatabaseName();
+    }
+
+    public static String logicalUsername(DatabaseMetadata metadata) {
+        return metadata.getLogicalUsername() == null || metadata.getLogicalUsername().isBlank()
+                ? managedUsername(metadata.getDatabaseId()) : metadata.getLogicalUsername();
     }
 
     private void reconcile(DatabaseMetadata metadata, String logicalDatabaseName,
@@ -384,7 +390,7 @@ public class CredentialLifecycleService {
         String requestedDatabase = logicalDatabaseName == null || logicalDatabaseName.isBlank()
                 ? defaultDatabaseName(metadata) : logicalDatabaseName;
         String requestedUsername = logicalUsername == null || logicalUsername.isBlank()
-                ? managedUsername(metadata.getDatabaseId()) : logicalUsername;
+                ? logicalUsername(metadata) : logicalUsername;
         try {
             V1Secret secret = ensureSecretMetadata(metadata,
                     coreV1Api.readNamespacedSecret(name, metadata.getNamespaceName()).execute());

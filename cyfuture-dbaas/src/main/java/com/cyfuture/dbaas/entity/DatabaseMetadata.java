@@ -25,7 +25,11 @@ import java.time.Instant;
         @UniqueConstraint(name = "uk_database_project_idempotency",
                 columnNames = {"project_name", "idempotency_key"}),
         @UniqueConstraint(name = "uk_database_project_display_name",
-                columnNames = {"project_name", "display_name"})
+                columnNames = {"project_name", "display_name"}),
+        @UniqueConstraint(name = "uk_database_project_logical_name",
+                columnNames = {"project_name", "logical_database_name"}),
+        @UniqueConstraint(name = "uk_database_project_logical_username",
+                columnNames = {"project_name", "logical_username"})
 })
 @Getter
 @Setter
@@ -48,6 +52,8 @@ public class DatabaseMetadata {
     private String displayName;
     @Column(nullable = false, length = 63)
     private String logicalDatabaseName;
+    @Column(nullable = false, length = 32)
+    private String logicalUsername;
     @Column(length = 63)
     private String activeClusterName;
     @Column(length = 64)

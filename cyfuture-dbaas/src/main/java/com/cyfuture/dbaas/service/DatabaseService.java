@@ -91,14 +91,14 @@ public class DatabaseService {
         validateBackupConfigurationForCreation(request.backup());
         validateInitialPassword(request.password());
         request = withBackup(request, backupPolicyService.normalizeForCreation(request.backup()));
-        request = withRequestedName(request);
+        request = withRequestedIdentity(request);
         String requestHash = requestHash(request);
         DatabaseMetadata existing = databaseRepository
                 .findByProjectNameAndIdempotencyKey(project, idempotencyKey)
                 .orElse(null);
         if (existing != null) return duplicateResponse(existing, requestHash);
 
-        ensureNameAvailable(project, request.name());
+        ensureIdentityAvailable(project, request.name(), request.username());
 
         validateVersion(request);
         validateMode(request);
@@ -117,6 +117,7 @@ public class DatabaseService {
         database.setNamespaceName(namespace);
         database.setDisplayName(request.name());
         database.setLogicalDatabaseName(request.name());
+        database.setLogicalUsername(request.username());
         database.setRemark(request.remark());
         database.setEngine(request.engine());
         database.setMode(request.mode());
@@ -159,6 +160,11 @@ public class DatabaseService {
             if (databaseRepository.existsByProjectNameAndDisplayName(project, request.name())) {
                 throw new ApiException(HttpStatus.CONFLICT, "DATABASE_NAME_ALREADY_EXISTS", false,
                         "Database name '" + request.name() + "' is already in use in this project");
+            }
+            if (databaseRepository.existsByProjectNameAndLogicalUsername(project, request.username())) {
+                throw new ApiException(HttpStatus.CONFLICT, "DATABASE_USERNAME_ALREADY_EXISTS", false,
+                        "Database username '" + request.username()
+                                + "' is already in use in this project; select a different username");
             }
             throw exception;
         }
@@ -208,6 +214,7 @@ public class DatabaseService {
                 + "|" + request.mode() + "|" + request.version() + "|" + request.size()
                 + "|" + request.storageGi() + "|" + request.replicas() + "|" + request.shards()
                 + "|" + request.timezone() + "|" + request.deletionProtection() + "|" + tags
+                + "|" + request.username()
                 + "|" + request.password() + "|" + backupHash(request);
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
@@ -276,7 +283,7 @@ public class DatabaseService {
         if (restore != null) {
             if (!credentialLifecycleService.readyForRestoredDatabase(database,
                     CredentialLifecycleService.logicalDatabaseName(database),
-                    CredentialLifecycleService.managedUsername(restore.getSourceDatabaseId()))) {
+                    CredentialLifecycleService.logicalUsername(database))) {
                 throw new ApiException(HttpStatus.CONFLICT, "RESTORED_CREDENTIALS_NOT_READY", true,
                         "Restored database credentials are being prepared; retry shortly.");
             }
@@ -733,13 +740,13 @@ public class DatabaseService {
                     "Could not detect the caller public IP for database access");
         }
         List<String> cidrs = normalizeAccessRules(request.allowedCidrs(), List.of(), true, clientIp);
-        return new CreateDatabaseRequest(request.name(), request.remark(), request.engine(),
+        return new CreateDatabaseRequest(request.name(), request.username(), request.remark(), request.engine(),
                 request.mode(), request.version(), request.size(), request.storageGi(),
                 request.replicas(), request.shards(), request.timezone(), cidrs,
                 request.deletionProtection(), request.tags(), request.password(), request.backup());
     }
 
-    private CreateDatabaseRequest withRequestedName(CreateDatabaseRequest request) {
+    private CreateDatabaseRequest withRequestedIdentity(CreateDatabaseRequest request) {
         if (request.name() == null || request.name().isBlank()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "DATABASE_NAME_REQUIRED", false,
                     "name is required");
@@ -749,22 +756,38 @@ public class DatabaseService {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_DATABASE_NAME", false,
                     "name must start with a lowercase letter and contain only lowercase letters, numbers, and underscores");
         }
-        return new CreateDatabaseRequest(requestedName, request.remark(), request.engine(),
+        if (request.username() == null || request.username().isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "DATABASE_USERNAME_REQUIRED", false,
+                    "username is required");
+        }
+        String requestedUsername = request.username();
+        if (requestedUsername.length() > 32 || !requestedUsername.matches("^[a-z][a-z0-9_]{0,31}$")) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_DATABASE_USERNAME", false,
+                    "username must start with a lowercase letter and contain only lowercase letters, numbers, and underscores");
+        }
+        return new CreateDatabaseRequest(requestedName, requestedUsername, request.remark(), request.engine(),
                 request.mode(), request.version(), request.size(), request.storageGi(),
                 request.replicas(), request.shards(), request.timezone(), request.allowedCidrs(),
                 request.deletionProtection(), request.tags(), request.password(), request.backup());
     }
 
-    private void ensureNameAvailable(String project, String requestedName) {
-        if (databaseRepository.existsByProjectNameAndDisplayName(project, requestedName)) {
+    private void ensureIdentityAvailable(String project, String requestedName, String requestedUsername) {
+        if (databaseRepository.existsByProjectNameAndLogicalDatabaseName(project, requestedName)
+                || databaseRepository.existsByProjectNameAndDisplayName(project, requestedName)) {
             throw new ApiException(HttpStatus.CONFLICT, "DATABASE_NAME_ALREADY_EXISTS", false,
-                    "Database name '" + requestedName + "' is already in use in this project");
+                    "Database name '" + requestedName
+                            + "' is already in use in this project; select a different name");
+        }
+        if (databaseRepository.existsByProjectNameAndLogicalUsername(project, requestedUsername)) {
+            throw new ApiException(HttpStatus.CONFLICT, "DATABASE_USERNAME_ALREADY_EXISTS", false,
+                    "Database username '" + requestedUsername
+                            + "' is already in use in this project; select a different username");
         }
     }
 
     private CreateDatabaseRequest withBackup(CreateDatabaseRequest request,
                                              com.cyfuture.dbaas.dto.BackupSettingsRequest backup) {
-        return new CreateDatabaseRequest(request.name(), request.remark(), request.engine(), request.mode(),
+        return new CreateDatabaseRequest(request.name(), request.username(), request.remark(), request.engine(), request.mode(),
                 request.version(), request.size(), request.storageGi(), request.replicas(), request.shards(),
                 request.timezone(), request.allowedCidrs(), request.deletionProtection(), request.tags(),
                 request.password(), backup);

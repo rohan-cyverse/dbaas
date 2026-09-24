@@ -174,12 +174,12 @@ class CredentialLifecycleServiceTest {
                 .thenReturn(new V1Secret().metadata(new V1ObjectMeta()
                         .name("db-orders0001-managed-credentials")));
 
-        service.prepareInitialSecret(database, "orders_data", "S3cure_Pass-2026");
+        service.prepareInitialSecret(database, "orders_data", "orders_user", "S3cure_Pass-2026");
 
         ArgumentCaptor<V1Secret> secret = ArgumentCaptor.forClass(V1Secret.class);
         verify(core).createNamespacedSecret(org.mockito.ArgumentMatchers.eq("dbaas-orders"), secret.capture());
         assertEquals("S3cure_Pass-2026", secret.getValue().getStringData().get("password"));
-        assertEquals("dbaas_orders0001", secret.getValue().getStringData().get("username"));
+        assertEquals("orders_user", secret.getValue().getStringData().get("username"));
         assertEquals("orders_data", secret.getValue().getStringData().get("database"));
     }
 

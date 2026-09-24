@@ -22,6 +22,12 @@ public record CreateDatabaseRequest(
         @Pattern(regexp = "^[a-z][a-z0-9_]{0,31}$",
                 message = "must start with a lowercase letter and contain only lowercase letters, numbers, and underscores")
         String name,
+        @Schema(example = "orders_user", description = "Required user-defined database username. It must be unique within the project.", requiredMode = Schema.RequiredMode.REQUIRED)
+        @NotBlank
+        @Size(max = 32)
+        @Pattern(regexp = "^[a-z][a-z0-9_]{0,31}$",
+                message = "must start with a lowercase letter and contain only lowercase letters, numbers, and underscores")
+        String username,
         @Schema(example = "Orders development database") @Size(max = 64) String remark,
         @Schema(example = "POSTGRESQL") @NotNull DatabaseEngine engine,
         @Schema(example = "STANDALONE") @NotNull DatabaseMode mode,
@@ -76,5 +82,33 @@ public record CreateDatabaseRequest(
                                  BackupSettingsRequest backup) {
         this(name, remark, engine, mode, version, size, storageGi, replicas, shards, timezone,
                 allowedCidrs, deletionProtection, tags, null, backup);
+    }
+
+    public CreateDatabaseRequest(String name, String username, String remark,
+                                 DatabaseEngine engine, DatabaseMode mode,
+                                 String version, SizePlan size, int storageGi, int replicas, int shards,
+                                 String timezone, List<String> allowedCidrs,
+                                 boolean deletionProtection, Map<String, String> tags) {
+        this(name, username, remark, engine, mode, version, size, storageGi, replicas, shards,
+                timezone, allowedCidrs, deletionProtection, tags, null, null);
+    }
+
+    public CreateDatabaseRequest(String name, String username, String remark,
+                                 DatabaseEngine engine, DatabaseMode mode,
+                                 String version, SizePlan size, int storageGi, int replicas, int shards,
+                                 String timezone, List<String> allowedCidrs,
+                                 boolean deletionProtection, Map<String, String> tags,
+                                 BackupSettingsRequest backup) {
+        this(name, username, remark, engine, mode, version, size, storageGi, replicas, shards,
+                timezone, allowedCidrs, deletionProtection, tags, null, backup);
+    }
+
+    public CreateDatabaseRequest(String name, String remark, DatabaseEngine engine, DatabaseMode mode,
+                                 String version, SizePlan size, int storageGi, int replicas, int shards,
+                                 String timezone, List<String> allowedCidrs,
+                                 boolean deletionProtection, Map<String, String> tags,
+                                 String password, BackupSettingsRequest backup) {
+        this(name, null, remark, engine, mode, version, size, storageGi, replicas, shards, timezone,
+                allowedCidrs, deletionProtection, tags, password, backup);
     }
 }

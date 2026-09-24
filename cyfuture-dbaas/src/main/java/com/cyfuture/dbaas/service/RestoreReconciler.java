@@ -150,7 +150,7 @@ public class RestoreReconciler {
             return;
         }
         String restoredLogicalDatabase = CredentialLifecycleService.logicalDatabaseName(target);
-        String restoredUsername = CredentialLifecycleService.managedUsername(restore.getSourceDatabaseId());
+        String restoredUsername = CredentialLifecycleService.logicalUsername(target);
         if (!credentialLifecycleService.readyForRestoredCluster(target, temporaryClusterName(restore),
                 restoredLogicalDatabase,
                 restoredUsername)) {

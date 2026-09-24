@@ -115,7 +115,7 @@ public class OperationRecoveryService {
         BackupSettingsRequest backup = policy == null ? null : new BackupSettingsRequest(
                 policy.isAutoBackupEnabled(), policy.getRetentionDays(), policy.getCronExpression(),
                 policy.getTimezone(), policy.isPitrEnabled());
-        return new CreateDatabaseRequest(database.getDisplayName(), database.getRemark(),
+        return new CreateDatabaseRequest(database.getDisplayName(), database.getLogicalUsername(), database.getRemark(),
                 database.getEngine(), database.getMode(), database.getDatabaseVersion(),
                 database.getSizePlan(), database.getStorageGi(), database.getReplicas(),
                 database.getShards(), database.getTimezone(), cidrs(database.getAllowedCidrs()),
