@@ -16,12 +16,18 @@ import java.util.List;
 import java.util.Map;
 
 public record CreateDatabaseRequest(
-        @Schema(example = "orders-postgres", description = "Required user-defined database name. The value is preserved exactly and must be unique within the project.", requiredMode = Schema.RequiredMode.REQUIRED)
+        @Schema(example = "orders_db", description = "Required user-defined database name. This exact name is created inside PostgreSQL, MySQL, or MongoDB and is also used as the display name. It must be unique within the project.", requiredMode = Schema.RequiredMode.REQUIRED)
         @NotBlank
         @Size(max = 32)
-        @Pattern(regexp = "^[a-z][a-z0-9-]*[a-z0-9]$",
-                message = "must contain lowercase letters, numbers and hyphens, and start with a letter")
+        @Pattern(regexp = "^[a-z][a-z0-9_]{0,31}$",
+                message = "must start with a lowercase letter and contain only lowercase letters, numbers, and underscores")
         String name,
+        @Schema(example = "orders_user", description = "Required user-defined database username. It must be unique within the project.", requiredMode = Schema.RequiredMode.REQUIRED)
+        @NotBlank
+        @Size(max = 32)
+        @Pattern(regexp = "^[a-z][a-z0-9_]{0,31}$",
+                message = "must start with a lowercase letter and contain only lowercase letters, numbers, and underscores")
+        String username,
         @Schema(example = "Orders development database") @Size(max = 64) String remark,
         @Schema(example = "POSTGRESQL") @NotNull DatabaseEngine engine,
         @Schema(example = "STANDALONE") @NotNull DatabaseMode mode,
@@ -76,5 +82,33 @@ public record CreateDatabaseRequest(
                                  BackupSettingsRequest backup) {
         this(name, remark, engine, mode, version, size, storageGi, replicas, shards, timezone,
                 allowedCidrs, deletionProtection, tags, null, backup);
+    }
+
+    public CreateDatabaseRequest(String name, String username, String remark,
+                                 DatabaseEngine engine, DatabaseMode mode,
+                                 String version, SizePlan size, int storageGi, int replicas, int shards,
+                                 String timezone, List<String> allowedCidrs,
+                                 boolean deletionProtection, Map<String, String> tags) {
+        this(name, username, remark, engine, mode, version, size, storageGi, replicas, shards,
+                timezone, allowedCidrs, deletionProtection, tags, null, null);
+    }
+
+    public CreateDatabaseRequest(String name, String username, String remark,
+                                 DatabaseEngine engine, DatabaseMode mode,
+                                 String version, SizePlan size, int storageGi, int replicas, int shards,
+                                 String timezone, List<String> allowedCidrs,
+                                 boolean deletionProtection, Map<String, String> tags,
+                                 BackupSettingsRequest backup) {
+        this(name, username, remark, engine, mode, version, size, storageGi, replicas, shards,
+                timezone, allowedCidrs, deletionProtection, tags, null, backup);
+    }
+
+    public CreateDatabaseRequest(String name, String remark, DatabaseEngine engine, DatabaseMode mode,
+                                 String version, SizePlan size, int storageGi, int replicas, int shards,
+                                 String timezone, List<String> allowedCidrs,
+                                 boolean deletionProtection, Map<String, String> tags,
+                                 String password, BackupSettingsRequest backup) {
+        this(name, null, remark, engine, mode, version, size, storageGi, replicas, shards, timezone,
+                allowedCidrs, deletionProtection, tags, password, backup);
     }
 }

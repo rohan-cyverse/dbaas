@@ -97,6 +97,8 @@ class DatabaseServiceTest {
         verify(metadataCreation).save(database.capture(), operation.capture(), any(BackupPolicyMetadata.class));
         assertEquals("orders", database.getValue().getProjectName());
         assertEquals("dbaas-orders", database.getValue().getNamespaceName());
+        assertEquals("orders_db", database.getValue().getLogicalDatabaseName());
+        assertEquals("orders_user", database.getValue().getLogicalUsername());
         assertEquals("orders", operation.getValue().getProjectName());
         verify(provisioning).provision(anyString(), anyString(),
                 anyString(), anyString(), any(CreateDatabaseRequest.class));
@@ -104,7 +106,7 @@ class DatabaseServiceTest {
 
     @Test
     void createMergesRequestedAllowedCidrsWithCallerCidr() {
-        CreateDatabaseRequest request = new CreateDatabaseRequest("orders-db", "Orders",
+        CreateDatabaseRequest request = new CreateDatabaseRequest("orders_db", "orders_user", "Orders",
                 DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2,
                 10, 1, 0, "Asia/Kolkata",
                 List.of("0.0.0.0/0", "157.37.137.185/32"), true, Map.of("env", "test"),
@@ -119,7 +121,7 @@ class DatabaseServiceTest {
 
     @Test
     void createPassesRequestedPasswordToProvisioning() {
-        CreateDatabaseRequest request = new CreateDatabaseRequest("orders-db", "Orders",
+        CreateDatabaseRequest request = new CreateDatabaseRequest("orders_db", "orders_user", "Orders",
                 DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2,
                 10, 1, 0, "Asia/Kolkata",
                 null, true, Map.of("env", "test"), "S3cure_Pass-2026", backup());
@@ -141,7 +143,7 @@ class DatabaseServiceTest {
 
     @Test
     void requiresUserDefinedDatabaseName() {
-        CreateDatabaseRequest unnamed = new CreateDatabaseRequest(null, "Orders", DatabaseEngine.POSTGRESQL,
+        CreateDatabaseRequest unnamed = new CreateDatabaseRequest(null, "orders_user", "Orders", DatabaseEngine.POSTGRESQL,
                 DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2, 10, 1, 0,
                 "Asia/Kolkata", null, true, Map.of("env", "test"),
                 "S3cure_Pass-2026", backup());
@@ -156,13 +158,27 @@ class DatabaseServiceTest {
 
     @Test
     void rejectsDuplicateRequestedDatabaseNameInsteadOfChangingIt() {
-        when(repository.existsByProjectNameAndDisplayName("orders", "orders-db")).thenReturn(true);
+        when(repository.existsByProjectNameAndDisplayName("orders", "orders_db")).thenReturn(true);
 
         ApiException exception = assertThrows(ApiException.class,
                 () -> service.create("orders", "create-orders-004", request(), "157.37.137.185"));
 
         assertEquals(HttpStatus.CONFLICT, exception.getStatus());
         assertEquals("DATABASE_NAME_ALREADY_EXISTS", exception.getCode());
+        verify(metadataCreation, never()).save(any(), any(), any());
+    }
+
+    @Test
+    void rejectsDuplicateRequestedDatabaseUsername() {
+        when(repository.existsByProjectNameAndLogicalUsername("orders", "orders_user"))
+                .thenReturn(true);
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.create("orders", "create-orders-username", request(), "157.37.137.185"));
+
+        assertEquals(HttpStatus.CONFLICT, exception.getStatus());
+        assertEquals("DATABASE_USERNAME_ALREADY_EXISTS", exception.getCode());
+        assertTrue(exception.getMessage().contains("select a different username"));
         verify(metadataCreation, never()).save(any(), any(), any());
     }
 
@@ -523,7 +539,7 @@ class DatabaseServiceTest {
 
     @Test
     void createRequiresBackupConfiguration() {
-        CreateDatabaseRequest missingBackup = new CreateDatabaseRequest("orders-db", "Orders",
+        CreateDatabaseRequest missingBackup = new CreateDatabaseRequest("orders_db", "orders_user", "Orders",
                 DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2,
                 10, 1, 0, "Asia/Kolkata", null, true, Map.of("env", "test"));
 
@@ -536,7 +552,7 @@ class DatabaseServiceTest {
 
     @Test
     void createRequiresUserSuppliedPassword() {
-        CreateDatabaseRequest missingPassword = new CreateDatabaseRequest("orders-db", "Orders",
+        CreateDatabaseRequest missingPassword = new CreateDatabaseRequest("orders_db", "orders_user", "Orders",
                 DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2,
                 10, 1, 0, "Asia/Kolkata", null, true, Map.of("env", "test"), backup());
 
@@ -550,8 +566,24 @@ class DatabaseServiceTest {
     }
 
     @Test
+    void createRequiresUserSuppliedUsername() {
+        CreateDatabaseRequest missingUsername = new CreateDatabaseRequest("orders_db", "Orders",
+                DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2,
+                10, 1, 0, "Asia/Kolkata", null, true, Map.of("env", "test"),
+                "S3cure_Pass-2026", backup());
+
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.create("orders", "create-orders-no-username", missingUsername,
+                        "157.37.137.185"));
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatus());
+        assertEquals("DATABASE_USERNAME_REQUIRED", exception.getCode());
+        verify(provisioning, never()).provision(anyString(), anyString(), anyString(), anyString(), any());
+    }
+
+    @Test
     void createRequiresCompleteBackupConfiguration() {
-        CreateDatabaseRequest incompleteBackup = new CreateDatabaseRequest("orders-db", "Orders",
+        CreateDatabaseRequest incompleteBackup = new CreateDatabaseRequest("orders_db", "orders_user", "Orders",
                 DatabaseEngine.POSTGRESQL, DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2,
                 10, 1, 0, "Asia/Kolkata", null, true, Map.of("env", "test"),
                 new BackupSettingsRequest(true, null, "0 2 * * *", "UTC", false));
@@ -564,7 +596,7 @@ class DatabaseServiceTest {
     }
 
     private CreateDatabaseRequest request() {
-        return new CreateDatabaseRequest("orders-db", "Orders", DatabaseEngine.POSTGRESQL,
+        return new CreateDatabaseRequest("orders_db", "orders_user", "Orders", DatabaseEngine.POSTGRESQL,
                 DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2, 10, 1, 0,
                 "Asia/Kolkata", null, true, Map.of("env", "test"),
                 "S3cure_Pass-2026", backup());

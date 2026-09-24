@@ -16,6 +16,8 @@ public interface DatabaseMetadataRepository extends JpaRepository<DatabaseMetada
     List<DatabaseMetadata> findByProjectNameOrderByCreatedAtDesc(String projectName);
     Optional<DatabaseMetadata> findByDatabaseIdAndProjectName(String databaseId, String projectName);
     boolean existsByProjectNameAndDisplayName(String projectName, String displayName);
+    boolean existsByProjectNameAndLogicalDatabaseName(String projectName, String logicalDatabaseName);
+    boolean existsByProjectNameAndLogicalUsername(String projectName, String logicalUsername);
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select database from DatabaseMetadata database where database.databaseId = :databaseId and database.projectName = :projectName")
     Optional<DatabaseMetadata> findByDatabaseIdAndProjectNameForUpdate(

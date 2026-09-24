@@ -149,9 +149,8 @@ public class RestoreReconciler {
                     "Waiting for restored database replicas");
             return;
         }
-        String restoredLogicalDatabase = CredentialLifecycleService.managedDatabaseName(
-                restore.getSourceDatabaseId());
-        String restoredUsername = CredentialLifecycleService.managedUsername(restore.getSourceDatabaseId());
+        String restoredLogicalDatabase = CredentialLifecycleService.logicalDatabaseName(target);
+        String restoredUsername = CredentialLifecycleService.logicalUsername(target);
         if (!credentialLifecycleService.readyForRestoredCluster(target, temporaryClusterName(restore),
                 restoredLogicalDatabase,
                 restoredUsername)) {
