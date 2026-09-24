@@ -46,6 +46,8 @@ public class DatabaseMetadata {
     private String namespaceName;
     @Column(nullable = false, length = 32)
     private String displayName;
+    @Column(nullable = false, length = 63)
+    private String logicalDatabaseName;
     @Column(length = 63)
     private String activeClusterName;
     @Column(length = 64)

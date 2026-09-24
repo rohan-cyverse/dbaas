@@ -116,6 +116,7 @@ public class DatabaseService {
         database.setProjectName(project);
         database.setNamespaceName(namespace);
         database.setDisplayName(request.name());
+        database.setLogicalDatabaseName(request.name());
         database.setRemark(request.remark());
         database.setEngine(request.engine());
         database.setMode(request.mode());
@@ -274,7 +275,7 @@ public class DatabaseService {
                 .orElse(null);
         if (restore != null) {
             if (!credentialLifecycleService.readyForRestoredDatabase(database,
-                    CredentialLifecycleService.managedDatabaseName(restore.getSourceDatabaseId()),
+                    CredentialLifecycleService.logicalDatabaseName(database),
                     CredentialLifecycleService.managedUsername(restore.getSourceDatabaseId()))) {
                 throw new ApiException(HttpStatus.CONFLICT, "RESTORED_CREDENTIALS_NOT_READY", true,
                         "Restored database credentials are being prepared; retry shortly.");
@@ -744,9 +745,9 @@ public class DatabaseService {
                     "name is required");
         }
         String requestedName = request.name();
-        if (requestedName.length() > 32 || !requestedName.matches("^[a-z][a-z0-9-]*[a-z0-9]$")) {
+        if (requestedName.length() > 32 || !requestedName.matches("^[a-z][a-z0-9_]{0,31}$")) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_DATABASE_NAME", false,
-                    "name must contain lowercase letters, numbers and hyphens, start with a letter, and end with a letter or number");
+                    "name must start with a lowercase letter and contain only lowercase letters, numbers, and underscores");
         }
         return new CreateDatabaseRequest(requestedName, request.remark(), request.engine(),
                 request.mode(), request.version(), request.size(), request.storageGi(),

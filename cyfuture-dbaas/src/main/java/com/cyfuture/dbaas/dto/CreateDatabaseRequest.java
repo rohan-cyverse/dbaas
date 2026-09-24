@@ -16,11 +16,11 @@ import java.util.List;
 import java.util.Map;
 
 public record CreateDatabaseRequest(
-        @Schema(example = "orders-postgres", description = "Required user-defined database name. The value is preserved exactly and must be unique within the project.", requiredMode = Schema.RequiredMode.REQUIRED)
+        @Schema(example = "orders_db", description = "Required user-defined database name. This exact name is created inside PostgreSQL, MySQL, or MongoDB and is also used as the display name. It must be unique within the project.", requiredMode = Schema.RequiredMode.REQUIRED)
         @NotBlank
         @Size(max = 32)
-        @Pattern(regexp = "^[a-z][a-z0-9-]*[a-z0-9]$",
-                message = "must contain lowercase letters, numbers and hyphens, and start with a letter")
+        @Pattern(regexp = "^[a-z][a-z0-9_]{0,31}$",
+                message = "must start with a lowercase letter and contain only lowercase letters, numbers, and underscores")
         String name,
         @Schema(example = "Orders development database") @Size(max = 64) String remark,
         @Schema(example = "POSTGRESQL") @NotNull DatabaseEngine engine,
