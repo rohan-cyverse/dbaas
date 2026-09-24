@@ -12,4 +12,6 @@ public interface BackupPolicyMetadataRepository extends JpaRepository<BackupPoli
     List<BackupPolicyMetadata> findByPolicyStatusInOrderByUpdatedAtAsc(
             Collection<BackupPolicyStatus> statuses);
     List<BackupPolicyMetadata> findByProjectNameOrderByUpdatedAtDesc(String projectName);
+    void deleteByProjectNameAndDatabaseId(String projectName, String databaseId);
+    void deleteByProjectName(String projectName);
 }

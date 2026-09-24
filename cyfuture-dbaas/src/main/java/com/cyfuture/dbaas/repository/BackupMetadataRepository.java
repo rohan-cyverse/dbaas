@@ -33,4 +33,6 @@ public interface BackupMetadataRepository extends JpaRepository<BackupMetadata, 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select backup from BackupMetadata backup where backup.backupId = :backupId")
     Optional<BackupMetadata> findByBackupIdForUpdate(@Param("backupId") String backupId);
+    void deleteByProjectNameAndDatabaseId(String projectName, String databaseId);
+    void deleteByProjectName(String projectName);
 }

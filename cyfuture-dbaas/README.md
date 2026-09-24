@@ -106,7 +106,9 @@ meaning: remove the known backup and its retained data.
 
 - Projects: `/api/v1/projects`
 - Databases: `/api/v1/projects/{projectId}/databases`
-- Database connection and credentials: database-scoped connection and rotation routes
+- Database creation requires a unique user-defined `name` and a user-defined `password`.
+- Database connection and credentials: database-scoped connection route and
+  `PUT /api/v1/projects/{projectId}/databases/{databaseId}/credentials/password`
 - General asynchronous database operations: `/api/v1/operations/{operationId}`
 
 Swagger UI is available at `/swagger-ui.html`.

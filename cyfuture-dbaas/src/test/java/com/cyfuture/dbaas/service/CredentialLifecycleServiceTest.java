@@ -240,11 +240,42 @@ class CredentialLifecycleServiceTest {
                 .execute()).thenReturn(secret);
         when(operations.findById("op-rotate0001")).thenReturn(Optional.of(operation));
 
-        OperationResponse response = service.rotate(database());
+        OperationResponse response = service.rotate(database(), "N3w_Secure-Pass-2026");
 
         assertEquals("op-rotate0001", response.operationId());
         assertEquals(OperationStatus.RUNNING, response.status());
         verify(operations, never()).save(any());
+    }
+
+    @Test
+    void rotationStoresTheUserRequestedPassword() throws Exception {
+        CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        BatchV1Api batch = mock(BatchV1Api.class, RETURNS_DEEP_STUBS);
+        OperationMetadataRepository operations = mock(OperationMetadataRepository.class);
+        CredentialLifecycleService service = new CredentialLifecycleService(
+                mock(KubeBlocksClient.class), new DatabaseProperties(), operations,
+                new OperationMapper(), core, batch);
+        V1Secret secret = new V1Secret()
+                .metadata(new V1ObjectMeta().name("db-orders0001-managed-credentials")
+                        .annotations(new LinkedHashMap<>(Map.of(
+                                "dbaas.cyfuture.com/credential-status", "READY",
+                                "dbaas.cyfuture.com/credential-generation", "1"))))
+                .data(new LinkedHashMap<>(Map.of(
+                        "password", "Old_Secure-Pass-2025".getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+        when(core.readNamespacedSecret("db-orders0001-managed-credentials", "dbaas-orders")
+                .execute()).thenReturn(secret);
+
+        service.rotate(database(), "N3w_Secure-Pass-2026");
+
+        ArgumentCaptor<V1Secret> updated = ArgumentCaptor.forClass(V1Secret.class);
+        verify(core).replaceNamespacedSecret(org.mockito.ArgumentMatchers.eq(
+                "db-orders0001-managed-credentials"), org.mockito.ArgumentMatchers.eq("dbaas-orders"),
+                updated.capture());
+        assertEquals("N3w_Secure-Pass-2026", new String(updated.getValue().getData().get("password"),
+                java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals("Old_Secure-Pass-2025", new String(
+                updated.getValue().getData().get("previous-password"),
+                java.nio.charset.StandardCharsets.UTF_8));
     }
 
     @Test

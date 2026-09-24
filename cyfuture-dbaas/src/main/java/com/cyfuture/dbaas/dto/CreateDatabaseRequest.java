@@ -16,7 +16,8 @@ import java.util.List;
 import java.util.Map;
 
 public record CreateDatabaseRequest(
-        @Schema(example = "orders-postgres", description = "Optional display name. When omitted, DBaaS allocates a unique handle such as pg-silver-orchid-k7f9. A duplicate requested name receives a short suffix.")
+        @Schema(example = "orders-postgres", description = "Required user-defined database name. The value is preserved exactly and must be unique within the project.", requiredMode = Schema.RequiredMode.REQUIRED)
+        @NotBlank
         @Size(max = 32)
         @Pattern(regexp = "^[a-z][a-z0-9-]*[a-z0-9]$",
                 message = "must contain lowercase letters, numbers and hyphens, and start with a letter")
@@ -37,8 +38,10 @@ public record CreateDatabaseRequest(
         @Schema(
                 example = "S3cure_Pass-2026",
                 accessMode = Schema.AccessMode.WRITE_ONLY,
-                description = "Optional managed database password. Omit to let DBaaS generate one."
+                description = "Required password for the managed database user.",
+                requiredMode = Schema.RequiredMode.REQUIRED
         )
+        @NotBlank
         @Size(min = 8, max = 128)
         @Pattern(regexp = "^[A-Za-z0-9_@#%+=:,.?-]+$",
                 message = "must be 8-128 characters using letters, numbers, and _ @ # % + = : , . ? -")
