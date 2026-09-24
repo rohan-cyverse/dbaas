@@ -209,7 +209,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"remark\":\"Create PostgreSQL - Standalone created from Postman\",\"engine\":\"POSTGRESQL\",\"mode\":\"STANDALONE\",\"version\":\"17.5.0\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":1,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"password\":\"S3cure_Pass-2026\",\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"},\"backup\":{\"scheduled\":true,\"retentionDays\":7,\"schedule\":\"0 2 * * *\",\"timezone\":\"UTC\",\"pitrEnabled\":false}}"
+              "raw": "{\"name\":\"pg-standalone-{{$randomInt}}\",\"remark\":\"Create PostgreSQL - Standalone created from Postman\",\"engine\":\"POSTGRESQL\",\"mode\":\"STANDALONE\",\"version\":\"17.5.0\",\"size\":\"C1G2\",\"storageGi\":20,\"replicas\":1,\"shards\":0,\"timezone\":\"Asia/Kolkata\",\"deletionProtection\":true,\"password\":\"S3cure_Pass-2026\",\"tags\":{\"environment\":\"test\",\"createdBy\":\"postman\"},\"backup\":{\"scheduled\":true,\"retentionDays\":7,\"schedule\":\"0 2 * * *\",\"timezone\":\"UTC\",\"pitrEnabled\":false}}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/v1/projects/{{projectId}}/databases",

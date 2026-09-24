@@ -64,7 +64,7 @@ public class DatabaseController {
     @PostMapping
     @Operation(
             summary = "Provision a database",
-            description = "Starts asynchronous provisioning with automatic public access. Backup configuration is required at creation: explicitly choose scheduling, retention, timezone, and PITR. Omit name to receive a unique, engine-prefixed display handle."
+            description = "Starts asynchronous provisioning with automatic public access. A unique user-defined name and password are required. Backup configuration is required at creation: explicitly choose scheduling, retention, timezone, and PITR."
     )
     public ResponseEntity<CreateDatabaseResponse> create(
             @PathVariable String project,

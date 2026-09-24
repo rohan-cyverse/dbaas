@@ -61,8 +61,6 @@ public class DatabaseService {
     private static final Pattern IDEMPOTENCY_KEY = Pattern.compile("^[A-Za-z0-9._:-]{8,128}$");
     private static final Pattern MANAGED_PASSWORD = Pattern.compile("^[A-Za-z0-9_@#%+=:,.?-]{8,128}$");
     private static final int MAX_ALLOWED_CIDRS = 10;
-    private static final int MAX_DISPLAY_NAME_LENGTH = 32;
-    private static final int NAME_ALLOCATION_ATTEMPTS = 12;
 
     private final KubeBlocksClient kubeBlocksClient;
     private final DatabaseProperties properties;
@@ -93,13 +91,14 @@ public class DatabaseService {
         validateBackupConfigurationForCreation(request.backup());
         validateInitialPassword(request.password());
         request = withBackup(request, backupPolicyService.normalizeForCreation(request.backup()));
+        request = withRequestedName(request);
         String requestHash = requestHash(request);
         DatabaseMetadata existing = databaseRepository
                 .findByProjectNameAndIdempotencyKey(project, idempotencyKey)
                 .orElse(null);
         if (existing != null) return duplicateResponse(existing, requestHash);
 
-        request = withAllocatedName(project, request);
+        ensureNameAvailable(project, request.name());
 
         validateVersion(request);
         validateMode(request);
@@ -154,8 +153,13 @@ public class DatabaseService {
         } catch (DataIntegrityViolationException exception) {
             DatabaseMetadata duplicate = databaseRepository
                     .findByProjectNameAndIdempotencyKey(project, idempotencyKey)
-                    .orElseThrow(() -> exception);
-            return duplicateResponse(duplicate, requestHash);
+                    .orElse(null);
+            if (duplicate != null) return duplicateResponse(duplicate, requestHash);
+            if (databaseRepository.existsByProjectNameAndDisplayName(project, request.name())) {
+                throw new ApiException(HttpStatus.CONFLICT, "DATABASE_NAME_ALREADY_EXISTS", false,
+                        "Database name '" + request.name() + "' is already in use in this project");
+            }
+            throw exception;
         }
 
         provisioningService.provision(operationId, databaseId, project,
@@ -734,15 +738,27 @@ public class DatabaseService {
                 request.deletionProtection(), request.tags(), request.password(), request.backup());
     }
 
-    private CreateDatabaseRequest withAllocatedName(String project, CreateDatabaseRequest request) {
-        String requestedName = request.name() == null ? null : request.name().trim();
-        String displayName = requestedName == null || requestedName.isBlank()
-                ? allocateGeneratedName(project, request.engine())
-                : allocateRequestedName(project, requestedName);
-        return new CreateDatabaseRequest(displayName, request.remark(), request.engine(),
+    private CreateDatabaseRequest withRequestedName(CreateDatabaseRequest request) {
+        if (request.name() == null || request.name().isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "DATABASE_NAME_REQUIRED", false,
+                    "name is required");
+        }
+        String requestedName = request.name();
+        if (requestedName.length() > 32 || !requestedName.matches("^[a-z][a-z0-9-]*[a-z0-9]$")) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_DATABASE_NAME", false,
+                    "name must contain lowercase letters, numbers and hyphens, start with a letter, and end with a letter or number");
+        }
+        return new CreateDatabaseRequest(requestedName, request.remark(), request.engine(),
                 request.mode(), request.version(), request.size(), request.storageGi(),
                 request.replicas(), request.shards(), request.timezone(), request.allowedCidrs(),
                 request.deletionProtection(), request.tags(), request.password(), request.backup());
+    }
+
+    private void ensureNameAvailable(String project, String requestedName) {
+        if (databaseRepository.existsByProjectNameAndDisplayName(project, requestedName)) {
+            throw new ApiException(HttpStatus.CONFLICT, "DATABASE_NAME_ALREADY_EXISTS", false,
+                    "Database name '" + requestedName + "' is already in use in this project");
+        }
     }
 
     private CreateDatabaseRequest withBackup(CreateDatabaseRequest request,
@@ -758,36 +774,6 @@ public class DatabaseService {
         return String.valueOf(request.backup().scheduled()) + "|" + request.backup().retentionDays() + "|"
                 + request.backup().schedule() + "|" + request.backup().timezone() + "|"
                 + request.backup().pitrEnabled();
-    }
-
-    private String allocateGeneratedName(String project, DatabaseEngine engine) {
-        for (int attempt = 0; attempt < NAME_ALLOCATION_ATTEMPTS; attempt++) {
-            String candidate = friendlyNameGenerator.nextDatabaseName(engine);
-            if (!databaseRepository.existsByProjectNameAndDisplayName(project, candidate)) {
-                return candidate;
-            }
-        }
-        throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "DATABASE_NAME_ALLOCATION_FAILED", true,
-                "Unable to allocate a unique database name; retry the request");
-    }
-
-    private String allocateRequestedName(String project, String requestedName) {
-        if (!databaseRepository.existsByProjectNameAndDisplayName(project, requestedName)) {
-            return requestedName;
-        }
-        for (int attempt = 0; attempt < NAME_ALLOCATION_ATTEMPTS; attempt++) {
-            String candidate = appendSuffix(requestedName, friendlyNameGenerator.nextShortSuffix());
-            if (!databaseRepository.existsByProjectNameAndDisplayName(project, candidate)) {
-                return candidate;
-            }
-        }
-        throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "DATABASE_NAME_ALLOCATION_FAILED", true,
-                "Unable to allocate a unique database name; retry the request");
-    }
-
-    private String appendSuffix(String name, String suffix) {
-        int baseLength = MAX_DISPLAY_NAME_LENGTH - suffix.length() - 1;
-        return name.substring(0, Math.min(name.length(), baseLength)) + "-" + suffix;
     }
 
     private String connectionUri(DatabaseEngine engine, DatabaseMode mode, boolean publicRoute,

@@ -140,33 +140,30 @@ class DatabaseServiceTest {
     }
 
     @Test
-    void createsFriendlyDatabaseNameWhenNameIsOmitted() {
-        when(friendlyNames.nextDatabaseName(DatabaseEngine.POSTGRESQL))
-                .thenReturn("pg-quiet-mango-a7k9");
+    void requiresUserDefinedDatabaseName() {
         CreateDatabaseRequest unnamed = new CreateDatabaseRequest(null, "Orders", DatabaseEngine.POSTGRESQL,
                 DatabaseMode.STANDALONE, "17.5.0", SizePlan.C1G2, 10, 1, 0,
                 "Asia/Kolkata", null, true, Map.of("env", "test"),
                 "S3cure_Pass-2026", backup());
 
-        var response = service.create("orders", "create-orders-003", unnamed, "157.37.137.185");
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.create("orders", "create-orders-003", unnamed, "157.37.137.185"));
 
-        ArgumentCaptor<DatabaseMetadata> database = ArgumentCaptor.forClass(DatabaseMetadata.class);
-        verify(metadataCreation).save(database.capture(), any(OperationMetadata.class), any(BackupPolicyMetadata.class));
-        assertEquals("pg-quiet-mango-a7k9", database.getValue().getDisplayName());
-        assertEquals("pg-quiet-mango-a7k9", response.name());
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatus());
+        assertEquals("DATABASE_NAME_REQUIRED", exception.getCode());
+        verify(metadataCreation, never()).save(any(), any(), any());
     }
 
     @Test
-    void addsAShortSuffixWhenTheRequestedDatabaseNameIsAlreadyTaken() {
+    void rejectsDuplicateRequestedDatabaseNameInsteadOfChangingIt() {
         when(repository.existsByProjectNameAndDisplayName("orders", "orders-db")).thenReturn(true);
-        when(friendlyNames.nextShortSuffix()).thenReturn("m4p7");
 
-        var response = service.create("orders", "create-orders-004", request(), "157.37.137.185");
+        ApiException exception = assertThrows(ApiException.class,
+                () -> service.create("orders", "create-orders-004", request(), "157.37.137.185"));
 
-        ArgumentCaptor<DatabaseMetadata> database = ArgumentCaptor.forClass(DatabaseMetadata.class);
-        verify(metadataCreation).save(database.capture(), any(OperationMetadata.class), any(BackupPolicyMetadata.class));
-        assertEquals("orders-db-m4p7", database.getValue().getDisplayName());
-        assertEquals("orders-db-m4p7", response.name());
+        assertEquals(HttpStatus.CONFLICT, exception.getStatus());
+        assertEquals("DATABASE_NAME_ALREADY_EXISTS", exception.getCode());
+        verify(metadataCreation, never()).save(any(), any(), any());
     }
 
     @Test
