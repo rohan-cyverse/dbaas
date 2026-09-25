@@ -98,11 +98,7 @@ public class BackupReconciler {
         }
         KubeBlocksClient.BackupObservation observed = observe(backup, namespace);
         if (!observed.exists()) {
-            backup.setStatus(backup.getExpiresAt() != null && !backup.getExpiresAt().isAfter(Instant.now())
-                    ? BackupStatus.EXPIRED : BackupStatus.DELETED);
-            backup.setDeletedAt(Instant.now());
-            backup.setLastObservedAt(Instant.now());
-            backupRepository.save(backup);
+            backupRepository.delete(backup);
             return;
         }
         deletionSubmitter.delete(backup.getBackupId());

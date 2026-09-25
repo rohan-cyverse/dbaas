@@ -149,7 +149,7 @@ class ProjectServiceTest {
     }
 
     @Test
-    void deletionReconciliationWaitsForAnActiveKubernetesBackup() {
+    void deletionReconciliationDoesNotWaitForAnActiveKubernetesBackup() {
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("prj-orders0001");
         project.setNamespaceName("dbaas-p-prj-orders0001");
@@ -161,11 +161,16 @@ class ProjectServiceTest {
                 .thenReturn(java.util.List.of(database));
         when(kubeBlocksClient.hasActiveBackup(database.getNamespaceName(), database.getDatabaseId()))
                 .thenReturn(true);
+        when(kubeBlocksClient.observeCluster(database.getNamespaceName(), database.getDatabaseId()))
+                .thenReturn(KubeBlocksClient.ClusterObservation.missing(
+                        database.getNamespaceName(), database.getDatabaseId()));
 
         service.reconcileDeletion(project);
 
-        verify(kubeBlocksClient, never()).prepareProjectDatabaseDeletion(any(), any());
-        verify(kubeBlocksClient, never()).deleteProjectNamespace(any(), any());
+        verify(kubeBlocksClient).prepareProjectDatabaseDeletion(
+                database.getNamespaceName(), database.getDatabaseId());
+        verify(kubeBlocksClient).deleteProjectNamespace(
+                project.getNamespaceName(), project.getProjectId());
     }
 
     @Test
@@ -200,7 +205,8 @@ class ProjectServiceTest {
         service.reconcileDeletion(project);
 
         verify(retention).prepareProjectBackupDeletion(project.getProjectId());
-        verify(kubeBlocksClient, never()).deleteProjectNamespace(any(), any());
+        verify(kubeBlocksClient).deleteProjectNamespace(
+                project.getNamespaceName(), project.getProjectId());
     }
 
     @Test

@@ -17,6 +17,7 @@ public interface RestoreRequestMetadataRepository extends JpaRepository<RestoreR
             String projectName, String sourceDatabaseId, String idempotencyKey);
     List<RestoreRequestMetadata> findByProjectNameAndSourceDatabaseIdOrderByCreatedAtDesc(
             String projectName, String sourceDatabaseId);
+    List<RestoreRequestMetadata> findByProjectNameOrderByCreatedAtDesc(String projectName);
     Optional<RestoreRequestMetadata> findByRestoreIdAndProjectNameAndSourceDatabaseId(
             String restoreId, String projectName, String sourceDatabaseId);
     Optional<RestoreRequestMetadata> findFirstByProjectNameAndSourceDatabaseIdAndTemporaryTrueAndPromotedAtIsNullAndDeletedAtIsNullAndStatusInOrderByCreatedAtDesc(

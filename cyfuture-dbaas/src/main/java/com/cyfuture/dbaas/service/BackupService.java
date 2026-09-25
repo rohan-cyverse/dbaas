@@ -154,17 +154,6 @@ public class BackupService {
                 || backup.getStatus() == BackupStatus.DELETING) {
             return response(backup);
         }
-        if (restoreRepository.existsByProjectNameAndSourceBackupIdAndStatusIn(project, backupId,
-                List.of(com.cyfuture.dbaas.model.RestoreStatus.PENDING,
-                        com.cyfuture.dbaas.model.RestoreStatus.SAFETY_BACKUP,
-                        com.cyfuture.dbaas.model.RestoreStatus.RESTORING,
-                        com.cyfuture.dbaas.model.RestoreStatus.VALIDATING,
-                        com.cyfuture.dbaas.model.RestoreStatus.CUTTING_OVER,
-                        com.cyfuture.dbaas.model.RestoreStatus.ROLLING_BACK,
-                        com.cyfuture.dbaas.model.RestoreStatus.RUNNING))) {
-            throw new ApiException(HttpStatus.CONFLICT, "BACKUP_RESTORE_IN_PROGRESS", false,
-                    "The backup cannot be deleted while a restore is running.");
-        }
         backup.setStatus(BackupStatus.DELETING);
         backup.setDeleteRequestedAt(Instant.now());
         backup.setFailureCode(null);

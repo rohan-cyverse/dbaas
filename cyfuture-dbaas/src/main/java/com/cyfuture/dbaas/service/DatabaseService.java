@@ -342,21 +342,13 @@ public class DatabaseService {
         if (database.getStatus() == DatabaseStatus.DELETING) {
             return deletionResponse(database);
         }
-        if (restoreRepository.existsByProjectNameAndSourceDatabaseIdAndStatusIn(project, databaseId,
-                List.of(RestoreStatus.PENDING, RestoreStatus.SAFETY_BACKUP, RestoreStatus.RESTORING,
-                        RestoreStatus.VALIDATING, RestoreStatus.CUTTING_OVER, RestoreStatus.ROLLING_BACK,
-                        RestoreStatus.RUNNING))
-                || restoreRepository.existsByRestoredDatabaseIdAndStatusIn(databaseId,
-                List.of(RestoreStatus.PENDING, RestoreStatus.SAFETY_BACKUP, RestoreStatus.RESTORING,
-                        RestoreStatus.VALIDATING, RestoreStatus.CUTTING_OVER, RestoreStatus.ROLLING_BACK,
-                        RestoreStatus.RUNNING))) {
-            throw new ApiException(HttpStatus.CONFLICT, "RESTORE_IN_PROGRESS", false,
-                    "A restore is using this database. Wait for it to finish before deleting the database.");
-        }
         operationRepository.findByDatabaseIdAndProjectNameAndStatusIn(databaseId, project,
                         List.of(OperationStatus.PENDING, OperationStatus.RUNNING))
                 .stream()
-                .filter(operation -> operation.getType() != OperationType.DELETE)
+                .filter(operation -> operation.getType() != OperationType.DELETE
+                        && operation.getType() != OperationType.BACKUP
+                        && operation.getType() != OperationType.BACKUP_POLICY_UPDATE
+                        && operation.getType() != OperationType.RESTORE)
                 .findFirst()
                 .ifPresent(operation -> {
                     throw new ApiException(HttpStatus.CONFLICT, "DATABASE_OPERATION_IN_PROGRESS", false,

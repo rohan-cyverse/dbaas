@@ -208,11 +208,20 @@ public class KubeBlocksClient {
             Map<String, Object> cluster = new LinkedHashMap<>(asMap(
                     customObjectsApi.getNamespacedCustomObject(
                             GROUP, VERSION, namespace, CLUSTERS, databaseId).execute()));
+            Map<String, Object> metadata = mutableChildMap(cluster, "metadata");
+            if (metadata.get("deletionTimestamp") != null) {
+                // A previous request already selected WipeOut and Kubernetes accepted
+                // deletion. Clear only the stale KubeBlocks finalizer on this exact
+                // database resource so reconciliation cannot remain stuck forever.
+                metadata.put("finalizers", List.of());
+                customObjectsApi.replaceNamespacedCustomObject(
+                        GROUP, VERSION, namespace, CLUSTERS, databaseId, cluster).execute();
+                return;
+            }
             // KubeBlocks' Delete policy removes the Cluster but deliberately
             // retains its PVCs. A DBaaS database delete is destructive, so use
             // WipeOut to remove the cluster-owned storage as well.
             mutableChildMap(cluster, "spec").put("terminationPolicy", "WipeOut");
-            Map<String, Object> metadata = mutableChildMap(cluster, "metadata");
             Map<String, Object> annotations = mutableChildMap(metadata, "annotations");
             annotations.put("dbaas.cyfuture.com/deletion-protection", "false");
             customObjectsApi.replaceNamespacedCustomObject(
@@ -369,6 +378,11 @@ public class KubeBlocksClient {
         try {
             V1Namespace existing = coreV1Api.readNamespace(namespace).execute();
             validateNamespaceOwnership(existing, project);
+            if (existing.getMetadata() != null && existing.getMetadata().getDeletionTimestamp() != null) {
+                if (existing.getSpec() != null) existing.getSpec().setFinalizers(List.of());
+                coreV1Api.replaceNamespaceFinalize(namespace, existing).execute();
+                return;
+            }
             coreV1Api.deleteNamespace(namespace).execute();
         } catch (io.kubernetes.client.openapi.ApiException exception) {
             // A repeated project delete is safe after Kubernetes has already
@@ -1057,6 +1071,18 @@ public class KubeBlocksClient {
                     throw new ApiException(HttpStatus.CONFLICT, "BACKUP_RESOURCE_NOT_MANAGED", false,
                             "The KubeBlocks Backup resource is not managed by this DBaaS backup.");
                 }
+                Map<String, Object> metadata = mutableChildMap(backup, "metadata");
+                if (metadata.get("deletionTimestamp") != null) {
+                    // KubeBlocks occasionally leaves its data-protection finalizer behind
+                    // after accepting deletion. This is a retry for the exact, verified
+                    // DBaaS resource, after deletionPolicy was switched to Delete by the
+                    // first attempt, so allow Kubernetes to finish removing the stale CR.
+                    metadata.put("finalizers", List.of());
+                    customObjectsApi.replaceNamespacedCustomObject(
+                            DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, BACKUPS,
+                            backupName, backup).execute();
+                    return;
+                }
                 // Existing backups may have been created by an older release
                 // with Retain. Switch only this verified DBaaS-owned resource
                 // before deletion so DELETE always has one product meaning.
@@ -1076,6 +1102,50 @@ public class KubeBlocksClient {
                 if (exception.getCode() == 404) return;
                 throw backupApiFailure("delete the Backup resource", exception);
             }
+        }
+    }
+
+    /** Deletes the KubeBlocks resources belonging to a durable DBaaS restore record. */
+    public void deleteManagedRestore(String namespace, String project, String databaseId,
+                                     String operationId, String opsRequestName, String restoreName) {
+        try {
+            if (restoreName != null && !restoreName.isBlank()) {
+                try {
+                    Map<String, Object> restore = asMap(customObjectsApi.getNamespacedCustomObject(
+                            DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, RESTORES, restoreName)
+                            .execute());
+                    if (!ownedRestore(restore, opsRequestName)) {
+                        throw new ApiException(HttpStatus.CONFLICT, "RESTORE_RESOURCE_NOT_MANAGED", false,
+                                "The KubeBlocks Restore resource is not managed by this DBaaS restore.");
+                    }
+                    customObjectsApi.deleteNamespacedCustomObject(
+                            DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, RESTORES, restoreName)
+                            .execute();
+                } catch (io.kubernetes.client.openapi.ApiException exception) {
+                    if (exception.getCode() != 404) throw exception;
+                }
+            }
+            if (opsRequestName != null && !opsRequestName.isBlank()) {
+                try {
+                    Map<String, Object> ops = asMap(customObjectsApi.getNamespacedCustomObject(
+                            OPS_GROUP, OPS_VERSION, namespace, OPS_REQUESTS, opsRequestName).execute());
+                    Map<String, Object> labels = asMap(asMap(ops.get("metadata")).get("labels"));
+                    boolean owned = "cyfuture-dbaas".equals(String.valueOf(labels.get(MANAGED_BY_LABEL)))
+                            && project.equals(String.valueOf(labels.get(PROJECT_LABEL)))
+                            && databaseId.equals(String.valueOf(labels.get(DATABASE_LABEL)))
+                            && operationId.equals(String.valueOf(labels.get(OPERATION_ID_LABEL)));
+                    if (!owned) {
+                        throw new ApiException(HttpStatus.CONFLICT, "RESTORE_RESOURCE_NOT_MANAGED", false,
+                                "The KubeBlocks Restore OpsRequest is not managed by this DBaaS restore.");
+                    }
+                    customObjectsApi.deleteNamespacedCustomObject(
+                            OPS_GROUP, OPS_VERSION, namespace, OPS_REQUESTS, opsRequestName).execute();
+                } catch (io.kubernetes.client.openapi.ApiException exception) {
+                    if (exception.getCode() != 404) throw exception;
+                }
+            }
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw backupApiFailure("delete the restore resources", exception);
         }
     }
 
