@@ -78,6 +78,66 @@ class KubeBlocksOperationReconcilerTest {
     }
 
     @Test
+    void horizontalScalingWaitsForClusterReadinessAfterOpsRequestSucceeds() {
+        OperationMetadataRepository operationRepository = mock(OperationMetadataRepository.class);
+        DatabaseMetadataRepository databaseRepository = mock(DatabaseMetadataRepository.class);
+        KubeBlocksClient kubeBlocksClient = mock(KubeBlocksClient.class);
+        KubeBlocksOperationReconciler reconciler = new KubeBlocksOperationReconciler(
+                operationRepository, databaseRepository, kubeBlocksClient);
+
+        DatabaseMetadata database = database();
+        OperationMetadata operation = operation();
+        operation.setComponentName("postgresql");
+        operation.setTargetReplicas(3);
+        when(databaseRepository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(kubeBlocksClient.getOpsRequest("dbaas-orders", "op-scale0001"))
+                .thenReturn(new KubeBlocksClient.OpsRequestInfo("Succeed", "1/1",
+                        "done", Instant.now(), Instant.now()));
+        when(kubeBlocksClient.observeCluster("dbaas-orders", "db-orders0001"))
+                .thenReturn(new KubeBlocksClient.ClusterObservation(true, "dbaas-orders",
+                        "db-orders0001", "Running", 2, 3, true,
+                        "Waiting for database Pods: 2/3"));
+
+        reconciler.reconcile(operation);
+
+        assertEquals(OperationStatus.RUNNING, operation.getStatus());
+        assertEquals(95, operation.getProgress());
+        assertEquals("Waiting for database Pods: 2/3", operation.getMessage());
+        verify(operationRepository).save(operation);
+        verify(databaseRepository, never()).save(database);
+    }
+
+    @Test
+    void horizontalScalingCompletesOnlyAfterClusterIsHealthy() {
+        OperationMetadataRepository operationRepository = mock(OperationMetadataRepository.class);
+        DatabaseMetadataRepository databaseRepository = mock(DatabaseMetadataRepository.class);
+        KubeBlocksClient kubeBlocksClient = mock(KubeBlocksClient.class);
+        KubeBlocksOperationReconciler reconciler = new KubeBlocksOperationReconciler(
+                operationRepository, databaseRepository, kubeBlocksClient);
+
+        DatabaseMetadata database = database();
+        OperationMetadata operation = operation();
+        operation.setComponentName("postgresql");
+        operation.setTargetReplicas(3);
+        when(databaseRepository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(kubeBlocksClient.getOpsRequest("dbaas-orders", "op-scale0001"))
+                .thenReturn(new KubeBlocksClient.OpsRequestInfo("Succeed", "1/1",
+                        "done", Instant.now(), Instant.now()));
+        when(kubeBlocksClient.observeCluster("dbaas-orders", "db-orders0001"))
+                .thenReturn(new KubeBlocksClient.ClusterObservation(true, "dbaas-orders",
+                        "db-orders0001", "Running", 3, 3, true,
+                        "Database is ready"));
+
+        reconciler.reconcile(operation);
+
+        assertEquals(OperationStatus.SUCCEEDED, operation.getStatus());
+        assertEquals(3, database.getReplicas());
+        verify(databaseRepository).save(database);
+    }
+
+    @Test
     void verticalScalingWaitsForActualPodResourcesAfterOpsRequestSucceeds() {
         OperationMetadataRepository operationRepository = mock(OperationMetadataRepository.class);
         DatabaseMetadataRepository databaseRepository = mock(DatabaseMetadataRepository.class);

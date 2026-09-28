@@ -61,6 +61,9 @@ public class KubeBlocksOperationReconciler {
             if (operation.getType() == OperationType.VERTICAL_SCALING) {
                 status = reconcileVerticalScaling(database, operation, live, status);
             }
+            if (operation.getType() == OperationType.HORIZONTAL_SCALING) {
+                status = reconcileHorizontalScaling(database, operation, status);
+            }
             operation.setStatus(status);
             operation.setProvisioningStage(status == OperationStatus.FAILED
                     ? ProvisioningStage.FAILED
@@ -120,6 +123,20 @@ public class KubeBlocksOperationReconciler {
             return OperationStatus.FAILED;
         }
         return reported;
+    }
+
+    private OperationStatus reconcileHorizontalScaling(DatabaseMetadata database,
+                                                       OperationMetadata operation,
+                                                       OperationStatus reported) {
+        if (reported != OperationStatus.SUCCEEDED) return reported;
+
+        KubeBlocksClient.ClusterObservation observation = kubeBlocksClient.observeCluster(
+                database.getNamespaceName(), database.physicalClusterName());
+        if (observation.healthy()) return OperationStatus.SUCCEEDED;
+
+        operation.setMessage(safeMessage(observation.message()));
+        operation.setProgress(95);
+        return OperationStatus.RUNNING;
     }
 
     private boolean instanceUpdateRestricted(KubeBlocksClient.OpsRequestInfo live) {
