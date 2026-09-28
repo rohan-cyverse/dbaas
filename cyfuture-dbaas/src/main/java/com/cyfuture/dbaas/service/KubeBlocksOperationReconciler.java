@@ -32,10 +32,7 @@ public class KubeBlocksOperationReconciler {
     public void reconcile() {
         for (OperationMetadata operation : operationRepository.findByStatusIn(
                 List.of(OperationStatus.PENDING, OperationStatus.RUNNING))) {
-            if (operation.getType() == OperationType.CREATE
-                    || operation.getType() == OperationType.DELETE
-                    || operation.getType() == OperationType.BACKUP
-                    || operation.getType() == OperationType.RESTORE) continue;
+            if (!isKubeBlocksLifecycleOperation(operation.getType())) continue;
             reconcile(operation);
         }
     }
@@ -187,6 +184,13 @@ public class KubeBlocksOperationReconciler {
                     ? "shard" : "mongodb";
         };
         return configured.equals(componentName);
+    }
+
+    private boolean isKubeBlocksLifecycleOperation(OperationType type) {
+        return type == OperationType.VERTICAL_SCALING
+                || type == OperationType.HORIZONTAL_SCALING
+                || type == OperationType.STORAGE_EXPANSION
+                || type == OperationType.RESTART;
     }
 
     private OperationStatus status(String phase) {

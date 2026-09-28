@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -25,6 +26,26 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.never;
 
 class KubeBlocksOperationReconcilerTest {
+    @Test
+    void scheduledReconcileIgnoresCredentialRotationOperations() {
+        OperationMetadataRepository operationRepository = mock(OperationMetadataRepository.class);
+        DatabaseMetadataRepository databaseRepository = mock(DatabaseMetadataRepository.class);
+        KubeBlocksClient kubeBlocksClient = mock(KubeBlocksClient.class);
+        KubeBlocksOperationReconciler reconciler = new KubeBlocksOperationReconciler(
+                operationRepository, databaseRepository, kubeBlocksClient);
+        OperationMetadata operation = operation();
+        operation.setType(OperationType.ROTATE_CREDENTIALS);
+        operation.setOpsRequestName(null);
+        when(operationRepository.findByStatusIn(List.of(OperationStatus.PENDING, OperationStatus.RUNNING)))
+                .thenReturn(List.of(operation));
+
+        reconciler.reconcile();
+
+        verify(databaseRepository, never()).findByDatabaseIdAndProjectName(any(), any());
+        verify(kubeBlocksClient, never()).getOpsRequest(any(), any());
+        verify(operationRepository, never()).save(operation);
+    }
+
     @Test
     void failedOpsRequestFailsOperationButLeavesDatabaseRunning() {
         OperationMetadataRepository operationRepository = mock(OperationMetadataRepository.class);

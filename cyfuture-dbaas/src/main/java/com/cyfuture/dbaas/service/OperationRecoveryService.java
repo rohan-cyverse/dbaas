@@ -2,6 +2,7 @@ package com.cyfuture.dbaas.service;
 
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.OperationMetadata;
+import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
 import com.cyfuture.dbaas.dto.BackupSettingsRequest;
 import com.cyfuture.dbaas.entity.BackupPolicyMetadata;
@@ -33,6 +34,9 @@ public class OperationRecoveryService {
     private final DatabaseMetadataRepository databaseRepository;
     private final AsyncProvisioningService provisioningService;
     private final KubeBlocksOperationSubmitter operationSubmitter;
+    private final KubeBlocksOperationReconciler operationReconciler;
+    private final KubeBlocksClient kubeBlocksClient;
+    private final CredentialLifecycleService credentialLifecycleService;
     private final BackupMetadataRepository backupRepository;
     private final RestoreRequestMetadataRepository restoreRepository;
     private final BackupSubmissionService backupSubmissionService;
@@ -70,11 +74,10 @@ public class OperationRecoveryService {
                             backupPolicyRepository.findByProjectNameAndDatabaseId(
                                             operation.getProjectName(), operation.getDatabaseId())
                                     .ifPresent(policy -> backupPolicySubmissionService.submit(policy.getPolicyId()));
-                        } else if (operation.getType() != OperationType.CREATE) {
-                            operation.setStatus(OperationStatus.PENDING);
-                            operation.setMessage("Resuming KubeBlocks operation after application restart");
-                            operationRepository.save(operation);
-                            operationSubmitter.submit(operation.getOperationId());
+                        } else if (operation.getType() == OperationType.ROTATE_CREDENTIALS) {
+                            credentialLifecycleService.reconcile(database);
+                        } else if (isKubeBlocksLifecycleOperation(operation.getType())) {
+                            resumeKubeBlocksLifecycleOperation(database, operation);
                         }
                     });
         }
@@ -84,6 +87,13 @@ public class OperationRecoveryService {
     public void recoverStaleOperations() {
         Instant now = Instant.now();
         for (OperationMetadata operation : operationRepository.findByStatusIn(activeStatuses())) {
+            if (isKubeBlocksLifecycleOperation(operation.getType())) {
+                operationReconciler.reconcile(operation);
+                OperationMetadata refreshed = operationRepository.findById(operation.getOperationId())
+                        .orElse(operation);
+                if (!activeStatuses().contains(refreshed.getStatus())) continue;
+                operation = refreshed;
+            }
             Instant heartbeat = operation.getLastHeartbeatAt() == null
                     ? operation.getStartedAt() == null ? operation.getCreatedAt() : operation.getStartedAt()
                     : operation.getLastHeartbeatAt();
@@ -107,6 +117,35 @@ public class OperationRecoveryService {
     private List<OperationStatus> activeStatuses() {
         return List.of(OperationStatus.PENDING, OperationStatus.RUNNING,
                 OperationStatus.CANCEL_REQUESTED, OperationStatus.CANCELLING);
+    }
+
+    private void resumeKubeBlocksLifecycleOperation(DatabaseMetadata database, OperationMetadata operation) {
+        if (operation.getOpsRequestName() == null || operation.getOpsRequestName().isBlank()
+                || kubeBlocksOpsRequestMissing(database, operation)) {
+            operation.setStatus(OperationStatus.PENDING);
+            operation.setMessage("Resuming KubeBlocks operation after application restart");
+            operationRepository.save(operation);
+            operationSubmitter.submit(operation.getOperationId());
+            return;
+        }
+
+        operation.setMessage("Recovering existing KubeBlocks operation after application restart");
+        operationRepository.save(operation);
+        operationReconciler.reconcile(operation);
+    }
+
+    private boolean kubeBlocksOpsRequestMissing(DatabaseMetadata database, OperationMetadata operation) {
+        KubeBlocksClient.OpsRequestInfo live = kubeBlocksClient.getOpsRequest(
+                database.getNamespaceName(), operation.getOpsRequestName());
+        return live.startedAt() == null && live.completedAt() == null
+                && "Waiting for KubeBlocks OpsRequest submission".equals(live.message());
+    }
+
+    private boolean isKubeBlocksLifecycleOperation(OperationType type) {
+        return type == OperationType.VERTICAL_SCALING
+                || type == OperationType.HORIZONTAL_SCALING
+                || type == OperationType.STORAGE_EXPANSION
+                || type == OperationType.RESTART;
     }
 
     private CreateDatabaseRequest request(DatabaseMetadata database) {
