@@ -455,6 +455,7 @@ public class DatabaseService {
     }
 
     private DatabaseResponse fromMetadata(DatabaseMetadata database) {
+        syncCompletedVerticalPlan(database);
         DatabaseTopologyResponse topology = metadataTopology(database);
         OperationResponse activeOperation = activeOperation(database);
         return new DatabaseResponse(database.getDatabaseId(), database.getDisplayName(), database.getEngine(),
@@ -470,6 +471,7 @@ public class DatabaseService {
 
     private DatabaseResponse withPublicAccess(DatabaseMetadata metadata, DatabaseObservation live,
                                               boolean includeMembers) {
+        syncCompletedVerticalPlan(metadata);
         PublicEndpointResponse publicEndpoint = publicEndpoint(metadata);
         DatabaseTopologyResponse topology = observedTopology(live, includeMembers);
         OperationResponse activeOperation = activeOperation(metadata);
@@ -507,6 +509,38 @@ public class DatabaseService {
                 operation.getCpuRequest(), operation.getMemoryRequest(),
                 operation.getCpuLimit(), operation.getMemoryLimit(),
                 operation.getCreatedAt(), operation.getStartedAt(), operation.getCompletedAt());
+    }
+
+    private void syncCompletedVerticalPlan(DatabaseMetadata database) {
+        if (database.getStatus() == DatabaseStatus.DELETED
+                || database.getStatus() == DatabaseStatus.DELETING) {
+            return;
+        }
+        operationRepository.findByDatabaseIdAndProjectNameOrderByCreatedAtDesc(
+                        database.getDatabaseId(), database.getProjectName())
+                .stream()
+                .filter(operation -> operation.getType() == OperationType.VERTICAL_SCALING)
+                .filter(operation -> operation.getStatus() == OperationStatus.SUCCEEDED)
+                .findFirst()
+                .flatMap(this::planFor)
+                .filter(plan -> plan != database.getSizePlan())
+                .ifPresent(plan -> {
+                    database.setSizePlan(plan);
+                    database.setUpdatedAt(Instant.now());
+                    databaseRepository.save(database);
+                });
+    }
+
+    private java.util.Optional<SizePlan> planFor(OperationMetadata operation) {
+        for (SizePlan plan : SizePlan.values()) {
+            if (plan.getCpuRequest().equals(operation.getCpuRequest())
+                    && plan.getMemoryRequest().equals(operation.getMemoryRequest())
+                    && plan.getCpuLimit().equals(operation.getCpuLimit())
+                    && plan.getMemoryLimit().equals(operation.getMemoryLimit())) {
+                return java.util.Optional.of(plan);
+            }
+        }
+        return java.util.Optional.empty();
     }
 
     private String databaseMessage(DatabaseMetadata database, OperationResponse activeOperation) {

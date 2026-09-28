@@ -648,6 +648,41 @@ class DatabaseServiceTest {
     }
 
     @Test
+    void databaseDetailsSelfHealSizePlanFromLatestSuccessfulVerticalScaling() {
+        DatabaseMetadata database = database("db-orders0001");
+        database.setSizePlan(SizePlan.C1G1);
+        OperationMetadata operation = OperationMetadata.builder()
+                .operationId("op-scale0001")
+                .databaseId("db-orders0001")
+                .projectName("orders")
+                .type(OperationType.VERTICAL_SCALING)
+                .status(OperationStatus.SUCCEEDED)
+                .provisioningStage(ProvisioningStage.READY)
+                .progress(100)
+                .componentName("postgresql")
+                .cpuRequest(SizePlan.C1G2.getCpuRequest())
+                .memoryRequest(SizePlan.C1G2.getMemoryRequest())
+                .cpuLimit(SizePlan.C1G2.getCpuLimit())
+                .memoryLimit(SizePlan.C1G2.getMemoryLimit())
+                .createdAt(java.time.Instant.now())
+                .completedAt(java.time.Instant.now())
+                .build();
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(kubeBlocksClient.get("dbaas-orders", "db-orders0001"))
+                .thenReturn(observation(DatabaseStatus.RUNNING, true));
+        when(operationRepository.findByDatabaseIdAndProjectNameOrderByCreatedAtDesc(
+                "db-orders0001", "orders"))
+                .thenReturn(List.of(operation));
+
+        var response = service.get("orders", "db-orders0001");
+
+        assertEquals(SizePlan.C1G2, response.sizePlan());
+        assertEquals(SizePlan.C1G2, database.getSizePlan());
+        verify(repository, org.mockito.Mockito.atLeastOnce()).save(database);
+    }
+
+    @Test
     void deleteIgnoresDeletionProtectionAndRequestsClusterDeletion() {
         DatabaseMetadata database = new DatabaseMetadata();
         database.setDatabaseId("db-orders0001");

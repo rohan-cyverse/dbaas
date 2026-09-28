@@ -162,8 +162,7 @@ public class KubeBlocksOperationReconciler {
     }
 
     private void syncDatabaseMetadata(DatabaseMetadata database, OperationMetadata operation) {
-        if (operation.getType() == OperationType.VERTICAL_SCALING
-                && primaryComponent(database, operation.getComponentName())) {
+        if (operation.getType() == OperationType.VERTICAL_SCALING) {
             planFor(operation).ifPresent(database::setSizePlan);
         }
         if (operation.getType() == OperationType.HORIZONTAL_SCALING
