@@ -15,7 +15,23 @@ public record OperationResponse(
         ProvisioningStage stage,
         int progress,
         String message,
+        String componentName,
+        Integer targetReplicas,
+        String targetStorageSize,
+        String volumeName,
+        String cpuRequest,
+        String memoryRequest,
+        String cpuLimit,
+        String memoryLimit,
         Instant createdAt,
         Instant startedAt,
         Instant completedAt
-) {}
+) {
+    public OperationResponse(String operationId, OperationType type, OperationStatus status,
+                             ProvisioningStage stage, int progress, String message,
+                             Instant createdAt, Instant startedAt, Instant completedAt) {
+        this(operationId, type, status, stage, progress, message,
+                null, null, null, null, null, null, null, null,
+                createdAt, startedAt, completedAt);
+    }
+}

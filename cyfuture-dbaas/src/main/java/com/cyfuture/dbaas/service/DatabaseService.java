@@ -457,6 +457,7 @@ public class DatabaseService {
 
     private DatabaseResponse fromMetadata(DatabaseMetadata database) {
         DatabaseTopologyResponse topology = metadataTopology(database);
+        OperationResponse activeOperation = activeOperation(database);
         return new DatabaseResponse(database.getDatabaseId(), database.getDisplayName(), database.getEngine(),
                 database.getDatabaseVersion(), database.getStatus(), database.getMode(), database.getSizePlan(),
                 database.getStorageGi(), topology.instanceCount(), topology.primaryCount(), topology.replicaCount(),
@@ -464,13 +465,15 @@ public class DatabaseService {
                 database.isDeletionProtection(), stage(database), database.getProgress(),
                 publicEndpoint(database),
                 topology,
-                ClientMessages.database(database.getStatus(), stage(database)));
+                activeOperation,
+                databaseMessage(database, activeOperation));
     }
 
     private DatabaseResponse withPublicAccess(DatabaseMetadata metadata, DatabaseObservation live,
                                               boolean includeMembers) {
         PublicEndpointResponse publicEndpoint = publicEndpoint(metadata);
         DatabaseTopologyResponse topology = observedTopology(live, includeMembers);
+        OperationResponse activeOperation = activeOperation(metadata);
         return new DatabaseResponse(metadata.getDatabaseId(), metadata.getDisplayName(),
                 metadata.getEngine(), metadata.getDatabaseVersion(), metadata.getStatus(),
                 metadata.getMode(), metadata.getSizePlan(), metadata.getStorageGi(),
@@ -478,7 +481,41 @@ public class DatabaseService {
                 topology.shardCount(), topology.mongosCount(), topology.configServerCount(),
                 live.deletionProtection(), stage(metadata), metadata.getProgress(), publicEndpoint,
                 topology,
-                ClientMessages.database(metadata.getStatus(), stage(metadata)));
+                activeOperation,
+                databaseMessage(metadata, activeOperation));
+    }
+
+    private OperationResponse activeOperation(DatabaseMetadata database) {
+        return operationRepository.findByDatabaseIdAndProjectNameAndStatusIn(
+                        database.getDatabaseId(), database.getProjectName(),
+                        List.of(OperationStatus.PENDING, OperationStatus.RUNNING,
+                                OperationStatus.CANCEL_REQUESTED, OperationStatus.CANCELLING))
+                .stream()
+                .filter(operation -> operation.getType() != OperationType.BACKUP
+                        && operation.getType() != OperationType.BACKUP_POLICY_UPDATE)
+                .findFirst()
+                .map(this::operationResponse)
+                .orElse(null);
+    }
+
+    private OperationResponse operationResponse(OperationMetadata operation) {
+        String message = operation.getMessage() == null || operation.getMessage().isBlank()
+                ? ClientMessages.operation(operation.getStatus()) : operation.getMessage();
+        return new OperationResponse(operation.getOperationId(), operation.getType(),
+                operation.getStatus(), operation.getProvisioningStage(), operation.getProgress(),
+                message, operation.getComponentName(), operation.getTargetReplicas(),
+                operation.getTargetStorageSize(), operation.getVolumeName(),
+                operation.getCpuRequest(), operation.getMemoryRequest(),
+                operation.getCpuLimit(), operation.getMemoryLimit(),
+                operation.getCreatedAt(), operation.getStartedAt(), operation.getCompletedAt());
+    }
+
+    private String databaseMessage(DatabaseMetadata database, OperationResponse activeOperation) {
+        if (activeOperation != null && activeOperation.message() != null
+                && !activeOperation.message().isBlank()) {
+            return activeOperation.message();
+        }
+        return ClientMessages.database(database.getStatus(), stage(database));
     }
 
     private DatabaseTopologyResponse observedTopology(DatabaseObservation live, boolean includeMembers) {

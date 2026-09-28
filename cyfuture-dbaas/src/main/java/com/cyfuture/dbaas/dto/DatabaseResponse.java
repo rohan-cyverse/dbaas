@@ -26,6 +26,22 @@ public record DatabaseResponse(
         int progress,
         PublicEndpointResponse endpoint,
         DatabaseTopologyResponse topology,
+        OperationResponse activeOperation,
         String message
 ) {
+    public DatabaseResponse(String databaseId, String name, DatabaseEngine engine,
+                            String version, DatabaseStatus status,
+                            DatabaseMode deploymentMode, SizePlan sizePlan,
+                            int storageGi, int instanceCount, int primaryCount,
+                            int replicaCount, int shardCount, int mongosCount,
+                            int configServerCount, boolean deletionProtection,
+                            ProvisioningStage stage, int progress,
+                            PublicEndpointResponse endpoint,
+                            DatabaseTopologyResponse topology,
+                            String message) {
+        this(databaseId, name, engine, version, status, deploymentMode, sizePlan,
+                storageGi, instanceCount, primaryCount, replicaCount, shardCount,
+                mongosCount, configServerCount, deletionProtection, stage, progress,
+                endpoint, topology, null, message);
+    }
 }

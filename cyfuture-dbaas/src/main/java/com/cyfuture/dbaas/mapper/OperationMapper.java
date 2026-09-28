@@ -14,10 +14,25 @@ public class OperationMapper {
                 .status(operation.getStatus())
                 .stage(operation.getProvisioningStage())
                 .progress(operation.getProgress())
-                .message(ClientMessages.operation(operation.getStatus()))
+                .message(message(operation))
+                .componentName(operation.getComponentName())
+                .targetReplicas(operation.getTargetReplicas())
+                .targetStorageSize(operation.getTargetStorageSize())
+                .volumeName(operation.getVolumeName())
+                .cpuRequest(operation.getCpuRequest())
+                .memoryRequest(operation.getMemoryRequest())
+                .cpuLimit(operation.getCpuLimit())
+                .memoryLimit(operation.getMemoryLimit())
                 .createdAt(operation.getCreatedAt())
                 .startedAt(operation.getStartedAt())
                 .completedAt(operation.getCompletedAt())
                 .build();
+    }
+
+    private String message(OperationMetadata operation) {
+        if (operation.getMessage() == null || operation.getMessage().isBlank()) {
+            return ClientMessages.operation(operation.getStatus());
+        }
+        return operation.getMessage();
     }
 }

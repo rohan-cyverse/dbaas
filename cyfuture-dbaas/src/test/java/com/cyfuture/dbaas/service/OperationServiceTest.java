@@ -33,13 +33,25 @@ class OperationServiceTest {
 
     @Test
     void scopesOperationByProjectAndDatabase() {
+        OperationMetadata operation = operation();
+        operation.setType(OperationType.HORIZONTAL_SCALING);
+        operation.setStatus(OperationStatus.RUNNING);
+        operation.setProvisioningStage(ProvisioningStage.WAITING_FOR_REPLICAS);
+        operation.setProgress(95);
+        operation.setMessage("Waiting for database Pods: 2/3");
+        operation.setComponentName("postgresql");
+        operation.setTargetReplicas(3);
         when(repository.findByOperationIdAndDatabaseIdAndProjectName(
                 "op-create0001", "db-orders0001", "orders"))
-                .thenReturn(Optional.of(operation()));
+                .thenReturn(Optional.of(operation));
 
         var response = service.getForDatabase("orders", "db-orders0001", "op-create0001");
+
         assertEquals("op-create0001", response.operationId());
-        assertEquals(OperationType.CREATE, response.type());
+        assertEquals(OperationType.HORIZONTAL_SCALING, response.type());
+        assertEquals("Waiting for database Pods: 2/3", response.message());
+        assertEquals("postgresql", response.componentName());
+        assertEquals(3, response.targetReplicas());
     }
 
     @Test

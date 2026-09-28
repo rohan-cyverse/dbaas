@@ -15,6 +15,8 @@ import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.DatabaseEngine;
 import com.cyfuture.dbaas.model.DatabaseMode;
 import com.cyfuture.dbaas.model.DatabaseStatus;
+import com.cyfuture.dbaas.model.OperationStatus;
+import com.cyfuture.dbaas.model.OperationType;
 import com.cyfuture.dbaas.model.ProvisioningStage;
 import com.cyfuture.dbaas.model.SizePlan;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
@@ -53,6 +55,7 @@ class DatabaseServiceTest {
     private BackupRetentionService backupRetentionService;
     private CredentialLifecycleService credentialLifecycleService;
     private SharedGatewayService sharedGatewayService;
+    private OperationMetadataRepository operationRepository;
     private DatabaseService service;
 
     @BeforeEach
@@ -81,9 +84,10 @@ class DatabaseServiceTest {
         when(backupPolicyService.initialPolicy(any(DatabaseMetadata.class),
                 any(BackupSettingsRequest.class), anyString()))
                 .thenReturn(new BackupPolicyMetadata());
+        operationRepository = mock(OperationMetadataRepository.class);
         service = new DatabaseService(kubeBlocksClient, properties, repository,
                 provisioning, metadataCreation, credentialLifecycleService,
-                projects, sharedGatewayService, mock(OperationMetadataRepository.class), friendlyNames,
+                projects, sharedGatewayService, operationRepository, friendlyNames,
                 mock(BackupMetadataRepository.class), mock(RestoreRequestMetadataRepository.class),
                 backupPolicyService, backupRetentionService);
     }
@@ -509,6 +513,59 @@ class DatabaseServiceTest {
 
         assertEquals(3, details.instanceCount());
         assertEquals(3, details.topology().members().size());
+    }
+
+    @Test
+    void databaseResponseIncludesActiveLifecycleOperationTargets() {
+        DatabaseMetadata database = new DatabaseMetadata();
+        database.setDatabaseId("db-orders0001");
+        database.setDisplayName("orders-db");
+        database.setProjectName("orders");
+        database.setNamespaceName("dbaas-orders");
+        database.setEngine(DatabaseEngine.POSTGRESQL);
+        database.setMode(DatabaseMode.REPLICATION);
+        database.setDatabaseVersion("17.5.0");
+        database.setSizePlan(SizePlan.C1G2);
+        database.setStorageGi(20);
+        database.setReplicas(4);
+        database.setShards(0);
+        database.setStatus(DatabaseStatus.RUNNING);
+        database.setProvisioningStage(ProvisioningStage.READY);
+        database.setProgress(100);
+        OperationMetadata operation = OperationMetadata.builder()
+                .operationId("op-scale0001")
+                .databaseId("db-orders0001")
+                .projectName("orders")
+                .type(OperationType.HORIZONTAL_SCALING)
+                .status(OperationStatus.RUNNING)
+                .provisioningStage(ProvisioningStage.WAITING_FOR_REPLICAS)
+                .progress(95)
+                .message("Waiting for database Pods: 3/4")
+                .componentName("postgresql")
+                .targetReplicas(4)
+                .createdAt(java.time.Instant.now())
+                .build();
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(operationRepository.findByDatabaseIdAndProjectNameAndStatusIn(
+                "db-orders0001", "orders",
+                List.of(OperationStatus.PENDING, OperationStatus.RUNNING,
+                        OperationStatus.CANCEL_REQUESTED, OperationStatus.CANCELLING)))
+                .thenReturn(List.of(operation));
+        when(kubeBlocksClient.get("dbaas-orders", "db-orders0001"))
+                .thenReturn(new DatabaseObservation("db-orders0001", "orders-db",
+                        DatabaseEngine.POSTGRESQL, DatabaseMode.REPLICATION, "17.5.0",
+                        SizePlan.C1G2, 20, true, DatabaseStatus.RUNNING,
+                        3, 1, 2, 0, 0, 0, 3, 3, true,
+                        "db-orders0001-postgresql.dbaas-orders.svc", 5432,
+                        List.of(), "ready"));
+
+        var response = service.get("orders", "db-orders0001");
+
+        assertEquals("Waiting for database Pods: 3/4", response.message());
+        assertEquals("op-scale0001", response.activeOperation().operationId());
+        assertEquals(OperationType.HORIZONTAL_SCALING, response.activeOperation().type());
+        assertEquals(4, response.activeOperation().targetReplicas());
     }
 
     @Test
