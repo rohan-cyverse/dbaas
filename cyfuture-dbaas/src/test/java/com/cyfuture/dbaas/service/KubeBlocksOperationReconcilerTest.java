@@ -9,6 +9,7 @@ import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.OperationStatus;
 import com.cyfuture.dbaas.model.OperationType;
 import com.cyfuture.dbaas.model.ProvisioningStage;
+import com.cyfuture.dbaas.model.SizePlan;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import org.junit.jupiter.api.Test;
@@ -215,6 +216,70 @@ class KubeBlocksOperationReconcilerTest {
             assertEquals(OperationStatus.SUCCEEDED, operation.getStatus(), engine.name());
             verify(databaseRepository).save(database);
         }
+    }
+
+    @Test
+    void succeededVerticalScalingUpdatesStoredSizePlanWhenResourcesMatchKnownPlan() {
+        OperationMetadataRepository operationRepository = mock(OperationMetadataRepository.class);
+        DatabaseMetadataRepository databaseRepository = mock(DatabaseMetadataRepository.class);
+        KubeBlocksClient kubeBlocksClient = mock(KubeBlocksClient.class);
+        KubeBlocksOperationReconciler reconciler = new KubeBlocksOperationReconciler(
+                operationRepository, databaseRepository, kubeBlocksClient);
+        DatabaseMetadata database = database();
+        database.setSizePlan(SizePlan.C1G1);
+        OperationMetadata operation = verticalOperation();
+        operation.setCpuRequest(SizePlan.C2G4.getCpuRequest());
+        operation.setMemoryRequest(SizePlan.C2G4.getMemoryRequest());
+        operation.setCpuLimit(SizePlan.C2G4.getCpuLimit());
+        operation.setMemoryLimit(SizePlan.C2G4.getMemoryLimit());
+        when(databaseRepository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(kubeBlocksClient.getOpsRequest("dbaas-orders", "op-scale0001"))
+                .thenReturn(new KubeBlocksClient.OpsRequestInfo("Succeed", "1/1", "done",
+                        Instant.now(), Instant.now()));
+        when(kubeBlocksClient.observeVerticalScaling(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyMap(), org.mockito.ArgumentMatchers.anyMap()))
+                .thenReturn(new KubeBlocksClient.VerticalScalingObservation(true, 2, 2, 2,
+                        "Requested CPU/memory observed"));
+
+        reconciler.reconcile(operation);
+
+        assertEquals(OperationStatus.SUCCEEDED, operation.getStatus());
+        assertEquals(SizePlan.C2G4, database.getSizePlan());
+        verify(databaseRepository).save(database);
+    }
+
+    @Test
+    void succeededVerticalScalingKeepsStoredSizePlanWhenResourcesAreCustom() {
+        OperationMetadataRepository operationRepository = mock(OperationMetadataRepository.class);
+        DatabaseMetadataRepository databaseRepository = mock(DatabaseMetadataRepository.class);
+        KubeBlocksClient kubeBlocksClient = mock(KubeBlocksClient.class);
+        KubeBlocksOperationReconciler reconciler = new KubeBlocksOperationReconciler(
+                operationRepository, databaseRepository, kubeBlocksClient);
+        DatabaseMetadata database = database();
+        database.setSizePlan(SizePlan.C1G1);
+        OperationMetadata operation = verticalOperation();
+        operation.setCpuRequest("750m");
+        operation.setMemoryRequest("3Gi");
+        operation.setCpuLimit("1500m");
+        operation.setMemoryLimit("3Gi");
+        when(databaseRepository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(kubeBlocksClient.getOpsRequest("dbaas-orders", "op-scale0001"))
+                .thenReturn(new KubeBlocksClient.OpsRequestInfo("Succeed", "1/1", "done",
+                        Instant.now(), Instant.now()));
+        when(kubeBlocksClient.observeVerticalScaling(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyMap(), org.mockito.ArgumentMatchers.anyMap()))
+                .thenReturn(new KubeBlocksClient.VerticalScalingObservation(true, 2, 2, 2,
+                        "Requested CPU/memory observed"));
+
+        reconciler.reconcile(operation);
+
+        assertEquals(OperationStatus.SUCCEEDED, operation.getStatus());
+        assertEquals(SizePlan.C1G1, database.getSizePlan());
+        verify(databaseRepository).save(database);
     }
 
     @Test

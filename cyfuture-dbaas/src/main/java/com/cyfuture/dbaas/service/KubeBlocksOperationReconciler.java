@@ -6,6 +6,7 @@ import com.cyfuture.dbaas.entity.OperationMetadata;
 import com.cyfuture.dbaas.model.OperationStatus;
 import com.cyfuture.dbaas.model.OperationType;
 import com.cyfuture.dbaas.model.ProvisioningStage;
+import com.cyfuture.dbaas.model.SizePlan;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import lombok.RequiredArgsConstructor;
@@ -161,6 +162,10 @@ public class KubeBlocksOperationReconciler {
     }
 
     private void syncDatabaseMetadata(DatabaseMetadata database, OperationMetadata operation) {
+        if (operation.getType() == OperationType.VERTICAL_SCALING
+                && primaryComponent(database, operation.getComponentName())) {
+            planFor(operation).ifPresent(database::setSizePlan);
+        }
         if (operation.getType() == OperationType.HORIZONTAL_SCALING
                 && operation.getTargetReplicas() != null
                 && primaryComponent(database, operation.getComponentName())) {
@@ -174,6 +179,18 @@ public class KubeBlocksOperationReconciler {
         database.setMessage(operation.getMessage());
         database.setUpdatedAt(Instant.now());
         databaseRepository.save(database);
+    }
+
+    private java.util.Optional<SizePlan> planFor(OperationMetadata operation) {
+        for (SizePlan plan : SizePlan.values()) {
+            if (plan.getCpuRequest().equals(operation.getCpuRequest())
+                    && plan.getMemoryRequest().equals(operation.getMemoryRequest())
+                    && plan.getCpuLimit().equals(operation.getCpuLimit())
+                    && plan.getMemoryLimit().equals(operation.getMemoryLimit())) {
+                return java.util.Optional.of(plan);
+            }
+        }
+        return java.util.Optional.empty();
     }
 
     private boolean primaryComponent(DatabaseMetadata database, String componentName) {
