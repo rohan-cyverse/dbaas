@@ -237,8 +237,7 @@ public class DatabaseService {
             syncLiveStatus(metadata, live);
             return withPublicAccess(metadata, live, true);
         } catch (ApiException exception) {
-            if (metadata.getStatus() == DatabaseStatus.PROVISIONING) return fromMetadata(metadata);
-            throw exception;
+            return fromMetadata(metadata);
         }
     }
 
@@ -267,10 +266,17 @@ public class DatabaseService {
             throw new ApiException(HttpStatus.CONFLICT, "DATABASE_NOT_READY", true,
                     "Database connection is not ready; current stage is " + stage(database));
         }
-        DatabaseObservation live = kubeBlocksClient.get(database.getNamespaceName(), database.physicalClusterName());
-        if (live.status() == DatabaseStatus.FAILED || !live.serviceReady()) {
-            throw new ApiException(HttpStatus.CONFLICT, "DATABASE_NOT_READY", true,
-                    "Database is not ready for connections");
+        try {
+            DatabaseObservation live = kubeBlocksClient.get(database.getNamespaceName(), database.physicalClusterName());
+            if (live.status() == DatabaseStatus.FAILED || !live.serviceReady()) {
+                throw new ApiException(HttpStatus.CONFLICT, "DATABASE_NOT_READY", true,
+                        "Database is not ready for connections");
+            }
+        } catch (ApiException exception) {
+            if (exception.getStatus() == HttpStatus.CONFLICT
+                    && "DATABASE_NOT_READY".equals(exception.getCode())) {
+                throw exception;
+            }
         }
         // A restored target must continue to use the logical database from
         // its recovery point. Re-establish that specific credential first if

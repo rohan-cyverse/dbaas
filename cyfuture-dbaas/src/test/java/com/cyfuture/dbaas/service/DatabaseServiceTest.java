@@ -243,6 +243,29 @@ class DatabaseServiceTest {
     }
 
     @Test
+    void connectionDetailsRemainAvailableWhenLiveObservationTemporarilyFails() {
+        DatabaseMetadata database = database("db-orders0001");
+        database.setStatus(DatabaseStatus.RUNNING);
+        database.setProvisioningStage(ProvisioningStage.READY);
+        database.setPublicPort(31000);
+        database.setAllowedCidrs("[49.50.73.146/32]");
+        when(repository.findByDatabaseIdAndProjectNameForUpdate("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(kubeBlocksClient.get("dbaas-orders", "db-orders0001"))
+                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "Kubernetes observation failed"));
+        when(credentialLifecycleService.credentials(database))
+                .thenReturn(new ManagedCredential("app_user", "secret", "app_db"));
+        when(sharedGatewayService.endpoint(database))
+                .thenReturn(new PublicEndpointResponse("49.50.73.146", 31000,
+                        false, List.of("49.50.73.146/32")));
+
+        var response = service.connection("orders", "db-orders0001", "203.0.113.55");
+
+        assertEquals("app_user", response.username());
+        assertFalse(response.endpoint().ready());
+    }
+
+    @Test
     void mongoConnectionUriAuthenticatesAgainstManagedDatabase() throws Exception {
         var connectionUri = DatabaseService.class.getDeclaredMethod("connectionUri",
                 DatabaseEngine.class, DatabaseMode.class, boolean.class,
@@ -566,6 +589,26 @@ class DatabaseServiceTest {
         assertEquals("op-scale0001", response.activeOperation().operationId());
         assertEquals(OperationType.HORIZONTAL_SCALING, response.activeOperation().type());
         assertEquals(4, response.activeOperation().targetReplicas());
+    }
+
+    @Test
+    void databaseDetailsFallBackToMetadataWhenLiveObservationFails() {
+        DatabaseMetadata database = database("db-orders0001");
+        database.setPublicPort(31000);
+        database.setAllowedCidrs("[49.50.73.146/32]");
+        when(repository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(kubeBlocksClient.get("dbaas-orders", "db-orders0001"))
+                .thenThrow(new ApiException(HttpStatus.BAD_GATEWAY, "Kubernetes observation failed"));
+        when(sharedGatewayService.endpoint(database))
+                .thenReturn(new PublicEndpointResponse("49.50.73.146", 31000,
+                        false, List.of("49.50.73.146/32")));
+
+        var response = service.get("orders", "db-orders0001");
+
+        assertEquals(DatabaseStatus.RUNNING, response.status());
+        assertEquals("db-orders0001", response.databaseId());
+        assertFalse(response.endpoint().ready());
     }
 
     @Test
