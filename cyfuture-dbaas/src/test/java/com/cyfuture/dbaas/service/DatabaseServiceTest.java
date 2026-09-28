@@ -11,6 +11,7 @@ import com.cyfuture.dbaas.entity.BackupPolicyMetadata;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.entity.OperationMetadata;
 import com.cyfuture.dbaas.entity.ProjectMetadata;
+import com.cyfuture.dbaas.entity.RestoreRequestMetadata;
 import com.cyfuture.dbaas.exception.ApiException;
 import com.cyfuture.dbaas.model.DatabaseEngine;
 import com.cyfuture.dbaas.model.DatabaseMode;
@@ -18,6 +19,8 @@ import com.cyfuture.dbaas.model.DatabaseStatus;
 import com.cyfuture.dbaas.model.OperationStatus;
 import com.cyfuture.dbaas.model.OperationType;
 import com.cyfuture.dbaas.model.ProvisioningStage;
+import com.cyfuture.dbaas.model.RestoreAccessMode;
+import com.cyfuture.dbaas.model.RestoreStatus;
 import com.cyfuture.dbaas.model.SizePlan;
 import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.OperationMetadataRepository;
@@ -56,6 +59,7 @@ class DatabaseServiceTest {
     private CredentialLifecycleService credentialLifecycleService;
     private SharedGatewayService sharedGatewayService;
     private OperationMetadataRepository operationRepository;
+    private RestoreRequestMetadataRepository restoreRepository;
     private DatabaseService service;
 
     @BeforeEach
@@ -79,6 +83,7 @@ class DatabaseServiceTest {
         when(backupRetentionService.readyForClusterDeletion(anyString(), anyString())).thenReturn(true);
         credentialLifecycleService = mock(CredentialLifecycleService.class);
         sharedGatewayService = mock(SharedGatewayService.class);
+        restoreRepository = mock(RestoreRequestMetadataRepository.class);
         when(backupPolicyService.normalizeForCreation(any(BackupSettingsRequest.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         when(backupPolicyService.initialPolicy(any(DatabaseMetadata.class),
@@ -88,7 +93,7 @@ class DatabaseServiceTest {
         service = new DatabaseService(kubeBlocksClient, properties, repository,
                 provisioning, metadataCreation, credentialLifecycleService,
                 projects, sharedGatewayService, operationRepository, friendlyNames,
-                mock(BackupMetadataRepository.class), mock(RestoreRequestMetadataRepository.class),
+                mock(BackupMetadataRepository.class), restoreRepository,
                 backupPolicyService, backupRetentionService);
     }
 
@@ -263,6 +268,37 @@ class DatabaseServiceTest {
 
         assertEquals("app_user", response.username());
         assertFalse(response.endpoint().ready());
+    }
+
+    @Test
+    void completedRestoreUsesStablePublicEndpointEvenForLegacyPrivateAccessMode() {
+        DatabaseMetadata database = database("db-orders0001");
+        database.setEngine(DatabaseEngine.MONGODB);
+        database.setActiveClusterName("db-orders0001-restore-abc12345");
+        database.setPublicPort(31002);
+        database.setAllowedCidrs("[49.50.73.146/32]");
+        RestoreRequestMetadata restore = new RestoreRequestMetadata();
+        restore.setStatus(RestoreStatus.COMPLETED);
+        restore.setAccessMode(RestoreAccessMode.PRIVATE);
+        when(repository.findByDatabaseIdAndProjectNameForUpdate("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(kubeBlocksClient.get("dbaas-orders", "db-orders0001-restore-abc12345"))
+                .thenReturn(observation(DatabaseStatus.RUNNING, true));
+        when(restoreRepository.findFirstByRestoredDatabaseIdAndStatusInOrderByCreatedAtDesc(
+                "db-orders0001", List.of(RestoreStatus.COMPLETED, RestoreStatus.READY)))
+                .thenReturn(Optional.of(restore));
+        when(credentialLifecycleService.readyForRestoredDatabase(any(), any(), any())).thenReturn(true);
+        when(credentialLifecycleService.credentials(database))
+                .thenReturn(new ManagedCredential("db_user", "secret", "mongo_db"));
+        when(sharedGatewayService.endpoint(database))
+                .thenReturn(new PublicEndpointResponse("49.50.116.46", 31002,
+                        true, List.of("49.50.73.146/32")));
+
+        var response = service.connection("orders", "db-orders0001", "49.50.73.146");
+
+        assertEquals("mongodb://db_user:secret@49.50.116.46:31002/mongo_db"
+                + "?authSource=mongo_db&directConnection=true", response.connectionUri());
+        assertEquals("49.50.116.46", response.endpoint().host());
     }
 
     @Test

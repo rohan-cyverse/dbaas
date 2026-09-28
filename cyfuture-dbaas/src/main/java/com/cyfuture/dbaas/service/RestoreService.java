@@ -22,7 +22,6 @@ import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import com.cyfuture.dbaas.repository.RestoreRequestMetadataRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -56,9 +55,6 @@ public class RestoreService {
     private final BackupPolicyService backupPolicyService;
     private final DatabaseService databaseService;
     private final OperationService operationService;
-
-    @Value("${dbaas.restore.rollback-retention-minutes:60}")
-    private long rollbackRetentionMinutes = 60L;
 
     @Transactional
     public RestoreResponse restore(String project, String databaseId,

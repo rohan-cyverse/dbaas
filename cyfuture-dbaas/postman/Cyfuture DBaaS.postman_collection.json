@@ -1153,7 +1153,7 @@
     },
     {
       "name": "Backup and Restore",
-      "description": "Configure scheduled backups, retention, PITR, and production-safe in-place restores. Restore requests preserve the same API databaseId, name, namespace, credentials, and stable endpoint. DBaaS creates and verifies a safety backup, restores into a temporary physical KubeBlocks cluster named <databaseId>-restore-<shortId>, validates it, then briefly enters maintenance to cut the stable Service/HAProxy endpoint over. The old physical cluster is retained for the configured rollback period, default 60 minutes, then cleaned up automatically. Keep each Idempotency-Key unchanged only when retrying the identical request; use a new key for a new operation.",
+      "description": "Configure scheduled backups, retention, PITR, and production-safe in-place restores. Restore requests preserve the same API databaseId, name, namespace, credentials, and stable public endpoint. DBaaS creates and verifies a safety backup, restores into a temporary physical KubeBlocks cluster named <databaseId>-restore-<shortId>, validates it, then briefly enters maintenance to cut the stable Service/HAProxy endpoint over. After the restored endpoint is verified, the previous physical cluster is deleted automatically. Keep each Idempotency-Key unchanged only when retrying the identical request; use a new key for a new operation.",
       "item": [
         {
           "name": "Update Backup Settings",

@@ -18,7 +18,6 @@ import com.cyfuture.dbaas.repository.DatabaseMetadataRepository;
 import com.cyfuture.dbaas.repository.OperationMetadataRepository;
 import com.cyfuture.dbaas.repository.RestoreRequestMetadataRepository;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
 import java.util.List;
@@ -69,6 +68,7 @@ class RestoreReconcilerTest {
         assertEquals(OperationStatus.SUCCEEDED, operation.getStatus());
         assertNotNull(restore.getOldClusterDeleteAt());
         verify(fixture.sharedGatewayService).configure(database);
+        verify(fixture.kubeBlocksClient).requestDelete("dbaas-orders", "db-orders0001");
     }
 
     @Test
@@ -106,7 +106,6 @@ class RestoreReconcilerTest {
         RestoreReconciler reconciler = new RestoreReconciler(restoreRepository, databaseRepository,
                 operationRepository, backupRepository, kubeBlocksClient, credentialLifecycleService,
                 sharedGatewayService, progressService, submissionService, operationService);
-        ReflectionTestUtils.setField(reconciler, "rollbackRetentionMinutes", 60L);
         return new Fixture(reconciler, restoreRepository, databaseRepository, operationRepository,
                 kubeBlocksClient, credentialLifecycleService, sharedGatewayService);
     }

@@ -45,8 +45,6 @@ public class RestoreReconciler {
 
     @Value("${dbaas.restore-timeout-ms:3600000}")
     private long restoreTimeoutMs = 3_600_000L;
-    @Value("${dbaas.restore.rollback-retention-minutes:60}")
-    private long rollbackRetentionMinutes = 60L;
 
     @EventListener(ApplicationReadyEvent.class)
     public void reconcileOnStartup() { reconcile(); }
@@ -194,12 +192,17 @@ public class RestoreReconciler {
         restore.setStatus(RestoreStatus.COMPLETED);
         restore.setTemporary(false);
         restore.setPromotedAt(Instant.now());
-        restore.setOldClusterDeleteAt(Instant.now().plusSeconds(rollbackRetentionMinutes * 60));
+        // The stable gateway is now verified against the restored cluster, so
+        // the previous physical cluster must no longer remain available.
+        // Persist the cleanup deadline before requesting deletion: the cleanup
+        // reconciler will retry and verify absence if this request is transient.
+        restore.setOldClusterDeleteAt(Instant.now());
         restore.setCompletedAt(Instant.now());
         restore.setLastObservedAt(Instant.now());
         restore.setFailureCode(null);
         restore.setFailureMessage(null);
         restoreRepository.save(restore);
+        deleteOldCluster(restore, target);
         operationRepository.findById(restore.getOperationId()).ifPresent(operation -> {
             operation.setStatus(OperationStatus.SUCCEEDED);
             operation.setProvisioningStage(ProvisioningStage.READY);
@@ -348,6 +351,24 @@ public class RestoreReconciler {
             kubeBlocksClient.requestDelete(database.getNamespaceName(), temporaryCluster);
         } catch (Exception ignored) {
             // Cleanup is retried by reconciliation.
+        }
+    }
+
+    private void deleteOldCluster(RestoreRequestMetadata restore, DatabaseMetadata database) {
+        String oldCluster = restore.getOldClusterName();
+        if (oldCluster == null || oldCluster.isBlank()
+                || oldCluster.equals(database.physicalClusterName())) return;
+        try {
+            kubeBlocksClient.requestDelete(database.getNamespaceName(), oldCluster);
+            KubeBlocksClient.ClusterObservation observed = kubeBlocksClient.observeCluster(
+                    database.getNamespaceName(), oldCluster);
+            if (!observed.exists()) {
+                restore.setOldClusterDeletedAt(Instant.now());
+                restoreRepository.save(restore);
+            }
+        } catch (Exception exception) {
+            log.debug("Old cluster cleanup for restore {} will retry: {}", restore.getRestoreId(),
+                    BackupRestoreSafety.safeMessage(exception, "Old restore cluster cleanup will retry."));
         }
     }
 

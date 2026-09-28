@@ -296,13 +296,6 @@ public class DatabaseService {
         }
         ManagedCredential credential = credentialLifecycleService.credentials(database);
         PublicEndpointResponse publicEndpoint = publicEndpoint(database);
-        if (restore != null && restore.getAccessMode() == com.cyfuture.dbaas.model.RestoreAccessMode.PRIVATE) {
-            String host = database.physicalClusterName() + "." + database.getNamespaceName() + ".svc.cluster.local";
-            return new ConnectionResponse(credential.username(), credential.password(),
-                    connectionUri(database.getEngine(), database.getMode(), false,
-                            credential.username(), credential.password(), host,
-                            defaultPort(database.getEngine()), credential.database()), null);
-        }
         if (publicEndpoint.host() == null || publicEndpoint.host().isBlank()
                 || publicEndpoint.port() == 0) {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "PUBLIC_ENDPOINT_NOT_READY", true,
