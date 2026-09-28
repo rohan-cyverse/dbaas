@@ -401,6 +401,37 @@ class SharedGatewayServiceTest {
     }
 
     @Test
+    void degradedDatabaseKeepsGatewayRouteWhenServiceIsResolvable() throws Exception {
+        DatabaseProperties properties = enabledProperties();
+        DatabaseMetadata database = database(31000);
+        database.setStatus(DatabaseStatus.DEGRADED);
+        database.setAllowedCidrs("[49.50.73.146/32]");
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        KubeBlocksClient kubeBlocksClient = mock(KubeBlocksClient.class);
+        DatabaseBackendResolver backendResolver = mock(DatabaseBackendResolver.class);
+        CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        AppsV1Api apps = mock(AppsV1Api.class, RETURNS_DEEP_STUBS);
+        when(core.readNamespacedService(any(), any()).execute()).thenReturn(gatewayService(31000, 31030));
+        when(core.readNamespacedConfigMap(any(), any()).execute()).thenReturn(configMap("old"));
+        when(apps.readNamespacedDeployment(any(), any()).execute()).thenReturn(deployment());
+        when(repository.findByPublicPortIsNotNullOrderByPublicPortAsc()).thenReturn(List.of(database));
+        when(kubeBlocksClient.get(database.getNamespaceName(), database.physicalClusterName()))
+                .thenReturn(observationWithServiceReady(true));
+        when(backendResolver.resolve(database)).thenReturn(new DatabaseBackendResolver.DatabaseBackendEndpoint(
+                "orders", "dbaas-orders",
+                "db-orders0001-postgresql.dbaas-orders.svc.cluster.local", 5432));
+        SharedGatewayService sharedGateway = service(properties, runningLock(), repository, core, apps,
+                kubeBlocksClient, backendResolver);
+
+        sharedGateway.reconcileNow();
+
+        ArgumentCaptor<V1ConfigMap> replacement = ArgumentCaptor.forClass(V1ConfigMap.class);
+        verify(core).replaceNamespacedConfigMap(any(), any(), replacement.capture());
+        assertTrue(replacement.getValue().getData().get("haproxy.cfg")
+                .contains("backend database_31000"));
+    }
+
+    @Test
     void loadBalancerSourceRangesRemoveStaleCidrsAndOpenInternetUnlessActiveRouteAllowsIt() throws Exception {
         DatabaseProperties properties = enabledProperties();
         DatabaseMetadata database = database(31007);

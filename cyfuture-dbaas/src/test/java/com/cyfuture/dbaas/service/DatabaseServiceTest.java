@@ -214,6 +214,31 @@ class DatabaseServiceTest {
     }
 
     @Test
+    void connectionDetailsRemainAvailableDuringLifecycleTransition() {
+        DatabaseMetadata database = database("db-orders0001");
+        database.setStatus(DatabaseStatus.RUNNING);
+        database.setProvisioningStage(ProvisioningStage.READY);
+        database.setPublicPort(31000);
+        database.setAllowedCidrs("[49.50.73.146/32]");
+        when(repository.findByDatabaseIdAndProjectNameForUpdate("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(kubeBlocksClient.get("dbaas-orders", "db-orders0001"))
+                .thenReturn(observation(DatabaseStatus.PROVISIONING, true));
+        when(credentialLifecycleService.credentials(database))
+                .thenReturn(new ManagedCredential("app_user", "secret", "app_db"));
+        when(sharedGatewayService.endpoint(database))
+                .thenReturn(new PublicEndpointResponse("49.50.73.146", 31000,
+                        false, List.of("49.50.73.146/32")));
+
+        var response = service.connection("orders", "db-orders0001", "203.0.113.55");
+
+        assertEquals("app_user", response.username());
+        assertEquals("49.50.73.146", response.endpoint().host());
+        assertFalse(response.endpoint().ready());
+        assertTrue(response.connectionUri().contains("49.50.73.146:31000"));
+    }
+
+    @Test
     void mongoConnectionUriAuthenticatesAgainstManagedDatabase() throws Exception {
         var connectionUri = DatabaseService.class.getDeclaredMethod("connectionUri",
                 DatabaseEngine.class, DatabaseMode.class, boolean.class,

@@ -168,7 +168,7 @@ public class SharedGatewayService {
                     : infrastructure.configMap().getData().getOrDefault(CONFIG_KEY, "");
             DatabaseObservation live = kubeBlocksClient.get(
                     database.getNamespaceName(), database.physicalClusterName());
-            boolean databaseReady = live.status() == DatabaseStatus.RUNNING && live.serviceReady();
+            boolean databaseReady = live.status() != DatabaseStatus.FAILED && live.serviceReady();
             boolean declared = infrastructure.service().getSpec().getPorts().stream()
                     .anyMatch(item -> Integer.valueOf(port).equals(item.getPort()));
             boolean rangesReady = sourceRangesContain(infrastructure.service(), cidrs);
@@ -230,7 +230,6 @@ public class SharedGatewayService {
                 .findByPublicPortIsNotNullOrderByPublicPortAsc()) {
             if (database.getStatus() == DatabaseStatus.DELETING
                     || database.getStatus() == DatabaseStatus.DELETED
-                    || database.getStatus() == DatabaseStatus.DEGRADED
                     || database.getStatus() == DatabaseStatus.MISSING
                     || database.getStatus() == DatabaseStatus.ORPHANED
                     || database.getStatus() == DatabaseStatus.FAILED) continue;

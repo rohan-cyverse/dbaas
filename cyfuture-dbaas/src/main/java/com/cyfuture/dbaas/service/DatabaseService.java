@@ -268,7 +268,7 @@ public class DatabaseService {
                     "Database connection is not ready; current stage is " + stage(database));
         }
         DatabaseObservation live = kubeBlocksClient.get(database.getNamespaceName(), database.physicalClusterName());
-        if (live.status() != DatabaseStatus.RUNNING || !live.serviceReady()) {
+        if (live.status() == DatabaseStatus.FAILED || !live.serviceReady()) {
             throw new ApiException(HttpStatus.CONFLICT, "DATABASE_NOT_READY", true,
                     "Database is not ready for connections");
         }
@@ -297,8 +297,8 @@ public class DatabaseService {
                             credential.username(), credential.password(), host,
                             defaultPort(database.getEngine()), credential.database()), null);
         }
-        if (!publicEndpoint.ready() || publicEndpoint.host() == null
-                || publicEndpoint.host().isBlank()) {
+        if (publicEndpoint.host() == null || publicEndpoint.host().isBlank()
+                || publicEndpoint.port() == 0) {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "PUBLIC_ENDPOINT_NOT_READY", true,
                     "The public endpoint is not ready");
         }
