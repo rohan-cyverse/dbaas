@@ -43,6 +43,9 @@ public class BackupPolicyMetadata {
     private String timezone;
     private boolean pitrEnabled;
     private boolean configurationApplied;
+    private boolean initialBackupRequired;
+    @Column(length = 32)
+    private String initialBackupId;
     @Column(length = 63)
     private String kubernetesScheduleName;
     @Column(length = 32)

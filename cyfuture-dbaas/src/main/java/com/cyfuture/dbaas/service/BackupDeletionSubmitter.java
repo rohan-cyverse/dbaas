@@ -32,6 +32,13 @@ public class BackupDeletionSubmitter {
             kubeBlocksClient.deleteManagedBackup(namespace, backup.getProjectName(), backup.getDatabaseId(),
                     backup.getBackupId(), backup.getOperationId(), backup.getKubernetesBackupName(),
                     backup.getKubernetesUid(), backup.getKubernetesPolicyName());
+            KubeBlocksClient.BackupObservation observation = kubeBlocksClient.observeManagedBackup(
+                    namespace, backup.getProjectName(), backup.getDatabaseId(), backup.getBackupId(),
+                    backup.getOperationId(), backup.getKubernetesBackupName(), backup.getKubernetesUid(),
+                    backup.getKubernetesPolicyName());
+            if (!observation.exists()) {
+                backupRepository.delete(backup);
+            }
         } catch (Exception exception) {
             if (!BackupRestoreSafety.retryable(exception)) {
                 fail(backup, BackupRestoreSafety.failureCode(exception, "BACKUP_DELETE_FAILED"),
