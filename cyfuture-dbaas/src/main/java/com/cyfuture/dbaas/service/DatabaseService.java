@@ -254,6 +254,7 @@ public class DatabaseService {
     @Transactional
     public ConnectionResponse connection(String project,
                                          String databaseId, String clientIp) {
+        validateProject(project);
         DatabaseMetadata database = databaseRepository
                 .findByDatabaseIdAndProjectNameForUpdate(databaseId, project)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND,

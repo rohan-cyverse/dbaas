@@ -29,6 +29,9 @@ public class ProjectMetadata {
     @Column(length = 250)
     private String description;
 
+    @Column(name = "created_by", length = 255)
+    private String createdBy;
+
     @Column(nullable = false, length = 63)
     private String namespaceName;
 

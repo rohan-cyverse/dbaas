@@ -5,8 +5,11 @@ import com.cyfuture.dbaas.model.ResourceStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.List;
+import java.util.Optional;
 
 public interface ProjectMetadataRepository extends JpaRepository<ProjectMetadata, String> {
     List<ProjectMetadata> findAllByOrderByCreatedAtDesc();
+    List<ProjectMetadata> findByCreatedByOrderByCreatedAtDesc(String createdBy);
+    Optional<ProjectMetadata> findByProjectIdAndCreatedBy(String projectId, String createdBy);
     List<ProjectMetadata> findByStatusOrderByCreatedAtAsc(ResourceStatus status);
 }

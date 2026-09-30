@@ -20,6 +20,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -28,10 +30,15 @@ import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 @Service
 @RequiredArgsConstructor
 public class ProjectService {
+    private static final String CURRENT_USER_HEADER = "X-Cyfuture-User";
+    private static final String CURRENT_USER_FALLBACK_HEADER = "X-Current-User";
+    private static final Pattern EMAIL = Pattern.compile("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$");
+
     private final ProjectMetadataRepository projectRepository;
     private final DatabaseMetadataRepository databaseRepository;
     private final FriendlyNameGenerator friendlyNameGenerator;
@@ -47,6 +54,7 @@ public class ProjectService {
         project.setProjectId("prj-" + shortId());
         project.setDisplayName(blank(request.displayName()) ? friendlyNameGenerator.next() : request.displayName().trim());
         project.setDescription(request.description());
+        project.setCreatedBy(currentUser());
         project.setNamespaceName(namespaceFor(project.getProjectId()));
         project.setStatus(ResourceStatus.PROVISIONING);
         project.setCreatedAt(now);
@@ -61,7 +69,10 @@ public class ProjectService {
     }
 
     public List<ProjectResponse> list() {
-        return projectRepository.findAllByOrderByCreatedAtDesc()
+        String currentUser = currentUser();
+        return (currentUser == null
+                ? projectRepository.findAllByOrderByCreatedAtDesc()
+                : projectRepository.findByCreatedByOrderByCreatedAtDesc(currentUser))
                 .stream().map(this::toResponse).toList();
     }
 
@@ -163,8 +174,10 @@ public class ProjectService {
     }
 
     private ProjectMetadata requireProject(String project) {
-        return projectRepository
-                .findById(project)
+        String currentUser = currentUser();
+        return (currentUser == null
+                ? projectRepository.findById(project)
+                : projectRepository.findByProjectIdAndCreatedBy(project, currentUser))
                 .orElseThrow(this::projectNotFound);
     }
 
@@ -177,6 +190,35 @@ public class ProjectService {
         return new ApiException(HttpStatus.NOT_FOUND, "PROJECT_NOT_FOUND", false,
                 "Project was not found. Use the projectId returned by POST /api/v1/projects; "
                         + "displayName is not a project identifier.");
+    }
+
+    private String currentUser() {
+        String headerUser = currentUserFromRequest();
+        if (!blank(headerUser)) return emailUser(headerUser);
+        return null;
+    }
+
+    private String currentUserFromRequest() {
+        if (!(RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attributes)) {
+            return null;
+        }
+        String headerUser = attributes.getRequest().getHeader(CURRENT_USER_HEADER);
+        if (!blank(headerUser)) return headerUser;
+        headerUser = attributes.getRequest().getHeader(CURRENT_USER_FALLBACK_HEADER);
+        if (!blank(headerUser)) return headerUser;
+        throw new ApiException(HttpStatus.BAD_REQUEST, "CURRENT_USER_REQUIRED", false,
+                "Current user is required. Send the Cyfuture.ai email in the "
+                        + CURRENT_USER_HEADER + " header.");
+    }
+
+    private String emailUser(String value) {
+        String email = value.trim().toLowerCase();
+        if (!EMAIL.matcher(email).matches()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "CURRENT_USER_EMAIL_REQUIRED", false,
+                    "Current user must be a valid Cyfuture.ai email in the "
+                            + CURRENT_USER_HEADER + " header.");
+        }
+        return email;
     }
 
     private ProjectMetadata activateNamespace(ProjectMetadata project) {
