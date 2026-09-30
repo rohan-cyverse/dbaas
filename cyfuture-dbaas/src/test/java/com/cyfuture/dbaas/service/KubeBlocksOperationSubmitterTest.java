@@ -39,17 +39,18 @@ class KubeBlocksOperationSubmitterTest {
                 .build();
         DatabaseMetadata database = new DatabaseMetadata();
         database.setDatabaseId("db-orders0001");
+        database.setActiveClusterName("db-orders0001-restore-abcd1234");
         database.setProjectName("orders");
         database.setNamespaceName("dbaas-orders");
         when(operationRepository.findById(operation.getOperationId())).thenReturn(Optional.of(operation));
         when(databaseRepository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
                 .thenReturn(Optional.of(database));
-        when(kubeBlocksClient.componentNames("dbaas-orders", "db-orders0001"))
+        when(kubeBlocksClient.componentNames("dbaas-orders", "db-orders0001-restore-abcd1234"))
                 .thenReturn(List.of("postgresql", "metrics"));
 
         submitter.submit(operation.getOperationId());
 
-        verify(kubeBlocksClient).createRestartOpsRequest("dbaas-orders", "db-orders0001",
+        verify(kubeBlocksClient).createRestartOpsRequest("dbaas-orders", "db-orders0001-restore-abcd1234",
                 "op-restart0001", List.of("postgresql", "metrics"));
     }
 }

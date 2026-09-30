@@ -1153,7 +1153,7 @@
     },
     {
       "name": "Backup and Restore",
-      "description": "Configure scheduled backups, retention, PITR, and production-safe in-place restores. Restore requests preserve the same API databaseId, name, namespace, credentials, and stable public endpoint. DBaaS creates and verifies a safety backup, restores into a temporary physical KubeBlocks cluster named <databaseId>-restore-<shortId>, validates it, then briefly enters maintenance to cut the stable Service/HAProxy endpoint over. After the restored endpoint is verified, the previous physical cluster is deleted automatically. Keep each Idempotency-Key unchanged only when retrying the identical request; use a new key for a new operation.",
+      "description": "Configure scheduled backups, retention, PITR, and production-safe restores. Restore requests preserve the API databaseId, namespace, credentials, and stable public endpoint. KubeBlocks 1.0.2 requires restore into a new physical Cluster; DBaaS validates that Cluster and its primary before atomically switching the stable gateway backend. Scaling, storage expansion, and restart operations are pinned to the active restored Cluster. Keep each Idempotency-Key unchanged only when retrying the identical request; use a new key for a new operation.",
       "item": [
         {
           "name": "Update Backup Settings",
@@ -1461,7 +1461,7 @@
                 "restores"
               ]
             },
-            "description": "Starts an in-place full restore. DBaaS creates a safety backup, restores into an internal temporary physical cluster, validates it, then cuts over the stable database endpoint automatically."
+            "description": "Starts a full restore while preserving the logical database identity and connection details. DBaaS creates a safety backup, validates a restored physical Cluster, then switches the stable gateway backend."
           },
           "response": []
         },

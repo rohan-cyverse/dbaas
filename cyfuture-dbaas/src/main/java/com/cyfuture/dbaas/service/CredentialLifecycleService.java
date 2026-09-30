@@ -50,6 +50,7 @@ public class CredentialLifecycleService {
     private static final String GENERATION = "dbaas.cyfuture.com/credential-generation";
     private static final String OPERATION_ID = "dbaas.cyfuture.com/credential-operation-id";
     private static final String SETUP_VERSION = "dbaas.cyfuture.com/credential-setup-version";
+    private static final String LAST_RESTORE_ID = "dbaas.cyfuture.com/credential-restore-id";
     private static final String CURRENT_SETUP_VERSION = "5";
     private static final String READY = "READY";
     private static final String PENDING = "PENDING";
@@ -138,9 +139,30 @@ public class CredentialLifecycleService {
     }
 
     public boolean readyForRestoredCluster(DatabaseMetadata metadata, String physicalClusterName,
-                                           String logicalDatabaseName, String logicalUsername) {
+                                           String logicalDatabaseName, String logicalUsername,
+                                           String restoreId) {
+        prepareExistingCredentialAfterRestore(metadata, restoreId);
         reconcile(metadata, logicalDatabaseName, logicalUsername, true, physicalClusterName);
         return readyStatus(metadata, true);
+    }
+
+    private void prepareExistingCredentialAfterRestore(DatabaseMetadata metadata, String restoreId) {
+        try {
+            V1Secret secret = coreV1Api.readNamespacedSecret(
+                    secretName(metadata.getDatabaseId()), metadata.getNamespaceName()).execute();
+            Map<String, String> annotations = annotations(secret);
+            if (restoreId.equals(annotations.get(LAST_RESTORE_ID))) return;
+            int generation = Integer.parseInt(annotations.getOrDefault(GENERATION, "1")) + 1;
+            annotations.put(GENERATION, String.valueOf(generation));
+            annotations.put(STATUS, PENDING);
+            annotations.put(LAST_RESTORE_ID, restoreId);
+            // Keep username/password/database bytes exactly as supplied to the
+            // user. The helper only reapplies them inside the restored DB.
+            replaceSecret(metadata.getNamespaceName(), secret);
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not prepare existing credentials after restore: " + exception.getMessage());
+        }
     }
 
     /** Returns only the logical database name from the managed Secret, never credentials. */
@@ -466,7 +488,7 @@ public class CredentialLifecycleService {
                 .command(List.of("sh", "-ec"))
                 .args(List.of(script(metadata.getEngine())))
                 .env(List.of(
-                        value("DB_HOST", credentialHost(metadata, database)),
+                        value("DB_HOST", credentialHost(metadata, database, physicalClusterName)),
                         value("REQUIRE_EXISTING_DATABASE", String.valueOf(requireExistingDatabase)),
                         secret("ADMIN_USERNAME", adminSecret, "username"),
                         secret("ADMIN_PASSWORD", adminSecret, "password"),
@@ -496,14 +518,15 @@ public class CredentialLifecycleService {
         batchV1Api.createNamespacedJob(metadata.getNamespaceName(), job).execute();
     }
 
-    private String credentialHost(DatabaseMetadata metadata, DatabaseObservation database)
+    private String credentialHost(DatabaseMetadata metadata, DatabaseObservation database,
+                                  String physicalClusterName)
             throws io.kubernetes.client.openapi.ApiException {
         if (metadata.getEngine() != DatabaseEngine.MONGODB
                 || metadata.getMode() != DatabaseMode.REPLICA_SET) {
             return database.privateHost();
         }
         V1Service primary = DatabaseBackendResolver.ensureMongoPrimaryService(
-                coreV1Api, metadata, database.privatePort());
+                coreV1Api, metadata, database.privatePort(), physicalClusterName);
         return primary.getMetadata().getName() + "." + metadata.getNamespaceName()
                 + ".svc.cluster.local";
     }

@@ -173,6 +173,7 @@ public class DatabaseOperationService {
         return OperationMetadata.builder()
                 .operationId(operationId)
                 .opsRequestName(operationId)
+                .targetClusterName(database.physicalClusterName())
                 .databaseId(databaseId)
                 .projectName(project)
                 .type(type)

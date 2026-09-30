@@ -151,7 +151,7 @@ public class RestoreReconciler {
         String restoredUsername = CredentialLifecycleService.logicalUsername(target);
         if (!credentialLifecycleService.readyForRestoredCluster(target, temporaryClusterName(restore),
                 restoredLogicalDatabase,
-                restoredUsername)) {
+                restoredUsername, restore.getRestoreId())) {
             updateRunning(restore, observed, RestoreStatus.VALIDATING, 82,
                     "Validating restored database connection");
             return;
@@ -168,11 +168,11 @@ public class RestoreReconciler {
             target.setStatus(DatabaseStatus.MAINTENANCE);
             target.setProvisioningStage(ProvisioningStage.CUTTING_OVER);
             target.setProgress(90);
-            target.setMessage("Switching database endpoint to restored cluster");
+            target.setMessage("Switching stable database endpoint to the restored cluster");
             target.setUpdatedAt(Instant.now());
             databaseRepository.save(target);
             updateOperation(restore, OperationStatus.RUNNING, ProvisioningStage.CUTTING_OVER, 90,
-                    "Switching database endpoint to restored cluster", false);
+                    "Switching stable database endpoint to the restored cluster", false);
             return;
         }
 
@@ -192,22 +192,19 @@ public class RestoreReconciler {
         restore.setStatus(RestoreStatus.COMPLETED);
         restore.setTemporary(false);
         restore.setPromotedAt(Instant.now());
-        // The stable gateway is now verified against the restored cluster, so
-        // the previous physical cluster must no longer remain available.
-        // Persist the cleanup deadline before requesting deletion: the cleanup
-        // reconciler will retry and verify absence if this request is transient.
-        restore.setOldClusterDeleteAt(Instant.now());
+        // The logical database identity and endpoint remain stable. The old
+        // physical Cluster is retained; lifecycle operations are pinned to
+        // this validated restored Cluster through activeClusterName.
         restore.setCompletedAt(Instant.now());
         restore.setLastObservedAt(Instant.now());
         restore.setFailureCode(null);
         restore.setFailureMessage(null);
         restoreRepository.save(restore);
-        deleteOldCluster(restore, target);
         operationRepository.findById(restore.getOperationId()).ifPresent(operation -> {
             operation.setStatus(OperationStatus.SUCCEEDED);
             operation.setProvisioningStage(ProvisioningStage.READY);
             operation.setProgress(100);
-            operation.setMessage("Restore completed and stable endpoint targets restored cluster");
+            operation.setMessage("Restore completed; stable connection now targets the validated restored cluster");
             operation.setLastHeartbeatAt(Instant.now());
             if (operation.getStartedAt() == null) operation.setStartedAt(Instant.now());
             operation.setCompletedAt(Instant.now());
@@ -351,24 +348,6 @@ public class RestoreReconciler {
             kubeBlocksClient.requestDelete(database.getNamespaceName(), temporaryCluster);
         } catch (Exception ignored) {
             // Cleanup is retried by reconciliation.
-        }
-    }
-
-    private void deleteOldCluster(RestoreRequestMetadata restore, DatabaseMetadata database) {
-        String oldCluster = restore.getOldClusterName();
-        if (oldCluster == null || oldCluster.isBlank()
-                || oldCluster.equals(database.physicalClusterName())) return;
-        try {
-            kubeBlocksClient.requestDelete(database.getNamespaceName(), oldCluster);
-            KubeBlocksClient.ClusterObservation observed = kubeBlocksClient.observeCluster(
-                    database.getNamespaceName(), oldCluster);
-            if (!observed.exists()) {
-                restore.setOldClusterDeletedAt(Instant.now());
-                restoreRepository.save(restore);
-            }
-        } catch (Exception exception) {
-            log.debug("Old cluster cleanup for restore {} will retry: {}", restore.getRestoreId(),
-                    BackupRestoreSafety.safeMessage(exception, "Old restore cluster cleanup will retry."));
         }
     }
 

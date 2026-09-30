@@ -18,6 +18,7 @@ import io.kubernetes.client.openapi.models.V1ObjectMeta;
 import io.kubernetes.client.openapi.models.V1OwnerReference;
 import io.kubernetes.client.openapi.models.V1Pod;
 import io.kubernetes.client.openapi.models.V1PersistentVolumeClaim;
+import io.kubernetes.client.openapi.models.V1PersistentVolume;
 import io.kubernetes.client.openapi.models.V1Secret;
 import io.kubernetes.client.openapi.models.V1Taint;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -210,12 +211,8 @@ public class KubeBlocksClient {
                             GROUP, VERSION, namespace, CLUSTERS, databaseId).execute()));
             Map<String, Object> metadata = mutableChildMap(cluster, "metadata");
             if (metadata.get("deletionTimestamp") != null) {
-                // A previous request already selected WipeOut and Kubernetes accepted
-                // deletion. Clear only the stale KubeBlocks finalizer on this exact
-                // database resource so reconciliation cannot remain stuck forever.
-                metadata.put("finalizers", List.of());
-                customObjectsApi.replaceNamespacedCustomObject(
-                        GROUP, VERSION, namespace, CLUSTERS, databaseId, cluster).execute();
+                // Kubernetes has accepted the request. Keep KubeBlocks finalizers intact:
+                // they are what perform the operator-owned WipeOut storage cleanup.
                 return;
             }
             // KubeBlocks' Delete policy removes the Cluster but deliberately
@@ -232,6 +229,85 @@ public class KubeBlocksClient {
             if (exception.getCode() == 404) return;
             throw new ApiException(HttpStatus.BAD_GATEWAY,
                     "KubeBlocks could not delete the database: " + kubernetesMessage(exception));
+        }
+    }
+
+    /**
+     * Removes storage that belongs to one database after its KubeBlocks Cluster is gone.
+     * WipeOut normally performs this cleanup, but doing it explicitly prevents orphaned
+     * PVCs (and Retain-policy PVs) when the operator misses or cannot finish that step.
+     *
+     * @return {@code true} only when neither a matching PVC nor PV is still visible
+     */
+    public boolean cleanupDatabaseStorage(String namespace, String databaseId) {
+        String selector = APP_INSTANCE_LABEL + "=" + databaseId;
+        try {
+            List<V1PersistentVolumeClaim> claims = coreV1Api
+                    .listNamespacedPersistentVolumeClaim(namespace)
+                    .labelSelector(selector)
+                    .execute().getItems();
+            Set<String> claimNames = new HashSet<>();
+            Set<String> volumeNames = new HashSet<>();
+            for (V1PersistentVolumeClaim claim : claims) {
+                if (claim.getMetadata() == null || claim.getMetadata().getName() == null) continue;
+                claimNames.add(claim.getMetadata().getName());
+                if (claim.getSpec() != null && claim.getSpec().getVolumeName() != null) {
+                    volumeNames.add(claim.getSpec().getVolumeName());
+                }
+                deleteDatabaseClaim(namespace, claim.getMetadata().getName());
+            }
+
+            List<V1PersistentVolume> volumes = coreV1Api.listPersistentVolume().execute().getItems();
+            List<V1PersistentVolume> ownedVolumes = volumes.stream()
+                    .filter(volume -> databaseOwnsVolume(
+                            volume, namespace, databaseId, claimNames, volumeNames))
+                    .toList();
+            for (V1PersistentVolume volume : ownedVolumes) {
+                deleteDatabaseVolume(volume.getMetadata().getName());
+            }
+            return claims.isEmpty() && ownedVolumes.isEmpty();
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY,
+                    "Could not clean up database storage: " + kubernetesMessage(exception));
+        }
+    }
+
+    private boolean databaseOwnsVolume(V1PersistentVolume volume, String namespace,
+                                        String databaseId, Set<String> claimNames,
+                                        Set<String> volumeNames) {
+        if (volume.getMetadata() == null || volume.getMetadata().getName() == null) return false;
+        if (volumeNames.contains(volume.getMetadata().getName())) return true;
+        Map<String, String> labels = volume.getMetadata().getLabels();
+        if (labels != null && databaseId.equals(labels.get(APP_INSTANCE_LABEL))) return true;
+        if (volume.getSpec() == null || volume.getSpec().getClaimRef() == null) return false;
+        String claimNamespace = volume.getSpec().getClaimRef().getNamespace();
+        String claimName = volume.getSpec().getClaimRef().getName();
+        return namespace.equals(claimNamespace) && claimName != null
+                && (claimNames.contains(claimName) || resourceNameContains(claimName, databaseId));
+    }
+
+    private boolean resourceNameContains(String resourceName, String databaseId) {
+        return resourceName.equals(databaseId)
+                || resourceName.startsWith(databaseId + "-")
+                || resourceName.endsWith("-" + databaseId)
+                || resourceName.contains("-" + databaseId + "-");
+    }
+
+    private void deleteDatabaseClaim(String namespace, String name)
+            throws io.kubernetes.client.openapi.ApiException {
+        try {
+            coreV1Api.deleteNamespacedPersistentVolumeClaim(name, namespace).execute();
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() != 404) throw exception;
+        }
+    }
+
+    private void deleteDatabaseVolume(String name)
+            throws io.kubernetes.client.openapi.ApiException {
+        try {
+            coreV1Api.deletePersistentVolume(name).execute();
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() != 404) throw exception;
         }
     }
 
@@ -1243,7 +1319,17 @@ public class KubeBlocksClient {
             Map<String, Object> object = asMap(customObjectsApi.getNamespacedCustomObject(
                     OPS_GROUP, OPS_VERSION, namespace, OPS_REQUESTS, opsRequestName).execute());
             Map<String, Object> status = asMap(object.get("status"));
-            return new OpsRequestInfo(String.valueOf(status.getOrDefault("phase", "Pending")),
+            String phase = String.valueOf(status.getOrDefault("phase", "Pending"));
+            Map<String, Object> spec = asMap(object.get("spec"));
+            if ("Creating".equalsIgnoreCase(phase)
+                    && "Restore".equalsIgnoreCase(optionalText(spec.get("type")))
+                    && restoreTargetAlreadyExists(namespace, object, optionalText(spec.get("clusterName")))) {
+                return new OpsRequestInfo("Failed", String.valueOf(status.getOrDefault("progress", "-/-")),
+                        "KubeBlocks Restore requires a new physical cluster name; the target cluster already exists.",
+                        "RESTORE_TARGET_CLUSTER_ALREADY_EXISTS", instant(status.get("startTimestamp")),
+                        Instant.now());
+            }
+            return new OpsRequestInfo(phase,
                     String.valueOf(status.getOrDefault("progress", "-/-")),
                     lastConditionMessage(status),
                     lastConditionReason(status),
@@ -1257,6 +1343,27 @@ public class KubeBlocksClient {
             throw new ApiException(HttpStatus.BAD_GATEWAY,
                     "Could not read KubeBlocks OpsRequest: " + kubernetesMessage(exception));
         }
+    }
+
+    private boolean restoreTargetAlreadyExists(String namespace, Map<String, Object> opsRequest,
+                                               String clusterName)
+            throws io.kubernetes.client.openapi.ApiException {
+        if (clusterName == null || clusterName.isBlank()) return false;
+        Map<String, Object> cluster;
+        try {
+            cluster = asMap(customObjectsApi.getNamespacedCustomObject(
+                    GROUP, VERSION, namespace, CLUSTERS, clusterName).execute());
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() == 404) return false;
+            throw exception;
+        }
+        String opsUid = optionalText(asMap(opsRequest.get("metadata")).get("uid"));
+        if (opsUid == null) return true;
+        Object references = asMap(cluster.get("metadata")).get("ownerReferences");
+        if (!(references instanceof List<?> owners)) return true;
+        return owners.stream().map(this::asMap)
+                .noneMatch(owner -> opsUid.equals(optionalText(owner.get("uid")))
+                        && "OpsRequest".equals(optionalText(owner.get("kind"))));
     }
 
     public long storageBytes(String quantity) {

@@ -18,6 +18,12 @@ import io.kubernetes.client.openapi.models.V1PodList;
 import io.kubernetes.client.openapi.models.V1PodSpec;
 import io.kubernetes.client.openapi.models.V1PodStatus;
 import io.kubernetes.client.openapi.models.V1PersistentVolumeClaimList;
+import io.kubernetes.client.openapi.models.V1PersistentVolumeClaim;
+import io.kubernetes.client.openapi.models.V1PersistentVolumeClaimSpec;
+import io.kubernetes.client.openapi.models.V1PersistentVolume;
+import io.kubernetes.client.openapi.models.V1PersistentVolumeList;
+import io.kubernetes.client.openapi.models.V1PersistentVolumeSpec;
+import io.kubernetes.client.openapi.models.V1ObjectReference;
 import io.kubernetes.client.openapi.models.V1ResourceRequirements;
 import io.kubernetes.client.openapi.models.V1Namespace;
 import io.kubernetes.client.openapi.models.V1Secret;
@@ -405,6 +411,68 @@ class KubeBlocksClientTest {
         assertEquals("WipeOut", ((Map<?, ?>) body.get("spec")).get("terminationPolicy"));
         verify(customObjectsApi).deleteNamespacedCustomObject(
                 "apps.kubeblocks.io", "v1", "dbaas-orders", "clusters", "db-orders0001");
+    }
+
+    @Test
+    void deletionInProgressPreservesKubeBlocksFinalizers() throws Exception {
+        Map<String, Object> deletingCluster = new java.util.LinkedHashMap<>();
+        deletingCluster.put("metadata", new java.util.LinkedHashMap<>(Map.of(
+                "name", "db-orders0001",
+                "deletionTimestamp", "2026-09-30T10:00:00Z",
+                "finalizers", List.of("apps.kubeblocks.io/finalizer"))));
+        deletingCluster.put("spec", new java.util.LinkedHashMap<>(Map.of(
+                "terminationPolicy", "WipeOut")));
+        when(customObjectsApi.getNamespacedCustomObject("apps.kubeblocks.io", "v1",
+                "dbaas-orders", "clusters", "db-orders0001").execute())
+                .thenReturn(deletingCluster);
+
+        client.requestDelete("dbaas-orders", "db-orders0001");
+
+        verify(customObjectsApi, never()).replaceNamespacedCustomObject(
+                eq("apps.kubeblocks.io"), eq("v1"), eq("dbaas-orders"),
+                eq("clusters"), eq("db-orders0001"), any());
+        verify(customObjectsApi, never()).deleteNamespacedCustomObject(
+                "apps.kubeblocks.io", "v1", "dbaas-orders", "clusters", "db-orders0001");
+        assertEquals(List.of("apps.kubeblocks.io/finalizer"),
+                ((Map<?, ?>) deletingCluster.get("metadata")).get("finalizers"));
+    }
+
+    @Test
+    void explicitlyDeletesOnlyDatabaseOwnedClaimsAndVolumes() throws Exception {
+        V1PersistentVolumeClaim claim = new V1PersistentVolumeClaim()
+                .metadata(new V1ObjectMeta().name("data-db-orders0001-postgresql-0"))
+                .spec(new V1PersistentVolumeClaimSpec().volumeName("pvc-database-volume"));
+        when(coreV1Api.listNamespacedPersistentVolumeClaim("dbaas-orders")
+                .labelSelector("app.kubernetes.io/instance=db-orders0001").execute())
+                .thenReturn(new V1PersistentVolumeClaimList().items(List.of(claim)));
+        V1PersistentVolume owned = new V1PersistentVolume()
+                .metadata(new V1ObjectMeta().name("pvc-database-volume"))
+                .spec(new V1PersistentVolumeSpec().claimRef(new V1ObjectReference()
+                        .namespace("dbaas-orders").name("data-db-orders0001-postgresql-0")));
+        V1PersistentVolume unrelated = new V1PersistentVolume()
+                .metadata(new V1ObjectMeta().name("pvc-other-volume"))
+                .spec(new V1PersistentVolumeSpec().claimRef(new V1ObjectReference()
+                        .namespace("dbaas-orders").name("data-db-other-postgresql-0")));
+        when(coreV1Api.listPersistentVolume().execute())
+                .thenReturn(new V1PersistentVolumeList().items(List.of(owned, unrelated)));
+
+        assertFalse(client.cleanupDatabaseStorage("dbaas-orders", "db-orders0001"));
+
+        verify(coreV1Api).deleteNamespacedPersistentVolumeClaim(
+                "data-db-orders0001-postgresql-0", "dbaas-orders");
+        verify(coreV1Api).deletePersistentVolume("pvc-database-volume");
+        verify(coreV1Api, never()).deletePersistentVolume("pvc-other-volume");
+    }
+
+    @Test
+    void storageCleanupCompletesOnlyWhenClaimsAndVolumesAreAbsent() throws Exception {
+        when(coreV1Api.listNamespacedPersistentVolumeClaim("dbaas-orders")
+                .labelSelector("app.kubernetes.io/instance=db-orders0001").execute())
+                .thenReturn(new V1PersistentVolumeClaimList().items(List.of()));
+        when(coreV1Api.listPersistentVolume().execute())
+                .thenReturn(new V1PersistentVolumeList().items(List.of()));
+
+        assertTrue(client.cleanupDatabaseStorage("dbaas-orders", "db-orders0001"));
     }
 
     @Test

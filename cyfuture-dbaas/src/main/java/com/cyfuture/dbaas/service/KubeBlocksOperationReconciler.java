@@ -96,7 +96,7 @@ public class KubeBlocksOperationReconciler {
 
         if (reported == OperationStatus.SUCCEEDED) {
             KubeBlocksClient.VerticalScalingObservation observation = kubeBlocksClient
-                    .observeVerticalScaling(database.getNamespaceName(), database.physicalClusterName(),
+                    .observeVerticalScaling(database.getNamespaceName(), targetCluster(database, operation),
                             operation.getComponentName(),
                             java.util.Map.of("cpu", operation.getCpuRequest(),
                                     "memory", operation.getMemoryRequest()),
@@ -129,7 +129,7 @@ public class KubeBlocksOperationReconciler {
         if (reported != OperationStatus.SUCCEEDED) return reported;
 
         KubeBlocksClient.ClusterObservation observation = kubeBlocksClient.observeCluster(
-                database.getNamespaceName(), database.physicalClusterName());
+                database.getNamespaceName(), targetCluster(database, operation));
         if (observation.healthy()) return OperationStatus.SUCCEEDED;
 
         operation.setMessage(safeMessage(observation.message()));
@@ -140,6 +140,11 @@ public class KubeBlocksOperationReconciler {
     private boolean instanceUpdateRestricted(KubeBlocksClient.OpsRequestInfo live) {
         return containsIgnoreCase(live.reason(), "InstanceUpdateRestricted")
                 || containsIgnoreCase(live.message(), "InstanceUpdateRestricted");
+    }
+
+    private String targetCluster(DatabaseMetadata database, OperationMetadata operation) {
+        return operation.getTargetClusterName() == null || operation.getTargetClusterName().isBlank()
+                ? database.physicalClusterName() : operation.getTargetClusterName();
     }
 
     private boolean containsIgnoreCase(String value, String expected) {

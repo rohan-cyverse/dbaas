@@ -31,7 +31,11 @@ public class DatabaseBackendResolver {
     }
 
     static Optional<V1Service> select(List<V1Service> services, DatabaseMetadata db, int port) {
-        String physicalClusterName = db.physicalClusterName();
+        return select(services, db, port, db.physicalClusterName());
+    }
+
+    static Optional<V1Service> select(List<V1Service> services, DatabaseMetadata db, int port,
+                                      String physicalClusterName) {
         return services.stream()
                 .filter(x -> x.getMetadata() != null && x.getMetadata().getName() != null)
                 .filter(x -> belongsToDatabase(x, physicalClusterName))
@@ -65,21 +69,15 @@ public class DatabaseBackendResolver {
 
     static V1Service ensureMongoPrimaryService(CoreV1Api api, DatabaseMetadata db, int port)
             throws io.kubernetes.client.openapi.ApiException {
-        String name = db.getDatabaseId() + "-mongodb-primary";
-        try {
-            V1Service existing = api.readNamespacedService(name, db.getNamespaceName()).execute();
-            if (isStrictPrimaryService(existing)) return existing;
-            Map<String, String> corrected = existing.getSpec().getSelector() == null
-                    ? new java.util.LinkedHashMap<>()
-                    : new java.util.LinkedHashMap<>(existing.getSpec().getSelector());
-            corrected.put("kubeblocks.io/role", "primary");
-            existing.getSpec().setSelector(corrected);
-            return api.replaceNamespacedService(name, db.getNamespaceName(), existing).execute();
-        } catch (io.kubernetes.client.openapi.ApiException exception) {
-            if (exception.getCode() != 404) throw exception;
-        }
+        return ensureMongoPrimaryService(api, db, port, db.physicalClusterName());
+    }
 
-        V1Service base = select(api.listNamespacedService(db.getNamespaceName()).execute().getItems(), db, port)
+    static V1Service ensureMongoPrimaryService(CoreV1Api api, DatabaseMetadata db, int port,
+                                               String physicalClusterName)
+            throws io.kubernetes.client.openapi.ApiException {
+        String name = db.getDatabaseId() + "-mongodb-primary";
+        V1Service base = select(api.listNamespacedService(db.getNamespaceName()).execute().getItems(),
+                db, port, physicalClusterName)
                 .filter(service -> !service.getMetadata().getName().equals(name))
                 .orElseThrow(() -> new IllegalStateException(
                         "MongoDB client Service is not ready for " + db.getDatabaseId()));
@@ -87,8 +85,19 @@ public class DatabaseBackendResolver {
             throw new IllegalStateException("MongoDB client Service has no pod selector for "
                     + db.getDatabaseId());
         }
-        Map<String, String> selector = new java.util.LinkedHashMap<>(base.getSpec().getSelector());
-        selector.put("kubeblocks.io/role", "primary");
+        Map<String, String> desiredSelector = new java.util.LinkedHashMap<>(base.getSpec().getSelector());
+        desiredSelector.put("kubeblocks.io/role", "primary");
+        try {
+            V1Service existing = api.readNamespacedService(name, db.getNamespaceName()).execute();
+            // The stable Service outlives restore cutovers. Reconcile the
+            // complete selector, including the active physical Cluster label;
+            // checking only the role would leave it targeting the old pods.
+            if (desiredSelector.equals(existing.getSpec().getSelector())) return existing;
+            existing.getSpec().setSelector(desiredSelector);
+            return api.replaceNamespacedService(name, db.getNamespaceName(), existing).execute();
+        } catch (io.kubernetes.client.openapi.ApiException exception) {
+            if (exception.getCode() != 404) throw exception;
+        }
         V1Service primary = new V1Service()
                 .apiVersion("v1")
                 .kind("Service")
@@ -96,7 +105,7 @@ public class DatabaseBackendResolver {
                         .labels(Map.of(
                                 "app.kubernetes.io/managed-by", "cyfuture-dbaas",
                                 "dbaas.cyfuture.com/database-id", db.getDatabaseId())))
-                .spec(new V1ServiceSpec().selector(selector).ports(base.getSpec().getPorts()));
+                .spec(new V1ServiceSpec().selector(desiredSelector).ports(base.getSpec().getPorts()));
         return api.createNamespacedService(db.getNamespaceName(), primary).execute();
     }
 

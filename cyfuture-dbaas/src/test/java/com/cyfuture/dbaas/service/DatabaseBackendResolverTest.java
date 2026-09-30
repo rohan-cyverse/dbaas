@@ -50,6 +50,37 @@ class DatabaseBackendResolverTest {
     }
 
     @Test
+    void restoredMongoReplicaSetRepointsStablePrimaryServiceToRestoredPods() throws Exception {
+        DatabaseMetadata database = database(DatabaseEngine.MONGODB, DatabaseMode.REPLICA_SET);
+        database.setNamespaceName("dbaas-orders");
+        CoreV1Api api = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        V1Service restored = service("db-orders-restore-abc12345-mongodb",
+                Map.of("app", "db-orders-restore-abc12345"),
+                Map.of("app.kubernetes.io/instance", "db-orders-restore-abc12345"));
+        V1Service stable = service("db-orders-mongodb-primary", Map.of(),
+                Map.of("app.kubernetes.io/instance", "db-orders", "kubeblocks.io/role", "primary"));
+        when(api.listNamespacedService("dbaas-orders").execute())
+                .thenReturn(new io.kubernetes.client.openapi.models.V1ServiceList().items(List.of(restored, stable)));
+        when(api.readNamespacedService("db-orders-mongodb-primary", "dbaas-orders").execute())
+                .thenReturn(stable);
+        when(api.replaceNamespacedService(eq("db-orders-mongodb-primary"), eq("dbaas-orders"), any())
+                .execute()).thenAnswer(invocation -> stable);
+
+        // Restore validation occurs before activeClusterName changes, so the
+        // physical restore target must be honored explicitly here.
+        DatabaseBackendResolver.ensureMongoPrimaryService(api, database, 27017,
+                "db-orders-restore-abc12345");
+
+        ArgumentCaptor<V1Service> replacement = ArgumentCaptor.forClass(V1Service.class);
+        verify(api).replaceNamespacedService(eq("db-orders-mongodb-primary"),
+                eq("dbaas-orders"), replacement.capture());
+        assertEquals("db-orders-restore-abc12345", replacement.getValue().getSpec().getSelector()
+                .get("app.kubernetes.io/instance"));
+        assertEquals("primary", replacement.getValue().getSpec().getSelector()
+                .get("kubeblocks.io/role"));
+    }
+
+    @Test
     void mongoReplicaSetUsesRoleAwarePrimaryService() {
         DatabaseMetadata database = database(DatabaseEngine.MONGODB, DatabaseMode.REPLICA_SET);
 

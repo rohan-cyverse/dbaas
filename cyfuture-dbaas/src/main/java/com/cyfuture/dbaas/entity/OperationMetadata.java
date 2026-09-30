@@ -46,6 +46,9 @@ public class OperationMetadata {
     private String requestHash;
     @Column(length = 63)
     private String opsRequestName;
+    /** Immutable physical Cluster selected when this operation is accepted. */
+    @Column(length = 63)
+    private String targetClusterName;
     @Column(length = 63)
     private String componentName;
     private Integer targetReplicas;

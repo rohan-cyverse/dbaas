@@ -1,5 +1,6 @@
 package com.cyfuture.dbaas.service;
 
+import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.dto.CreateRestoreRequest;
 import com.cyfuture.dbaas.entity.BackupMetadata;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
@@ -53,7 +54,7 @@ class RestoreServiceTest {
     private RestoreReconciler restoreReconciler;
     private PitrRecoveryService pitrRecoveryService;
     private BackupPolicyService backupPolicyService;
-    private DatabaseService databaseService;
+    private KubeBlocksClient kubeBlocksClient;
     private OperationService operationService;
     private RestoreService service;
     private DatabaseMetadata source;
@@ -71,11 +72,11 @@ class RestoreServiceTest {
         restoreReconciler = mock(RestoreReconciler.class);
         pitrRecoveryService = mock(PitrRecoveryService.class);
         backupPolicyService = mock(BackupPolicyService.class);
-        databaseService = mock(DatabaseService.class);
+        kubeBlocksClient = mock(KubeBlocksClient.class);
         operationService = mock(OperationService.class);
         service = new RestoreService(backupRepository, restoreRepository, databaseRepository,
                 operationRepository, projectService, strategies, submissionService, restoreReconciler,
-                pitrRecoveryService, backupPolicyService, databaseService, operationService);
+                pitrRecoveryService, backupPolicyService, kubeBlocksClient, operationService);
 
         ProjectMetadata project = new ProjectMetadata();
         project.setProjectId("orders");
@@ -84,6 +85,8 @@ class RestoreServiceTest {
 
         source = database("db-source0001", "orders");
         when(databaseRepository.findByDatabaseIdAndProjectNameForUpdate("db-source0001", "orders"))
+                .thenReturn(Optional.of(source));
+        when(databaseRepository.findByDatabaseIdAndProjectName("db-source0001", "orders"))
                 .thenReturn(Optional.of(source));
 
         backup = backup(BackupStatus.COMPLETED);
@@ -144,30 +147,42 @@ class RestoreServiceTest {
         assertNull(response.expiresAt());
         assertNull(existing.getExpiresAfterHours());
         assertNotEquals(null, existing.getPromotedAt());
-        verify(databaseService, never()).delete(anyString(), anyString());
+        verify(kubeBlocksClient, never()).requestDelete(anyString(), anyString());
     }
 
     @Test
-    void deleteTemporaryRestoreDeletesOnlyTheRestoredDatabase() {
+    void deleteTemporaryRestoreDeletesOnlyDisposableClusterAndPreservesOriginalDatabase() {
         RestoreRequestMetadata existing = restore(RestoreStatus.READY);
         when(restoreRepository.findByRestoreIdAndProjectNameAndSourceDatabaseId(
                 "rst-existing001", "orders", "db-source0001")).thenReturn(Optional.of(existing));
 
         service.deleteTemporary("orders", "db-source0001", "rst-existing001");
 
-        verify(databaseService).delete("orders", "db-restored001");
-        verify(databaseService, never()).delete("orders", "db-source0001");
+        verify(kubeBlocksClient).requestDelete("dbaas-orders", "db-source0001-restore-abc12345");
+        verify(databaseRepository, never()).delete(any(DatabaseMetadata.class));
     }
 
     @Test
-    void expiredTemporaryRestoreDeletesOnlyTheRestoredDatabase() {
+    void expiredTemporaryRestoreDeletesOnlyDisposableClusterAndPreservesOriginalDatabase() {
         RestoreRequestMetadata existing = restore(RestoreStatus.READY);
 
         service.expireTemporaryRestore(existing);
 
         assertEquals(RestoreStatus.EXPIRED, existing.getStatus());
-        verify(databaseService).delete("orders", "db-restored001");
-        verify(databaseService, never()).delete("orders", "db-source0001");
+        verify(kubeBlocksClient).requestDelete("dbaas-orders", "db-source0001-restore-abc12345");
+        verify(databaseRepository, never()).delete(any(DatabaseMetadata.class));
+    }
+
+    @Test
+    void temporaryCleanupNeverDeletesClusterCurrentlyServingTheDatabase() {
+        RestoreRequestMetadata existing = restore(RestoreStatus.READY);
+        source.setActiveClusterName(existing.getTemporaryClusterName());
+
+        service.expireTemporaryRestore(existing);
+
+        assertEquals(RestoreStatus.EXPIRED, existing.getStatus());
+        verify(kubeBlocksClient, never()).requestDelete(anyString(), anyString());
+        verify(databaseRepository, never()).delete(any(DatabaseMetadata.class));
     }
 
     private CreateRestoreRequest restoreRequest(String targetName) {
@@ -183,7 +198,9 @@ class RestoreServiceTest {
         restore.setSourceDatabaseId("db-source0001");
         restore.setSourceBackupId("bkp-source0001");
         restore.setRestoreMode(RestoreMode.FULL);
-        restore.setRestoredDatabaseId("db-restored001");
+        restore.setRestoredDatabaseId("db-source0001");
+        restore.setTemporaryClusterName("db-source0001-restore-abc12345");
+        restore.setOldClusterName("db-source0001");
         restore.setTargetDatabaseName("orders-restore");
         restore.setTemporary(true);
         restore.setExpiresAfterHours(24);

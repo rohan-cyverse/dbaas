@@ -1,5 +1,6 @@
 package com.cyfuture.dbaas.service;
 
+import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.dto.CreateRestoreRequest;
 import com.cyfuture.dbaas.dto.RestoreResponse;
 import com.cyfuture.dbaas.entity.BackupMetadata;
@@ -37,7 +38,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
-/** Creates a new database for every full or point-in-time restore. */
+/** Restores data in place while preserving the DBaaS database identity. */
 @Service
 @RequiredArgsConstructor
 public class RestoreService {
@@ -53,7 +54,7 @@ public class RestoreService {
     private final RestoreReconciler restoreReconciler;
     private final PitrRecoveryService pitrRecoveryService;
     private final BackupPolicyService backupPolicyService;
-    private final DatabaseService databaseService;
+    private final KubeBlocksClient kubeBlocksClient;
     private final OperationService operationService;
 
     @Transactional
@@ -149,7 +150,11 @@ public class RestoreService {
         restore.setStatus(RestoreStatus.DELETING);
         restore.setDeletedAt(Instant.now());
         restoreRepository.save(restore);
-        submitAfterCommit(() -> databaseService.delete(project, restore.getRestoredDatabaseId()));
+        // An in-place restore reuses the source database metadata ID. Calling
+        // DatabaseService.delete here would therefore delete the user's
+        // original database. Only the disposable physical restore Cluster may
+        // be removed by this endpoint.
+        submitAfterCommit(() -> deleteTemporaryPhysicalCluster(restore));
         return response(restore);
     }
 
@@ -206,7 +211,7 @@ public class RestoreService {
         String restoreId = "rst-" + shortId();
         String operationId = "op-" + shortId();
         String restoreSuffix = shortId().substring(0, 8);
-        String temporaryClusterName = source.getDatabaseId() + "-restore-" + restoreSuffix;
+        String restoredClusterName = source.getDatabaseId() + "-restore-" + restoreSuffix;
         String oldClusterName = source.physicalClusterName();
         Instant now = Instant.now();
         if (source.getActiveClusterName() == null || source.getActiveClusterName().isBlank()) {
@@ -225,7 +230,11 @@ public class RestoreService {
         restore.setSourceBackupId(backup.getBackupId());
         restore.setRestoreMode(mode);
         restore.setRestoredDatabaseId(source.getDatabaseId());
-        restore.setTemporaryClusterName(temporaryClusterName);
+        // KubeBlocks 1.0.2 Restore is a cluster-creation operation and fails
+        // when clusterName already exists. Restore into an isolated physical
+        // Cluster, then retain the stable DBaaS identity and endpoint during
+        // the verified gateway cutover.
+        restore.setTemporaryClusterName(restoredClusterName);
         restore.setOldClusterName(oldClusterName);
         restore.setTargetDatabaseName(source.getDisplayName());
         restore.setRestoreTime(restoreTime);
@@ -332,7 +341,19 @@ public class RestoreService {
         restore.setStatus(RestoreStatus.EXPIRED);
         restore.setDeletedAt(Instant.now());
         restoreRepository.save(restore);
-        databaseService.delete(restore.getProjectName(), restore.getRestoredDatabaseId());
+        deleteTemporaryPhysicalCluster(restore);
+    }
+
+    private void deleteTemporaryPhysicalCluster(RestoreRequestMetadata restore) {
+        DatabaseMetadata source = databaseRepository.findByDatabaseIdAndProjectName(
+                restore.getSourceDatabaseId(), restore.getProjectName()).orElse(null);
+        String temporaryCluster = restore.getTemporaryClusterName();
+        if (source == null || blank(temporaryCluster)
+                || temporaryCluster.equals(source.physicalClusterName())
+                || temporaryCluster.equals(restore.getOldClusterName())) {
+            return;
+        }
+        kubeBlocksClient.requestDelete(source.getNamespaceName(), temporaryCluster);
     }
 
     private RestoreOptions validateRestoreOptions(CreateRestoreRequest request, DatabaseMetadata source) {

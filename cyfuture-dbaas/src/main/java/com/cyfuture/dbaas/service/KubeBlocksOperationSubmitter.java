@@ -43,8 +43,8 @@ public class KubeBlocksOperationSubmitter {
                 case HORIZONTAL_SCALING -> submitHorizontal(database, operation);
                 case STORAGE_EXPANSION -> submitStorage(database, operation);
                 case RESTART -> kubeBlocksClient.createRestartOpsRequest(
-                        database.getNamespaceName(), database.physicalClusterName(), operation.getOpsRequestName(),
-                        restartComponents(database));
+                        database.getNamespaceName(), targetCluster(database, operation), operation.getOpsRequestName(),
+                        restartComponents(database, operation));
                 default -> throw new IllegalStateException("Unsupported KubeBlocks operation " + operation.getType());
             }
 
@@ -65,9 +65,9 @@ public class KubeBlocksOperationSubmitter {
 
     private void submitVertical(DatabaseMetadata database, OperationMetadata operation) {
         kubeBlocksClient.ensurePreferInPlacePodUpdatePolicy(database.getNamespaceName(),
-                database.physicalClusterName(), operation.getComponentName());
+                targetCluster(database, operation), operation.getComponentName());
         kubeBlocksClient.createVerticalScalingOpsRequest(database.getNamespaceName(),
-                database.physicalClusterName(), operation.getOpsRequestName(),
+                targetCluster(database, operation), operation.getOpsRequestName(),
                 operation.getComponentName(),
                 Map.of("cpu", operation.getCpuRequest(), "memory", operation.getMemoryRequest()),
                 Map.of("cpu", operation.getCpuLimit(), "memory", operation.getMemoryLimit()));
@@ -75,15 +75,15 @@ public class KubeBlocksOperationSubmitter {
 
     private void submitHorizontal(DatabaseMetadata database, OperationMetadata operation) {
         KubeBlocksClient.ClusterComponentInfo component = kubeBlocksClient.requireComponent(
-                database.getNamespaceName(), database.physicalClusterName(), operation.getComponentName());
+                database.getNamespaceName(), targetCluster(database, operation), operation.getComponentName());
         kubeBlocksClient.createHorizontalScalingOpsRequest(database.getNamespaceName(),
-                database.physicalClusterName(), operation.getOpsRequestName(), component.name(),
+                targetCluster(database, operation), operation.getOpsRequestName(), component.name(),
                 component.replicas(), operation.getTargetReplicas());
     }
 
     private void submitStorage(DatabaseMetadata database, OperationMetadata operation) {
         KubeBlocksClient.ClusterComponentInfo component = kubeBlocksClient.requireComponent(
-                database.getNamespaceName(), database.physicalClusterName(), operation.getComponentName());
+                database.getNamespaceName(), targetCluster(database, operation), operation.getComponentName());
         String currentStorage = component.storage(operation.getVolumeName());
         if (currentStorage == null) {
             throw new ApiException(org.springframework.http.HttpStatus.BAD_REQUEST,
@@ -96,12 +96,17 @@ public class KubeBlocksOperationSubmitter {
                     "newStorageSize must be greater than the current size " + currentStorage);
         }
         kubeBlocksClient.createVolumeExpansionOpsRequest(database.getNamespaceName(),
-                database.physicalClusterName(), operation.getOpsRequestName(), component.name(),
+                targetCluster(database, operation), operation.getOpsRequestName(), component.name(),
                 operation.getVolumeName(), operation.getTargetStorageSize());
     }
 
-    private List<String> restartComponents(DatabaseMetadata database) {
-        return kubeBlocksClient.componentNames(database.getNamespaceName(), database.physicalClusterName());
+    private List<String> restartComponents(DatabaseMetadata database, OperationMetadata operation) {
+        return kubeBlocksClient.componentNames(database.getNamespaceName(), targetCluster(database, operation));
+    }
+
+    private String targetCluster(DatabaseMetadata database, OperationMetadata operation) {
+        return operation.getTargetClusterName() == null || operation.getTargetClusterName().isBlank()
+                ? database.physicalClusterName() : operation.getTargetClusterName();
     }
 
     private String safeMessage(Exception exception) {

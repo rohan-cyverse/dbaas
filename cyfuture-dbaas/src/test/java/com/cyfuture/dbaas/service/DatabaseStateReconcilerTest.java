@@ -57,6 +57,7 @@ class DatabaseStateReconcilerTest {
         when(credentials.cleanupDatabaseResources(any())).thenReturn(
                 new CredentialLifecycleService.CredentialCleanupObservation(true, 0, 0, 0, "gone"));
         when(retention.readyForClusterDeletion(any(), any())).thenReturn(true);
+        when(kubeBlocksClient.cleanupDatabaseStorage(any(), any())).thenReturn(true);
         ReflectionTestUtils.setField(reconciler, "degradedGraceMs", 1L);
         ReflectionTestUtils.setField(reconciler, "missingGraceMs", 1L);
     }
@@ -215,6 +216,28 @@ class DatabaseStateReconcilerTest {
 
         assertEquals(DatabaseStatus.DELETING, database.getStatus());
         assertEquals(OperationStatus.RUNNING, operation.getStatus());
+        verify(gateway, never()).releasePort(database);
+    }
+
+    @Test
+    void deletionWaitsForPersistentStorageBeforeMarkingDeleted() {
+        DatabaseMetadata database = database(DatabaseStatus.DELETING);
+        OperationMetadata operation = deleteOperation();
+        when(kubeBlocksClient.observeCluster("dbaas-orders", "db-orders0001"))
+                .thenReturn(KubeBlocksClient.ClusterObservation.missing(
+                        "dbaas-orders", "db-orders0001"));
+        when(kubeBlocksClient.cleanupDatabaseStorage("dbaas-orders", "db-orders0001"))
+                .thenReturn(false);
+        when(operationRepository.findByDatabaseIdAndProjectNameAndStatusIn(
+                "db-orders0001", "orders", List.of(OperationStatus.PENDING, OperationStatus.RUNNING)))
+                .thenReturn(List.of(operation));
+
+        reconciler.reconcile(database);
+
+        assertEquals(DatabaseStatus.DELETING, database.getStatus());
+        assertEquals(OperationStatus.RUNNING, operation.getStatus());
+        assertEquals("Database Cluster is absent; waiting for PVC and PV cleanup",
+                database.getMessage());
         verify(gateway, never()).releasePort(database);
     }
 

@@ -102,6 +102,24 @@ class DatabaseOperationServiceTest {
     }
 
     @Test
+    void scalingPinsTheRestoredActivePhysicalCluster() {
+        database.setActiveClusterName("db-orders0001-restore-abcd1234");
+        when(kubeBlocksClient.requireComponent(
+                "dbaas-orders", "db-orders0001-restore-abcd1234", "postgresql"))
+                .thenReturn(new KubeBlocksClient.ClusterComponentInfo(
+                        "postgresql", 2, 0, false, Map.of("data", "20Gi"), "StrictInPlace"));
+
+        service.horizontalScaling("orders", "db-orders0001",
+                "scale-restored-001", new HorizontalScalingRequest("postgresql", 3));
+
+        ArgumentCaptor<OperationMetadata> saved = ArgumentCaptor.forClass(OperationMetadata.class);
+        verify(operationRepository).save(saved.capture());
+        assertEquals("db-orders0001-restore-abcd1234", saved.getValue().getTargetClusterName());
+        verify(kubeBlocksClient).requireComponent(
+                "dbaas-orders", "db-orders0001-restore-abcd1234", "postgresql");
+    }
+
+    @Test
     void duplicateIdempotencyKeyReturnsExistingOperation() {
         OperationMetadata existing = operation(OperationType.RESTART, "restart-orders-001",
                 "restart|");

@@ -25,15 +25,17 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class RestoreReconcilerTest {
 
     @Test
-    void successfulRestoreCutsStableDatabaseOverToTemporaryCluster() {
+    void successfulRestoreCutsStableConnectionToValidatedRestoredCluster() {
         Fixture fixture = fixture();
         RestoreRequestMetadata restore = restore(RestoreStatus.RESTORING);
         DatabaseMetadata database = database();
@@ -50,7 +52,7 @@ class RestoreReconcilerTest {
         when(fixture.kubeBlocksClient.observeCluster("dbaas-orders", "db-orders0001-restore-abc12345"))
                 .thenReturn(new KubeBlocksClient.ClusterObservation(true, "dbaas-orders",
                         "db-orders0001-restore-abc12345", "Running", 2, 2, true, "ready"));
-        when(fixture.credentialLifecycleService.readyForRestoredCluster(any(), any(), any(), any()))
+        when(fixture.credentialLifecycleService.readyForRestoredCluster(any(), any(), any(), any(), any()))
                 .thenReturn(true);
         when(fixture.credentialLifecycleService.databaseName(database))
                 .thenReturn(CredentialLifecycleService.managedDatabaseName("db-orders0001"));
@@ -66,9 +68,9 @@ class RestoreReconcilerTest {
         assertEquals(RestoreStatus.COMPLETED, restore.getStatus());
         assertEquals("db-orders0001-restore-abc12345", database.getActiveClusterName());
         assertEquals(OperationStatus.SUCCEEDED, operation.getStatus());
-        assertNotNull(restore.getOldClusterDeleteAt());
+        assertNull(restore.getOldClusterDeleteAt());
         verify(fixture.sharedGatewayService).configure(database);
-        verify(fixture.kubeBlocksClient).requestDelete("dbaas-orders", "db-orders0001");
+        verify(fixture.kubeBlocksClient, never()).requestDelete("dbaas-orders", "db-orders0001");
     }
 
     @Test

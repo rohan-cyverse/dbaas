@@ -186,6 +186,15 @@ public class DatabaseStateReconciler {
             KubeBlocksClient.ClusterObservation observed = kubeBlocksClient.observeCluster(
                     database.getNamespaceName(), database.physicalClusterName());
             if (!observed.exists()) {
+                if (!kubeBlocksClient.cleanupDatabaseStorage(
+                        database.getNamespaceName(), database.physicalClusterName())) {
+                    update(database::setMessage,
+                            "Database Cluster is absent; waiting for PVC and PV cleanup");
+                    finishDeleteOperation(database, OperationStatus.RUNNING,
+                            "Waiting for database storage cleanup");
+                    saveIfChanged(database);
+                    return;
+                }
                 if (!credentialCleanup.complete()) {
                     update(database::setMessage,
                             "Database Cluster is absent; waiting for credential helper cleanup: "
@@ -197,7 +206,7 @@ public class DatabaseStateReconciler {
                 sharedGatewayService.releasePort(database);
                 update(database::setStatus, DatabaseStatus.DELETED);
                 update(database::setDeletedAt, Instant.now());
-                update(database::setMessage, "Database Cluster and credential helper resources are absent; metadata is preserved");
+                update(database::setMessage, "Database Cluster, PVCs, PVs, and credential helper resources are absent; metadata is preserved");
                 finishDeleteOperation(database, OperationStatus.SUCCEEDED,
                         "Deletion confirmed by Kubernetes");
             } else {
