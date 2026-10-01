@@ -426,15 +426,22 @@ public class SharedGatewayService {
     }
 
     private List<String> sourceRanges(List<Route> routes) {
-        if (routes.stream().flatMap(route -> route.allowedCidrs().stream())
-                .anyMatch("0.0.0.0/0"::equals)) {
-            return List.of("0.0.0.0/0");
-        }
-        return routes.stream()
-                .flatMap(route -> route.allowedCidrs().stream())
+        var configured = settings().getTrustedCidrs() == null
+                ? java.util.stream.Stream.<String>empty()
+                : settings().getTrustedCidrs().stream();
+        List<String> desired = java.util.stream.Stream.concat(configured,
+                        routes.stream().flatMap(route -> route.allowedCidrs().stream()))
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(cidr -> !cidr.isBlank())
                 .distinct()
                 .sorted()
                 .toList();
+        if (desired.stream()
+                .anyMatch("0.0.0.0/0"::equals)) {
+            return List.of("0.0.0.0/0");
+        }
+        return desired;
     }
 
     private String render(List<Route> routes) {

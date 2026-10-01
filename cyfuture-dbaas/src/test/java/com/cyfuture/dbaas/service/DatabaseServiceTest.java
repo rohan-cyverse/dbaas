@@ -199,7 +199,7 @@ class DatabaseServiceTest {
     }
 
     @Test
-    void connectionDetailsDoNotMutateAccessRulesOrReconcileGateway() {
+    void connectionDetailsAddTheCallersCurrentIpAndReconcileGateway() {
         DatabaseMetadata database = database("db-orders0001");
         database.setStatus(DatabaseStatus.RUNNING);
         database.setProvisioningStage(ProvisioningStage.READY);
@@ -217,7 +217,30 @@ class DatabaseServiceTest {
 
         service.connection("orders", "db-orders0001", "203.0.113.55");
 
-        assertEquals("[49.50.73.146/32]", database.getAllowedCidrs());
+        assertEquals("[203.0.113.55/32, 49.50.73.146/32]", database.getAllowedCidrs());
+        verify(repository).save(database);
+        verify(sharedGatewayService).reconcileNow();
+    }
+
+    @Test
+    void connectionDetailsDoNotReconcileWhenCallerIpIsAlreadyAllowed() {
+        DatabaseMetadata database = database("db-orders0001");
+        database.setStatus(DatabaseStatus.RUNNING);
+        database.setProvisioningStage(ProvisioningStage.READY);
+        database.setPublicPort(31000);
+        database.setAllowedCidrs("[49.50.73.146/32]");
+        when(repository.findByDatabaseIdAndProjectNameForUpdate("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(kubeBlocksClient.get("dbaas-orders", "db-orders0001"))
+                .thenReturn(observation(DatabaseStatus.RUNNING, true));
+        when(credentialLifecycleService.credentials(database))
+                .thenReturn(new ManagedCredential("app_user", "secret", "app_db"));
+        when(sharedGatewayService.endpoint(database))
+                .thenReturn(new PublicEndpointResponse("49.50.116.46", 31000,
+                        true, List.of("49.50.73.146/32")));
+
+        service.connection("orders", "db-orders0001", "49.50.73.146");
+
         verify(repository, never()).save(database);
         verify(sharedGatewayService, never()).reconcileNow();
     }
@@ -297,7 +320,7 @@ class DatabaseServiceTest {
         var response = service.connection("orders", "db-orders0001", "49.50.73.146");
 
         assertEquals("mongodb://db_user:secret@49.50.116.46:31002/mongo_db"
-                + "?authSource=mongo_db&directConnection=true", response.connectionUri());
+                + "?authSource=mongo_db&directConnection=true&tls=false", response.connectionUri());
         assertEquals("49.50.116.46", response.endpoint().host());
     }
 
@@ -313,7 +336,7 @@ class DatabaseServiceTest {
                 "user", "pass", "mongo.example.com", 27017, "appdb_xxx");
 
         assertEquals("mongodb://user:pass@mongo.example.com:27017/appdb_xxx"
-                        + "?authSource=appdb_xxx&directConnection=true",
+                        + "?authSource=appdb_xxx&directConnection=true&tls=false",
                 uri);
     }
 
@@ -329,7 +352,22 @@ class DatabaseServiceTest {
                 "user", "pass", "mongo.example.com", 27017, "appdb_xxx");
 
         assertEquals("mongodb://user:pass@mongo.example.com:27017/appdb_xxx"
-                + "?authSource=appdb_xxx", uri);
+                + "?authSource=appdb_xxx&tls=false", uri);
+    }
+
+    @Test
+    void mysqlConnectionUriAllowsPublicKeyRetrievalForPasswordAuthentication() throws Exception {
+        var connectionUri = DatabaseService.class.getDeclaredMethod("connectionUri",
+                DatabaseEngine.class, DatabaseMode.class, boolean.class,
+                String.class, String.class, String.class, int.class, String.class);
+        connectionUri.setAccessible(true);
+
+        String uri = (String) connectionUri.invoke(service,
+                DatabaseEngine.MYSQL, DatabaseMode.STANDALONE, true,
+                "user", "pass", "mysql.example.com", 3306, "appdb_xxx");
+
+        assertEquals("mysql://user:pass@mysql.example.com:3306/appdb_xxx"
+                + "?sslMode=PREFERRED&allowPublicKeyRetrieval=true", uri);
     }
 
     @Test

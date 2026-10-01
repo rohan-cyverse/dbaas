@@ -279,6 +279,7 @@ public class DatabaseService {
                 throw exception;
             }
         }
+        ensureCallerAccess(database, clientIp);
         // A restored target must continue to use the logical database from
         // its recovery point. Re-establish that specific credential first if
         // its managed Secret was removed; never fall back to creating a
@@ -306,6 +307,22 @@ public class DatabaseService {
                 connectionUri(database.getEngine(), database.getMode(), true,
                         credential.username(), credential.password(), publicEndpoint.host(),
                         publicEndpoint.port(), credential.database()), publicEndpoint);
+    }
+
+    private void ensureCallerAccess(DatabaseMetadata database, String clientIp) {
+        if (clientIp == null || clientIp.isBlank() || database.getPublicPort() == null) return;
+        String callerCidr = clientIp.trim() + "/32";
+        List<String> existing = metadataCidrs(database);
+        if (existing.contains(callerCidr)) return;
+
+        List<String> updated = new java.util.ArrayList<>(existing);
+        updated.add(callerCidr);
+        updated = updated.stream().distinct().sorted().toList();
+        validateNetwork(updated, true);
+        database.setAllowedCidrs(updated.toString());
+        database.setUpdatedAt(Instant.now());
+        databaseRepository.save(database);
+        sharedGatewayService.reconcileNow();
     }
 
     public OperationResponse changePassword(String project, String databaseId,
@@ -873,11 +890,13 @@ public class DatabaseService {
             case POSTGRESQL -> "postgresql://" + user + ":" + secret + "@" + host + ":"
                     + port + "/" + database + "?sslmode=prefer";
             case MYSQL -> "mysql://" + user + ":" + secret + "@" + host + ":"
-                    + port + "/" + database;
+                    + port + "/" + database
+                    + "?sslMode=PREFERRED&allowPublicKeyRetrieval=true";
             case MONGODB -> "mongodb://" + user + ":" + secret + "@" + host + ":"
                     + port + "/" + database + "?authSource=" + database
                     + (publicRoute && mode != DatabaseMode.SHARDING
-                    ? "&directConnection=true" : "");
+                    ? "&directConnection=true" : "")
+                    + "&tls=false";
         };
     }
 

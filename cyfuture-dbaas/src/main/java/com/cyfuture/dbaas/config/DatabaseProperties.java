@@ -64,6 +64,8 @@ public class DatabaseProperties {
         private int portStart = 31000;
         private int portEnd = 31030;
         private String publicHost;
+        /** CIDRs that must remain reachable even when no database route stores them yet. */
+        private List<String> trustedCidrs = List.of();
     }
 
     /** Configuration only; BackupRepo and KubeBlocks BackupPolicies stay platform-owned. */

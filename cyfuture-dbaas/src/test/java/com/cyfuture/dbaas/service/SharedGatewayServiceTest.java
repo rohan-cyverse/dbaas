@@ -119,6 +119,32 @@ class SharedGatewayServiceTest {
     }
 
     @Test
+    void reconcileKeepsConfiguredTrustedCidrsInLoadBalancerFirewall() throws Exception {
+        DatabaseProperties properties = enabledProperties();
+        properties.getGateway().setTrustedCidrs(List.of("49.50.73.146/32"));
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        AppsV1Api apps = mock(AppsV1Api.class, RETURNS_DEEP_STUBS);
+        V1Service service = gatewayService(31000, 31030);
+        service.getSpec().setLoadBalancerSourceRanges(List.of());
+        when(core.readNamespacedService("dbaas-public-gateway", "dbaas-gateway").execute()).thenReturn(service);
+        when(core.readNamespacedConfigMap("dbaas-public-gateway-config", "dbaas-gateway").execute())
+                .thenReturn(configMap(renderedEmptyGateway()));
+        when(apps.readNamespacedDeployment("dbaas-public-gateway", "dbaas-gateway").execute())
+                .thenReturn(deployment());
+        when(repository.findByPublicPortIsNotNullOrderByPublicPortAsc()).thenReturn(List.of());
+        SharedGatewayService sharedGateway = service(properties, runningLock(), repository, core, apps,
+                mock(KubeBlocksClient.class), mock(DatabaseBackendResolver.class));
+
+        sharedGateway.reconcileNow();
+
+        ArgumentCaptor<V1Service> replacement = ArgumentCaptor.forClass(V1Service.class);
+        verify(core).replaceNamespacedService(any(), any(), replacement.capture());
+        assertEquals(List.of("49.50.73.146/32"),
+                replacement.getValue().getSpec().getLoadBalancerSourceRanges());
+    }
+
+    @Test
     void reconcileEnforcesExactProxyAnnotationAndRemovesPortsAboveRange() throws Exception {
         DatabaseProperties properties = enabledProperties();
         DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
