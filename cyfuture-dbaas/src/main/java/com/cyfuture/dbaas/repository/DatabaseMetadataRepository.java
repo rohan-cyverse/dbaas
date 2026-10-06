@@ -29,6 +29,7 @@ public interface DatabaseMetadataRepository extends JpaRepository<DatabaseMetada
     List<DatabaseMetadata> findByStatusOrderByCreatedAtAsc(DatabaseStatus status);
     List<DatabaseMetadata> findByStatusInOrderByCreatedAtAsc(List<DatabaseStatus> statuses);
     boolean existsByPublicPort(Integer publicPort);
+    boolean existsByPublicPortAndDatabaseIdNot(Integer publicPort, String databaseId);
     boolean existsByReadOnlyPublicPort(Integer publicPort);
     List<DatabaseMetadata> findByPublicPortIsNotNullOrderByPublicPortAsc();
 }

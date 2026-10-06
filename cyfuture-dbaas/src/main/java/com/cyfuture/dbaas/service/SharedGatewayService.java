@@ -106,12 +106,17 @@ public class SharedGatewayService {
     }
 
     void reconcileReadOnlyPort(DatabaseMetadata database) {
+        boolean collidesWithReadWrite = database.getReadOnlyPublicPort() != null
+                && databaseRepository.existsByPublicPortAndDatabaseIdNot(
+                database.getReadOnlyPublicPort(), database.getDatabaseId());
         if (DatabaseBackendResolver.supportsReadOnly(database)
                 && (database.getReadOnlyPublicPort() == null
-                || Objects.equals(database.getReadOnlyPublicPort(), database.getPublicPort()))) {
+                || Objects.equals(database.getReadOnlyPublicPort(), database.getPublicPort())
+                || collidesWithReadWrite)) {
             // Repair legacy/corrupt records where both endpoint roles were
-            // assigned the same port. They must have independent HAProxy
-            // listeners to route to different role-aware Services.
+            // assigned the same port, including cross-record RW/RO collisions.
+            // They must have independent HAProxy listeners to route to
+            // different role-aware Services.
             Set<Integer> excluded = database.getPublicPort() == null
                     ? Set.of() : Set.of(database.getPublicPort());
             database.setReadOnlyPublicPort(portAllocator.allocateExcluding(excluded));

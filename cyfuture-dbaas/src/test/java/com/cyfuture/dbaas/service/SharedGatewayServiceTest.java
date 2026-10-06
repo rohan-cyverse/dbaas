@@ -144,6 +144,26 @@ class SharedGatewayServiceTest {
         verify(repository).save(database);
     }
 
+    @Test
+    void repairsLegacyReadOnlyPortCollidingWithAnotherDatabaseReadWritePort() {
+        DatabaseMetadata database = database(31009);
+        database.setReplicas(3);
+        database.setReadOnlyPublicPort(31010);
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        when(repository.existsByPublicPortAndDatabaseIdNot(31010, database.getDatabaseId()))
+                .thenReturn(true);
+        PublicPortAllocator allocator = mock(PublicPortAllocator.class);
+        when(allocator.allocateExcluding(Set.of(31009))).thenReturn(31013);
+        SharedGatewayService gateway = new SharedGatewayService(enabledProperties(), repository, allocator,
+                mock(KubeBlocksClient.class), mock(CoreV1Api.class), mock(AppsV1Api.class),
+                runningLock(), mock(DatabaseBackendResolver.class));
+
+        gateway.reconcileReadOnlyPort(database);
+
+        assertEquals(31013, database.getReadOnlyPublicPort());
+        verify(repository).save(database);
+    }
+
 
     @Test
     void disabledInstancesNeverAcquireTheGatewayLock() {
