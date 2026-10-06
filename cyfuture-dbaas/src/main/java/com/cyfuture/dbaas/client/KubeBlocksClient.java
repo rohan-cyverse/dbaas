@@ -1190,7 +1190,7 @@ public class KubeBlocksClient {
                     Map<String, Object> restore = asMap(customObjectsApi.getNamespacedCustomObject(
                             DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace, RESTORES, restoreName)
                             .execute());
-                    if (!ownedRestore(restore, opsRequestName)) {
+                    if (!ownedRestoreForDatabase(restore, opsRequestName, databaseId)) {
                         throw new ApiException(HttpStatus.CONFLICT, "RESTORE_RESOURCE_NOT_MANAGED", false,
                                 "The KubeBlocks Restore resource is not managed by this DBaaS restore.");
                     }
@@ -1231,13 +1231,13 @@ public class KubeBlocksClient {
      * rather than attributing another tenant's restore to this operation.
      */
     public RestoreObservation observeRestore(String namespace, String opsRequestName,
-                                             String knownRestoreName) {
+                                             String knownRestoreName, String targetClusterName) {
         try {
             if (knownRestoreName != null && !knownRestoreName.isBlank()) {
                 Map<String, Object> restore = asMap(customObjectsApi.getNamespacedCustomObject(
                         DATA_PROTECTION_GROUP, DATA_PROTECTION_VERSION, namespace,
                         RESTORES, knownRestoreName).execute());
-                if (!ownedRestore(restore, opsRequestName)) {
+                if (!ownedRestore(restore, opsRequestName, targetClusterName)) {
                     throw new ApiException(HttpStatus.CONFLICT, "RESTORE_RESOURCE_NOT_MANAGED", false,
                             "The KubeBlocks Restore resource is not owned by this restore operation.");
                 }
@@ -1248,7 +1248,7 @@ public class KubeBlocksClient {
             List<Map<String, Object>> matches = new ArrayList<>();
             for (Object item : (List<?>) list.getOrDefault("items", List.of())) {
                 Map<String, Object> restore = asMap(item);
-                if (ownedRestore(restore, opsRequestName)) matches.add(restore);
+                if (ownedRestore(restore, opsRequestName, targetClusterName)) matches.add(restore);
             }
             if (matches.isEmpty()) return RestoreObservation.missing();
             if (matches.size() > 1) {
@@ -2414,8 +2414,25 @@ public class KubeBlocksClient {
                 || hasOwner(metadata, "Cluster", databaseId);
     }
 
-    private boolean ownedRestore(Map<String, Object> restore, String opsRequestName) {
-        return hasOwner(asMap(restore.get("metadata")), "OpsRequest", opsRequestName);
+    private boolean ownedRestore(Map<String, Object> restore, String opsRequestName,
+                                 String targetClusterName) {
+        Map<String, Object> metadata = asMap(restore.get("metadata"));
+        if (hasOwner(metadata, "OpsRequest", opsRequestName)) return true;
+
+        // KubeBlocks 1.0.2 makes the generated Restore a child of Component,
+        // not OpsRequest. Its stable correlation is the restored Cluster's
+        // app.kubernetes.io/instance label.
+        if (targetClusterName == null || targetClusterName.isBlank()) return false;
+        Map<String, Object> labels = asMap(metadata.get("labels"));
+        return targetClusterName.equals(optionalText(labels.get(APP_INSTANCE_LABEL)));
+    }
+
+    private boolean ownedRestoreForDatabase(Map<String, Object> restore, String opsRequestName,
+                                            String databaseId) {
+        Map<String, Object> metadata = asMap(restore.get("metadata"));
+        if (hasOwner(metadata, "OpsRequest", opsRequestName)) return true;
+        String instance = optionalText(asMap(metadata.get("labels")).get(APP_INSTANCE_LABEL));
+        return instance != null && instance.startsWith(databaseId + "-restore-");
     }
 
     private RestoreObservation restoreObservation(Map<String, Object> restore) {

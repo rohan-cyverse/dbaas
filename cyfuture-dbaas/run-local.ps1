@@ -65,5 +65,7 @@ if ($null -ne $listener) {
     throw "Port $serverPort is already in use by $ownerDescription. Stop that process, or set SERVER_PORT=8081 in .env and run again."
 }
 
-& ".\mvnw.cmd" spring-boot:run
+# Clean first so renamed or removed Flyway migrations cannot remain under
+# target/classes and be discovered alongside the current source migrations.
+& ".\mvnw.cmd" clean spring-boot:run
 exit $LASTEXITCODE

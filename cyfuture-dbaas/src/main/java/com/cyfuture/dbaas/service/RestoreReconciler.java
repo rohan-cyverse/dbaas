@@ -108,7 +108,7 @@ public class RestoreReconciler {
         }
         KubeBlocksClient.RestoreObservation restoreObserved = kubeBlocksClient.observeRestore(
                 target.getNamespaceName(), restore.getKubernetesOpsRequestName(),
-                restore.getKubernetesRestoreName());
+                restore.getKubernetesRestoreName(), temporaryClusterName(restore));
         if (restoreObserved.exists()) {
             synchronizeRestoreResource(restore, restoreObserved);
             if ("Failed".equalsIgnoreCase(restoreObserved.phase())) {
@@ -120,7 +120,11 @@ public class RestoreReconciler {
                         "KubeBlocks is restoring database data");
                 return;
             }
-        } else if (!"Succeed".equalsIgnoreCase(observed.phase())) {
+        } else {
+            // KubeBlocks can mark the parent OpsRequest Succeed before its
+            // Component-owned postReady Restore is visible or complete. Never
+            // start credential validation during that window: it races the
+            // engine restore job.
             updateRunning(restore, observed, RestoreStatus.RESTORING, 30,
                     "Waiting for the KubeBlocks Restore resource");
             return;

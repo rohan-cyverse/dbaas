@@ -219,7 +219,7 @@ public class DatabaseController {
     @GetMapping("/{databaseId}/connection")
     @Operation(
             summary = "Get database connection details",
-            description = "Returns managed credentials and a public connection URI."
+            description = "Returns stable read/write and, when replicas exist, read-only public connection details. Legacy endpoint and connectionUri fields remain mapped to read/write."
     )
     public ResponseEntity<ConnectionResponse> connection(
             @PathVariable String project,

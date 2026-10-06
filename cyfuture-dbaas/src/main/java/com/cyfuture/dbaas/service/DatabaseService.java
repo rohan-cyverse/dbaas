@@ -6,6 +6,7 @@ import com.cyfuture.dbaas.config.DatabaseProperties;
 import com.cyfuture.dbaas.dto.AccessRulesRequest;
 import com.cyfuture.dbaas.dto.AccessRulesResponse;
 import com.cyfuture.dbaas.dto.ConnectionResponse;
+import com.cyfuture.dbaas.dto.ConnectionEndpointResponse;
 import com.cyfuture.dbaas.dto.BackupSettingsRequest;
 import com.cyfuture.dbaas.dto.CreateDatabaseRequest;
 import com.cyfuture.dbaas.dto.CreateDatabaseResponse;
@@ -298,15 +299,27 @@ public class DatabaseService {
         }
         ManagedCredential credential = credentialLifecycleService.credentials(database);
         PublicEndpointResponse publicEndpoint = publicEndpoint(database);
+        PublicEndpointResponse readOnlyEndpoint = sharedGatewayService.readOnlyEndpoint(database);
         if (publicEndpoint.host() == null || publicEndpoint.host().isBlank()
                 || publicEndpoint.port() == 0) {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "PUBLIC_ENDPOINT_NOT_READY", true,
                     "The public endpoint is not ready");
         }
-        return new ConnectionResponse(credential.username(), credential.password(),
-                connectionUri(database.getEngine(), database.getMode(), true,
-                        credential.username(), credential.password(), publicEndpoint.host(),
-                        publicEndpoint.port(), credential.database()), publicEndpoint);
+        String readWriteUri = connectionUri(database.getEngine(), database.getMode(), true,
+                credential.username(), credential.password(), publicEndpoint.host(),
+                publicEndpoint.port(), credential.database());
+        ConnectionEndpointResponse readWrite = new ConnectionEndpointResponse(publicEndpoint.host(),
+                publicEndpoint.port(), publicEndpoint.ready(), readWriteUri);
+        // RO is intended for read scaling where replication lag is acceptable.
+        // Use RW for writes and read-after-write consistency.
+        ConnectionEndpointResponse readOnly = readOnlyEndpoint == null ? null
+                : new ConnectionEndpointResponse(readOnlyEndpoint.host(), readOnlyEndpoint.port(),
+                readOnlyEndpoint.ready(), connectionUri(database.getEngine(), database.getMode(), true,
+                credential.username(), credential.password(), readOnlyEndpoint.host(),
+                readOnlyEndpoint.port(), credential.database(), true));
+        return new ConnectionResponse(credential.username(), credential.password(), readWriteUri,
+                publicEndpoint, credential.database(), publicEndpoint.host(), publicEndpoint.port(),
+                publicEndpoint.ready(), readWrite, readOnly, publicEndpoint.allowedCidrs());
     }
 
     private void ensureCallerAccess(DatabaseMetadata database, String clientIp) {
@@ -883,12 +896,19 @@ public class DatabaseService {
     private String connectionUri(DatabaseEngine engine, DatabaseMode mode, boolean publicRoute,
                                  String username, String password,
                                  String host, int port, String database) {
+        return connectionUri(engine, mode, publicRoute, username, password, host, port, database, false);
+    }
+
+    private String connectionUri(DatabaseEngine engine, DatabaseMode mode, boolean publicRoute,
+                                 String username, String password,
+                                 String host, int port, String database, boolean readOnly) {
         if (host == null || host.isBlank()) return null;
         String user = urlEncode(username);
         String secret = urlEncode(password);
         return switch (engine) {
             case POSTGRESQL -> "postgresql://" + user + ":" + secret + "@" + host + ":"
-                    + port + "/" + database + "?sslmode=prefer";
+                    + port + "/" + database + "?sslmode=prefer"
+                    + (readOnly ? "&target_session_attrs=read-only" : "");
             case MYSQL -> "mysql://" + user + ":" + secret + "@" + host + ":"
                     + port + "/" + database
                     + "?sslMode=PREFERRED&allowPublicKeyRetrieval=true";
@@ -896,6 +916,10 @@ public class DatabaseService {
                     + port + "/" + database + "?authSource=" + database
                     + (publicRoute && mode != DatabaseMode.SHARDING
                     ? "&directConnection=true" : "")
+                    // Strict secondary prevents a MongoDB driver from falling
+                    // back to the primary. directConnection also prevents
+                    // replica-set discovery from bypassing the RO Service.
+                    + (readOnly ? "&readPreference=secondary" : "")
                     + "&tls=false";
         };
     }

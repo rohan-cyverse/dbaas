@@ -27,6 +27,20 @@ class PublicPortAllocatorTest {
     }
 
     @Test
+    void readOnlyPortsCannotCollideWithReadWritePorts() {
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        when(repository.existsByReadOnlyPublicPort(31000)).thenReturn(true);
+        assertEquals(31001, new PublicPortAllocator(repository, properties()).allocate());
+    }
+
+    @Test
+    void skipsExplicitlyExcludedReadWritePort() {
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        assertEquals(31001, new PublicPortAllocator(repository, properties())
+                .allocateExcluding(java.util.Set.of(31000)));
+    }
+
+    @Test
     void portOutsideConfiguredRangeIsNotAllocated() {
         DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
         DatabaseProperties properties = properties();

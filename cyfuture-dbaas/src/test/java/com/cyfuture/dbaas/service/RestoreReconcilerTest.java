@@ -30,6 +30,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class RestoreReconcilerTest {
@@ -46,7 +47,7 @@ class RestoreReconcilerTest {
         when(fixture.kubeBlocksClient.getOpsRequest("dbaas-orders", "rst-restore0001"))
                 .thenReturn(new KubeBlocksClient.OpsRequestInfo("Succeed", "1/1", "done",
                         Instant.now(), Instant.now()));
-        when(fixture.kubeBlocksClient.observeRestore(any(), any(), any()))
+        when(fixture.kubeBlocksClient.observeRestore(any(), any(), any(), any()))
                 .thenReturn(new KubeBlocksClient.RestoreObservation(true, "restore-cr",
                         "Completed", "done", Instant.now(), Instant.now()));
         when(fixture.kubeBlocksClient.observeCluster("dbaas-orders", "db-orders0001-restore-abc12345"))
@@ -92,6 +93,28 @@ class RestoreReconcilerTest {
         assertEquals("AlreadyExists", restore.getFailureCode());
         assertEquals(OperationStatus.FAILED, operation.getStatus());
         verify(fixture.kubeBlocksClient).requestDelete("dbaas-orders", "db-orders0001-restore-abc12345");
+    }
+
+    @Test
+    void successfulOpsRequestWaitsForChildRestoreBeforeCredentialValidation() {
+        Fixture fixture = fixture();
+        RestoreRequestMetadata restore = restore(RestoreStatus.RESTORING);
+        DatabaseMetadata database = database();
+        OperationMetadata operation = operation();
+        when(fixture.databaseRepository.findByDatabaseIdAndProjectName("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(fixture.operationRepository.findById("op-restore0001")).thenReturn(Optional.of(operation));
+        when(fixture.kubeBlocksClient.getOpsRequest("dbaas-orders", "rst-restore0001"))
+                .thenReturn(new KubeBlocksClient.OpsRequestInfo("Succeed", "1/1", "done",
+                        Instant.now(), Instant.now()));
+        when(fixture.kubeBlocksClient.observeRestore(any(), any(), any(), any()))
+                .thenReturn(KubeBlocksClient.RestoreObservation.missing());
+
+        fixture.reconciler.refresh(restore);
+
+        assertEquals(RestoreStatus.RESTORING, restore.getStatus());
+        verifyNoInteractions(fixture.credentialLifecycleService);
+        verify(fixture.kubeBlocksClient, never()).observeCluster(any(), any());
     }
 
     private Fixture fixture() {

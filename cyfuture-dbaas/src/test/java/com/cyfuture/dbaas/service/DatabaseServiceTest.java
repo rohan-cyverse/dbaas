@@ -38,6 +38,8 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -268,6 +270,42 @@ class DatabaseServiceTest {
         assertEquals("49.50.73.146", response.endpoint().host());
         assertFalse(response.endpoint().ready());
         assertTrue(response.connectionUri().contains("49.50.73.146:31000"));
+        assertEquals(response.host(), response.readWrite().host());
+        assertEquals(response.port(), response.readWrite().port());
+        assertNull(response.readOnly());
+    }
+
+    @Test
+    void replicatedConnectionExposesRwAndRoWhileLegacyFieldsRemainRw() {
+        DatabaseMetadata database = database("db-orders0001");
+        database.setEngine(DatabaseEngine.MONGODB);
+        database.setMode(DatabaseMode.REPLICA_SET);
+        database.setReplicas(3);
+        database.setPublicPort(31000);
+        database.setReadOnlyPublicPort(31001);
+        database.setAllowedCidrs("[49.50.73.146/32]");
+        when(repository.findByDatabaseIdAndProjectNameForUpdate("db-orders0001", "orders"))
+                .thenReturn(Optional.of(database));
+        when(kubeBlocksClient.get("dbaas-orders", "db-orders0001"))
+                .thenReturn(observation(DatabaseStatus.RUNNING, true));
+        when(credentialLifecycleService.credentials(database))
+                .thenReturn(new ManagedCredential("app_user", "secret", "customerdb"));
+        when(sharedGatewayService.endpoint(database)).thenReturn(
+                new PublicEndpointResponse("49.50.116.46", 31000, true, List.of("49.50.73.146/32")));
+        when(sharedGatewayService.readOnlyEndpoint(database)).thenReturn(
+                new PublicEndpointResponse("49.50.116.46", 31001, true, List.of("49.50.73.146/32")));
+
+        var response = service.connection("orders", "db-orders0001", "49.50.73.146");
+
+        assertEquals("customerdb", response.database());
+        assertEquals(31000, response.port());
+        assertEquals(response.connectionUri(), response.readWrite().uri());
+        assertEquals(31001, response.readOnly().port());
+        assertNotEquals(response.readWrite().port(), response.readOnly().port());
+        assertTrue(response.readOnly().uri().contains(":31001/customerdb"));
+        assertFalse(response.readWrite().uri().contains("readPreference"));
+        assertTrue(response.readOnly().uri().contains("readPreference=secondary"));
+        assertFalse(response.readOnly().uri().contains("secondaryPreferred"));
     }
 
     @Test

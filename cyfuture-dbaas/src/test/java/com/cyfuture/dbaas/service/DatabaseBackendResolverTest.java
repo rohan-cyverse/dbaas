@@ -21,9 +21,63 @@ import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import org.mockito.ArgumentCaptor;
 
 class DatabaseBackendResolverTest {
+    @Test
+    void reusesKubeBlocksSecondaryServiceInsteadOfCreatingDuplicate() throws Exception {
+        DatabaseMetadata database = database(DatabaseEngine.MONGODB, DatabaseMode.REPLICA_SET);
+        database.setNamespaceName("dbaas-orders");
+        database.setReplicas(3);
+        CoreV1Api api = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        V1Service generic = service("db-orders-mongodb", Map.of(),
+                Map.of("app.kubernetes.io/instance", "db-orders"));
+        V1Service secondary = service("db-orders-mongodb-mongodb-ro", Map.of(), Map.of(
+                "app.kubernetes.io/instance", "db-orders",
+                "kubeblocks.io/role", "secondary"));
+        when(api.listNamespacedService("dbaas-orders").execute())
+                .thenReturn(new io.kubernetes.client.openapi.models.V1ServiceList()
+                        .items(List.of(generic, secondary)));
+
+        V1Service selected = DatabaseBackendResolver.ensureRoleService(api, database, 27017,
+                DatabaseBackendResolver.EndpointRole.READ_ONLY, "db-orders");
+
+        assertEquals("db-orders-mongodb-mongodb-ro", selected.getMetadata().getName());
+        verify(api, never()).createNamespacedService(any(), any());
+    }
+
+    @Test
+    void replicatedClusterCreatesPrimaryAndSecondaryRoleServicesIdempotently() throws Exception {
+        DatabaseMetadata database = database(DatabaseEngine.MONGODB, DatabaseMode.REPLICA_SET);
+        database.setNamespaceName("dbaas-orders");
+        database.setReplicas(3);
+        CoreV1Api api = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        V1Service base = service("db-orders-mongodb", Map.of(),
+                Map.of("app.kubernetes.io/instance", "db-orders"));
+        when(api.listNamespacedService("dbaas-orders").execute())
+                .thenReturn(new io.kubernetes.client.openapi.models.V1ServiceList().items(List.of(base)));
+        when(api.readNamespacedService("db-orders-mongodb-primary", "dbaas-orders").execute())
+                .thenThrow(new io.kubernetes.client.openapi.ApiException(404, "missing"));
+        when(api.readNamespacedService("db-orders-ro", "dbaas-orders").execute())
+                .thenThrow(new io.kubernetes.client.openapi.ApiException(404, "missing"));
+        when(api.createNamespacedService(eq("dbaas-orders"), any()).execute())
+                .thenReturn(base);
+
+        DatabaseBackendResolver.ensureRoleService(api, database, 27017,
+                DatabaseBackendResolver.EndpointRole.READ_WRITE, "db-orders");
+        DatabaseBackendResolver.ensureRoleService(api, database, 27017,
+                DatabaseBackendResolver.EndpointRole.READ_ONLY, "db-orders");
+
+        ArgumentCaptor<V1Service> services = ArgumentCaptor.forClass(V1Service.class);
+        verify(api, times(2)).createNamespacedService(eq("dbaas-orders"), services.capture());
+        assertEquals("primary", services.getAllValues().get(0).getSpec().getSelector()
+                .get("kubeblocks.io/role"));
+        assertEquals("secondary", services.getAllValues().get(1).getSpec().getSelector()
+                .get("kubeblocks.io/role"));
+    }
+
     @Test
     void createsStableServiceWhoseSelectorTracksMongoPrimary() throws Exception {
         DatabaseMetadata database = database(DatabaseEngine.MONGODB, DatabaseMode.REPLICA_SET);

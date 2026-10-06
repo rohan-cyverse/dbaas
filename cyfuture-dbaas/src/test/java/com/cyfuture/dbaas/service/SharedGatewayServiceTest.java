@@ -3,6 +3,7 @@ package com.cyfuture.dbaas.service;
 import com.cyfuture.dbaas.client.KubeBlocksClient;
 import com.cyfuture.dbaas.client.DatabaseObservation;
 import com.cyfuture.dbaas.config.DatabaseProperties;
+import com.cyfuture.dbaas.dto.PublicEndpointResponse;
 import com.cyfuture.dbaas.entity.DatabaseMetadata;
 import com.cyfuture.dbaas.model.DatabaseEngine;
 import com.cyfuture.dbaas.model.DatabaseMode;
@@ -51,6 +52,98 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class SharedGatewayServiceTest {
+    @Test
+    void oneUnresolvableDatabaseDoesNotBlockOtherGatewayRoutes() throws Exception {
+        DatabaseMetadata broken = database(31015);
+        broken.setDatabaseId("db-broken0001");
+        DatabaseMetadata healthy = database(31017);
+        healthy.setDatabaseId("db-healthy001");
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        when(repository.findByPublicPortIsNotNullOrderByPublicPortAsc()).thenReturn(List.of(broken, healthy));
+        KubeBlocksClient kubeBlocksClient = mock(KubeBlocksClient.class);
+        when(kubeBlocksClient.get(any(), any())).thenReturn(observation());
+        DatabaseBackendResolver resolver = mock(DatabaseBackendResolver.class);
+        when(resolver.resolve(broken)).thenThrow(new IllegalStateException("missing Service"));
+        when(resolver.resolve(healthy)).thenReturn(new DatabaseBackendResolver.DatabaseBackendEndpoint(
+                "db-healthy001-rw", healthy.getNamespaceName(),
+                "db-healthy001-rw.dbaas-orders.svc.cluster.local", 5432));
+        CoreV1Api core = mock(CoreV1Api.class, RETURNS_DEEP_STUBS);
+        AppsV1Api apps = mock(AppsV1Api.class, RETURNS_DEEP_STUBS);
+        when(core.readNamespacedService(any(), any()).execute()).thenReturn(gatewayService(31000, 31030));
+        when(core.readNamespacedConfigMap(any(), any()).execute()).thenReturn(configMap(renderedEmptyGateway()));
+        when(apps.readNamespacedDeployment(any(), any()).execute()).thenReturn(deployment("stale", 2, 2));
+        when(apps.readNamespacedDeployment(any(), any()).execute()).thenReturn(deployment("stale", 2, 2));
+        SharedGatewayService gateway = service(enabledProperties(), runningLock(), repository,
+                core, apps, kubeBlocksClient, resolver);
+
+        gateway.reconcileNow();
+
+        ArgumentCaptor<V1ConfigMap> replacement = ArgumentCaptor.forClass(V1ConfigMap.class);
+        verify(core).replaceNamespacedConfigMap(any(), any(), replacement.capture());
+        String config = replacement.getValue().getData().get("haproxy.cfg");
+        assertTrue(config.contains("port_31017"));
+        assertFalse(config.contains("port_31015"));
+    }
+
+    @Test
+    void scalingUpEnablesAndScalingDownDisablesReadOnlyPort() {
+        DatabaseMetadata database = database(31000);
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        PublicPortAllocator allocator = mock(PublicPortAllocator.class);
+        when(allocator.allocateExcluding(Set.of(31000))).thenReturn(31001);
+        SharedGatewayService gateway = new SharedGatewayService(enabledProperties(), repository, allocator,
+                mock(KubeBlocksClient.class), mock(CoreV1Api.class), mock(AppsV1Api.class),
+                runningLock(), mock(DatabaseBackendResolver.class));
+
+        database.setReplicas(3);
+        gateway.reconcileReadOnlyPort(database);
+        assertEquals(31001, database.getReadOnlyPublicPort());
+
+        database.setReplicas(1);
+        gateway.reconcileReadOnlyPort(database);
+        assertNull(database.getReadOnlyPublicPort());
+        verify(repository, times(2)).save(database);
+    }
+
+    @Test
+    void readOnlyEndpointBackfillsMissingPortForExistingReplicaSet() {
+        DatabaseMetadata database = database(31000);
+        database.setReplicas(3);
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        PublicPortAllocator allocator = mock(PublicPortAllocator.class);
+        when(allocator.allocateExcluding(Set.of(31000))).thenReturn(31001);
+        DatabaseProperties properties = enabledProperties();
+        properties.getGateway().setReconcileEnabled(false);
+        SharedGatewayService gateway = new SharedGatewayService(properties, repository, allocator,
+                mock(KubeBlocksClient.class), mock(CoreV1Api.class), mock(AppsV1Api.class),
+                runningLock(), mock(DatabaseBackendResolver.class));
+
+        PublicEndpointResponse endpoint = gateway.readOnlyEndpoint(database);
+
+        assertEquals(31001, database.getReadOnlyPublicPort());
+        assertEquals(31001, endpoint.port());
+        assertFalse(endpoint.ready());
+        verify(repository).save(database);
+    }
+
+    @Test
+    void repairsReadOnlyPortWhenItMatchesReadWritePort() {
+        DatabaseMetadata database = database(31011);
+        database.setReplicas(3);
+        database.setReadOnlyPublicPort(31011);
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        PublicPortAllocator allocator = mock(PublicPortAllocator.class);
+        when(allocator.allocateExcluding(Set.of(31011))).thenReturn(31012);
+        SharedGatewayService gateway = new SharedGatewayService(enabledProperties(), repository, allocator,
+                mock(KubeBlocksClient.class), mock(CoreV1Api.class), mock(AppsV1Api.class),
+                runningLock(), mock(DatabaseBackendResolver.class));
+
+        gateway.reconcileReadOnlyPort(database);
+
+        assertEquals(31012, database.getReadOnlyPublicPort());
+        verify(repository).save(database);
+    }
+
 
     @Test
     void disabledInstancesNeverAcquireTheGatewayLock() {
@@ -218,8 +311,10 @@ class SharedGatewayServiceTest {
         when(apps.readNamespacedDeployment("dbaas-public-gateway", "dbaas-gateway").execute())
                 .thenReturn(deployment());
         when(repository.findByPublicPortIsNotNullOrderByPublicPortAsc()).thenReturn(List.of(database));
+        // The role-aware Service is the gateway backend. A transient false
+        // state on KubeBlocks' generic client Service must not remove it.
         when(kubeBlocksClient.get("dbaas-orders", "db-orders0001"))
-                .thenReturn(observation());
+                .thenReturn(observationWithServiceReady(false));
         when(backendResolver.resolve(database)).thenReturn(
                 new DatabaseBackendResolver.DatabaseBackendEndpoint(
                         "db-orders0001-postgresql", "dbaas-orders",
@@ -299,6 +394,7 @@ class SharedGatewayServiceTest {
         when(backendResolver.resolve(database)).thenReturn(new DatabaseBackendResolver.DatabaseBackendEndpoint(
                 "orders", "dbaas-orders",
                 "db-orders0001-postgresql.dbaas-orders.svc.cluster.local", 5432));
+        when(backendResolver.hasReadyEndpoints(any())).thenReturn(true);
         SharedGatewayService sharedGateway = service(properties, runningLock(), repository, core, apps,
                 kubeBlocksClient, backendResolver);
 
@@ -313,7 +409,7 @@ class SharedGatewayServiceTest {
     }
 
     @Test
-    void endpointIsReadyOnlyAfterDatabaseServiceRouteAndDeploymentAreReady() throws Exception {
+    void roleEndpointReadinessDoesNotDependOnGenericKubeBlocksService() throws Exception {
         DatabaseProperties properties = enabledProperties();
         DatabaseMetadata database = database(31000);
         String config = renderedRoute(database, 31000);
@@ -326,14 +422,14 @@ class SharedGatewayServiceTest {
         when(core.readNamespacedConfigMap(any(), any()).execute()).thenReturn(configMap(config));
         when(apps.readNamespacedDeployment(any(), any()).execute()).thenReturn(deployment(sha256(config), 2, 2));
         when(kubeBlocksClient.get(database.getNamespaceName(), database.physicalClusterName()))
-                .thenReturn(observationWithServiceReady(false), observation());
+                .thenReturn(observationWithServiceReady(false));
         when(backendResolver.resolve(database)).thenReturn(new DatabaseBackendResolver.DatabaseBackendEndpoint(
                 "orders", "dbaas-orders",
                 "db-orders0001-postgresql.dbaas-orders.svc.cluster.local", 5432));
+        when(backendResolver.hasReadyEndpoints(any())).thenReturn(true);
         SharedGatewayService sharedGateway = service(properties, runningLock(), repository, core, apps,
                 kubeBlocksClient, backendResolver);
 
-        assertFalse(sharedGateway.endpoint(database).ready());
         assertTrue(sharedGateway.endpoint(database).ready());
     }
 
@@ -726,7 +822,7 @@ class SharedGatewayServiceTest {
                 + "  http-request return status 200 content-type text/plain string ok\n\n"
                 + "frontend public_databases\n  bind *:31000-31030\n"
                 + "  acl configured_port dst_port " + port + " \n"
-                + "  # route " + database.getDatabaseId() + "\n"
+                + "  # route " + database.getDatabaseId() + "-rw\n"
                 + "  acl port_" + port + " dst_port " + port + "\n"
                 + "  tcp-request content reject if !configured_port\n"
                 + "  use_backend database_" + port + " if port_" + port + "\n\n"

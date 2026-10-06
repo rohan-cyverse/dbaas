@@ -82,6 +82,8 @@ public class DatabaseMetadata {
     private String allowedCidrs;
     @Column(name = "public_port", unique = true)
     private Integer publicPort;
+    @Column(name = "read_only_public_port", unique = true)
+    private Integer readOnlyPublicPort;
     @Column(length = 2000)
     private String tags;
     @Column(length = 4000)

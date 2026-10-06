@@ -100,8 +100,29 @@ public class SharedGatewayService {
             database.setUpdatedAt(Instant.now());
             databaseRepository.save(database);
         }
+        reconcileReadOnlyPort(database);
         reconcileNow();
         return endpoint(database);
+    }
+
+    void reconcileReadOnlyPort(DatabaseMetadata database) {
+        if (DatabaseBackendResolver.supportsReadOnly(database)
+                && (database.getReadOnlyPublicPort() == null
+                || Objects.equals(database.getReadOnlyPublicPort(), database.getPublicPort()))) {
+            // Repair legacy/corrupt records where both endpoint roles were
+            // assigned the same port. They must have independent HAProxy
+            // listeners to route to different role-aware Services.
+            Set<Integer> excluded = database.getPublicPort() == null
+                    ? Set.of() : Set.of(database.getPublicPort());
+            database.setReadOnlyPublicPort(portAllocator.allocateExcluding(excluded));
+            database.setUpdatedAt(Instant.now());
+            databaseRepository.save(database);
+        } else if (!DatabaseBackendResolver.supportsReadOnly(database)
+                && database.getReadOnlyPublicPort() != null) {
+            database.setReadOnlyPublicPort(null);
+            database.setUpdatedAt(Instant.now());
+            databaseRepository.save(database);
+        }
     }
 
     public synchronized void reconcileNow() {
@@ -156,7 +177,25 @@ public class SharedGatewayService {
     }
 
     public PublicEndpointResponse endpoint(DatabaseMetadata database) {
-        int port = database.getPublicPort() == null ? 0 : database.getPublicPort();
+        return endpoint(database, DatabaseBackendResolver.EndpointRole.READ_WRITE);
+    }
+
+    public synchronized PublicEndpointResponse readOnlyEndpoint(DatabaseMetadata database) {
+        if (!DatabaseBackendResolver.supportsReadOnly(database)) return null;
+        // Backfill records provisioned before RO endpoint metadata existed.
+        // Allocation is idempotent and never derives the port from the RW port.
+        if (database.getReadOnlyPublicPort() == null) {
+            reconcileReadOnlyPort(database);
+            reconcileNow();
+        }
+        return endpoint(database, DatabaseBackendResolver.EndpointRole.READ_ONLY);
+    }
+
+    private PublicEndpointResponse endpoint(DatabaseMetadata database,
+                                            DatabaseBackendResolver.EndpointRole role) {
+        Integer configuredPort = role == DatabaseBackendResolver.EndpointRole.READ_WRITE
+                ? database.getPublicPort() : database.getReadOnlyPublicPort();
+        int port = configuredPort == null ? 0 : configuredPort;
         List<String> cidrs = cidrs(database.getAllowedCidrs());
         if (port == 0) return new PublicEndpointResponse(null, 0, false, cidrs);
 
@@ -168,17 +207,28 @@ public class SharedGatewayService {
                     : infrastructure.configMap().getData().getOrDefault(CONFIG_KEY, "");
             DatabaseObservation live = kubeBlocksClient.get(
                     database.getNamespaceName(), database.physicalClusterName());
-            boolean databaseReady = live.status() != DatabaseStatus.FAILED && live.serviceReady();
+            // Role endpoint readiness is checked below against the actual RW
+            // or RO Service. The generic KubeBlocks client Service may be
+            // absent/not-ready even while both role Services are healthy.
+            boolean databaseReady = live.status() != DatabaseStatus.FAILED;
             boolean declared = infrastructure.service().getSpec().getPorts().stream()
                     .anyMatch(item -> Integer.valueOf(port).equals(item.getPort()));
             boolean rangesReady = sourceRangesContain(infrastructure.service(), cidrs);
-            boolean configured = routeConfigured(config, database, port);
-            boolean backendReady = backendConfigured(config, database, port);
+            boolean configured = routeConfigured(config, database, port, role);
+            boolean backendReady = backendConfigured(config, database, port, role);
+            DatabaseBackendResolver.DatabaseBackendEndpoint backend = resolveBackend(database, role);
+            boolean serviceEndpointsReady = backendResolver.hasReadyEndpoints(backend);
             boolean ready = host != null && declared && configured
-                    && rangesReady && backendReady && databaseReady
+                    && rangesReady && backendReady && databaseReady && serviceEndpointsReady
                     && rolloutReady(infrastructure.deployment(), config);
+            if (!ready) {
+                log.info("Endpoint {} {} readiness: host={}, declared={}, route={}, ranges={}, backend={}, database={}, serviceEndpoints={}, rollout={}",
+                        database.getDatabaseId(), role, host != null, declared, configured,
+                        rangesReady, backendReady, databaseReady, serviceEndpointsReady,
+                        rolloutReady(infrastructure.deployment(), config));
+            }
             return new PublicEndpointResponse(host, port, ready, cidrs);
-        } catch (ApiException exception) {
+        } catch (Exception exception) {
             return new PublicEndpointResponse(null, port, false, cidrs);
         }
     }
@@ -200,9 +250,10 @@ public class SharedGatewayService {
     }
 
     public synchronized void releasePort(DatabaseMetadata database) {
-        Integer reservedPort = database.getPublicPort();
-        if (reservedPort == null) return;
+        if (database.getPublicPort() == null && database.getReadOnlyPublicPort() == null) return;
+        backendResolver.deleteOwnedServices(database);
         database.setPublicPort(null);
+        database.setReadOnlyPublicPort(null);
         database.setAllowedCidrs(List.of().toString());
         database.setUpdatedAt(Instant.now());
         databaseRepository.save(database);
@@ -212,6 +263,17 @@ public class SharedGatewayService {
     public void scheduledReconcile() {
         if (!settings().isReconcileEnabled()) return;
         try {
+            for (DatabaseMetadata database : databaseRepository.findAllByOrderByCreatedAtAsc()) {
+                if (database.getStatus() == DatabaseStatus.DELETED) {
+                    // Backfill cleanup for records deleted before dual endpoint
+                    // metadata existed. Never leave an RO port or owned Service
+                    // reserved after the Cluster is gone.
+                    releasePort(database);
+                } else if (database.getStatus() != DatabaseStatus.DELETING
+                        && database.getStatus() != DatabaseStatus.FAILED) {
+                    reconcileReadOnlyPort(database);
+                }
+            }
             reconcileNow();
         } catch (Exception exception) {
             log.warn("Shared gateway reconciliation will retry: {}", exception.getMessage());
@@ -239,17 +301,26 @@ public class SharedGatewayService {
             try {
                 DatabaseObservation live = kubeBlocksClient.get(
                         database.getNamespaceName(), database.physicalClusterName());
-                if (live.serviceReady()) {
-                    DatabaseBackendResolver.DatabaseBackendEndpoint endpoint = backendResolver.resolve(database);
-                    routes.add(new Route(database.getDatabaseId(), database.getPublicPort(),
-                            endpoint.host(), endpoint.port(), allowed));
+                if (live.status() == DatabaseStatus.FAILED) continue;
+                // Gateway routes target the role-aware Services, not the
+                // operator's generic client Service. Keep the mappings
+                // declared while a role temporarily has no ready endpoints;
+                // endpoint readiness is reported independently by endpoint().
+                addRoute(routes, database, DatabaseBackendResolver.EndpointRole.READ_WRITE,
+                        database.getPublicPort(), allowed);
+                if (DatabaseBackendResolver.supportsReadOnly(database)
+                        && managedPort(database.getReadOnlyPublicPort())) {
+                    addRoute(routes, database, DatabaseBackendResolver.EndpointRole.READ_ONLY,
+                            database.getReadOnlyPublicPort(), allowed);
                 }
-            } catch (ApiException exception) {
+            } catch (Exception exception) {
                 // Keep the last known route during a transient observation failure.
-                // Removing it would turn a control-plane read error into an outage.
-                Route previous = existing.get(database.getDatabaseId());
-                if (previous != null) {
-                    routes.add(new Route(previous.databaseId(), previous.publicPort(),
+                // A single missing/malformed database Service must not block
+                // reconciliation of every other database's RW and RO routes.
+                for (String routeId : List.of(routeId(database, DatabaseBackendResolver.EndpointRole.READ_WRITE),
+                        routeId(database, DatabaseBackendResolver.EndpointRole.READ_ONLY))) {
+                    Route previous = existing.get(routeId);
+                    if (previous != null) routes.add(new Route(previous.databaseId(), previous.publicPort(),
                             previous.host(), previous.targetPort(), allowed));
                 }
                 log.debug("Keeping the existing gateway route for {} until observation recovers: {}",
@@ -258,6 +329,23 @@ public class SharedGatewayService {
         }
         routes.sort(Comparator.comparingInt(Route::publicPort));
         return routes;
+    }
+
+    private void addRoute(List<Route> routes, DatabaseMetadata database,
+                          DatabaseBackendResolver.EndpointRole role, Integer port, List<String> allowed) {
+        if (!managedPort(port)) return;
+        DatabaseBackendResolver.DatabaseBackendEndpoint endpoint = resolveBackend(database, role);
+        routes.add(new Route(routeId(database, role), port, endpoint.host(), endpoint.port(), allowed));
+    }
+
+    private DatabaseBackendResolver.DatabaseBackendEndpoint resolveBackend(
+            DatabaseMetadata database, DatabaseBackendResolver.EndpointRole role) {
+        return role == DatabaseBackendResolver.EndpointRole.READ_WRITE
+                ? backendResolver.resolve(database) : backendResolver.resolve(database, role);
+    }
+
+    private String routeId(DatabaseMetadata database, DatabaseBackendResolver.EndpointRole role) {
+        return database.getDatabaseId() + (role == DatabaseBackendResolver.EndpointRole.READ_WRITE ? "-rw" : "-ro");
     }
 
     private Map<String, Route> existingRoutes(String config) {
@@ -301,8 +389,7 @@ public class SharedGatewayService {
 
     private void assignMissingPorts() {
         for (DatabaseMetadata database : databaseRepository.findAllByOrderByCreatedAtAsc()) {
-            if (database.getPublicPort() != null
-                    || database.getStatus() == DatabaseStatus.DELETING
+            if (database.getStatus() == DatabaseStatus.DELETING
                     || database.getStatus() == DatabaseStatus.DELETED
                     || database.getStatus() == DatabaseStatus.MISSING
                     || database.getStatus() == DatabaseStatus.ORPHANED
@@ -311,9 +398,12 @@ public class SharedGatewayService {
                 DatabaseObservation live = kubeBlocksClient.get(
                         database.getNamespaceName(), database.physicalClusterName());
                 if (live.status() == DatabaseStatus.FAILED) continue;
-                database.setPublicPort(portAllocator.allocate());
-                database.setUpdatedAt(Instant.now());
-                databaseRepository.save(database);
+                if (database.getPublicPort() == null) {
+                    database.setPublicPort(portAllocator.allocate());
+                    database.setUpdatedAt(Instant.now());
+                    databaseRepository.save(database);
+                }
+                reconcileReadOnlyPort(database);
             } catch (ApiException exception) {
                 log.debug("Shared-gateway port for {} will be assigned later: {}",
                         database.getDatabaseId(), exception.getMessage());
@@ -490,17 +580,19 @@ public class SharedGatewayService {
         return checksum(config).equals(deployed) && available >= desired && updated >= desired;
     }
 
-    private boolean routeConfigured(String config, DatabaseMetadata database, int publicPort) {
-        Route route = existingRoutes(config).get(database.getDatabaseId());
+    private boolean routeConfigured(String config, DatabaseMetadata database, int publicPort,
+                                    DatabaseBackendResolver.EndpointRole role) {
+        Route route = existingRoutes(config).get(routeId(database, role));
         return route != null
                 && route.publicPort() == publicPort
                 && managedPort(publicPort);
     }
 
-    private boolean backendConfigured(String config, DatabaseMetadata database, int publicPort) {
-        Route route = existingRoutes(config).get(database.getDatabaseId());
+    private boolean backendConfigured(String config, DatabaseMetadata database, int publicPort,
+                                      DatabaseBackendResolver.EndpointRole role) {
+        Route route = existingRoutes(config).get(routeId(database, role));
         if (route == null || route.publicPort() != publicPort) return false;
-        DatabaseBackendResolver.DatabaseBackendEndpoint endpoint = backendResolver.resolve(database);
+        DatabaseBackendResolver.DatabaseBackendEndpoint endpoint = resolveBackend(database, role);
         return Objects.equals(route.host(), endpoint.host())
                 && route.targetPort() == endpoint.port();
     }

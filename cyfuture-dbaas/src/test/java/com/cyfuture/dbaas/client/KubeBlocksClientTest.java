@@ -768,11 +768,29 @@ class KubeBlocksClientTest {
                 "dbaas-orders", "restores").execute()).thenReturn(Map.of("items", List.of(restore)));
 
         KubeBlocksClient.RestoreObservation observed = client.observeRestore(
-                "dbaas-orders", "rst-orders0001", null);
+                "dbaas-orders", "rst-orders0001", null, "db-orders-restored");
 
         assertTrue(observed.exists());
         assertEquals("restore-orders", observed.restoreName());
         assertEquals("Completed", observed.phase());
+    }
+
+    @Test
+    void observesV102ComponentOwnedRestoreByTargetClusterLabel() throws Exception {
+        Map<String, Object> restore = Map.of(
+                "metadata", Map.of("name", "restore-orders", "labels", Map.of(
+                        "app.kubernetes.io/instance", "db-orders-restored"),
+                        "ownerReferences", List.of(Map.of(
+                                "kind", "Component", "name", "db-orders-restored-postgresql"))),
+                "status", Map.of("phase", "Completed"));
+        when(customObjectsApi.listNamespacedCustomObject("dataprotection.kubeblocks.io", "v1alpha1",
+                "dbaas-orders", "restores").execute()).thenReturn(Map.of("items", List.of(restore)));
+
+        KubeBlocksClient.RestoreObservation observed = client.observeRestore(
+                "dbaas-orders", "rst-orders0001", null, "db-orders-restored");
+
+        assertTrue(observed.exists());
+        assertEquals("restore-orders", observed.restoreName());
     }
 
     @Test
