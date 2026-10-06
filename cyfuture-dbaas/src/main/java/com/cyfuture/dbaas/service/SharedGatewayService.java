@@ -322,8 +322,15 @@ public class SharedGatewayService {
                 // Keep the last known route during a transient observation failure.
                 // A single missing/malformed database Service must not block
                 // reconciliation of every other database's RW and RO routes.
-                for (String routeId : List.of(routeId(database, DatabaseBackendResolver.EndpointRole.READ_WRITE),
-                        routeId(database, DatabaseBackendResolver.EndpointRole.READ_ONLY))) {
+                List<String> databaseRouteIds = List.of(
+                        routeId(database, DatabaseBackendResolver.EndpointRole.READ_WRITE),
+                        routeId(database, DatabaseBackendResolver.EndpointRole.READ_ONLY));
+                // RW resolution may have succeeded before RO resolution failed.
+                // Remove that partial candidate before restoring previous
+                // routes, otherwise HAProxy receives duplicate ACL/backend
+                // declarations for the same port.
+                routes.removeIf(route -> databaseRouteIds.contains(route.databaseId()));
+                for (String routeId : databaseRouteIds) {
                     Route previous = existing.get(routeId);
                     if (previous != null) routes.add(new Route(previous.databaseId(), previous.publicPort(),
                             previous.host(), previous.targetPort(), allowed));
