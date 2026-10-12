@@ -58,7 +58,8 @@ public class DatabaseBackendResolver {
     }
 
     static boolean supportsReadOnly(DatabaseMetadata database) {
-        return database.getMode() != DatabaseMode.STANDALONE
+        return database.isMasterSlaveEnabled()
+                && database.getMode() != DatabaseMode.STANDALONE
                 && database.getMode() != DatabaseMode.SHARDING && database.getReplicas() > 1;
     }
 

@@ -57,7 +57,9 @@ public record CreateDatabaseRequest(
                 requiredMode = Schema.RequiredMode.REQUIRED
         )
         @NotNull(message = "backup configuration is required when creating a database")
-        @Valid BackupSettingsRequest backup
+        @Valid BackupSettingsRequest backup,
+        @Schema(example = "false", description = "Expose separate read/write and read-only connections for REPLICATION or REPLICA_SET. Failover remains enabled regardless of this option.")
+        boolean masterSlaveEnabled
 ) {
     public CreateDatabaseRequest {
         if (allowedCidrs == null) allowedCidrs = List.of();
@@ -71,8 +73,8 @@ public record CreateDatabaseRequest(
                                  String version, SizePlan size, int storageGi, int replicas, int shards,
                                  String timezone, List<String> allowedCidrs,
                                  boolean deletionProtection, Map<String, String> tags) {
-        this(name, remark, engine, mode, version, size, storageGi, replicas, shards, timezone,
-                allowedCidrs, deletionProtection, tags, null, null);
+        this(name, null, remark, engine, mode, version, size, storageGi, replicas, shards, timezone,
+                allowedCidrs, deletionProtection, tags, null, null, false);
     }
 
     public CreateDatabaseRequest(String name, String remark, DatabaseEngine engine, DatabaseMode mode,
@@ -80,8 +82,8 @@ public record CreateDatabaseRequest(
                                  String timezone, List<String> allowedCidrs,
                                  boolean deletionProtection, Map<String, String> tags,
                                  BackupSettingsRequest backup) {
-        this(name, remark, engine, mode, version, size, storageGi, replicas, shards, timezone,
-                allowedCidrs, deletionProtection, tags, null, backup);
+        this(name, null, remark, engine, mode, version, size, storageGi, replicas, shards, timezone,
+                allowedCidrs, deletionProtection, tags, null, backup, false);
     }
 
     public CreateDatabaseRequest(String name, String username, String remark,
@@ -90,7 +92,7 @@ public record CreateDatabaseRequest(
                                  String timezone, List<String> allowedCidrs,
                                  boolean deletionProtection, Map<String, String> tags) {
         this(name, username, remark, engine, mode, version, size, storageGi, replicas, shards,
-                timezone, allowedCidrs, deletionProtection, tags, null, null);
+                timezone, allowedCidrs, deletionProtection, tags, null, null, false);
     }
 
     public CreateDatabaseRequest(String name, String username, String remark,
@@ -100,7 +102,7 @@ public record CreateDatabaseRequest(
                                  boolean deletionProtection, Map<String, String> tags,
                                  BackupSettingsRequest backup) {
         this(name, username, remark, engine, mode, version, size, storageGi, replicas, shards,
-                timezone, allowedCidrs, deletionProtection, tags, null, backup);
+                timezone, allowedCidrs, deletionProtection, tags, null, backup, false);
     }
 
     public CreateDatabaseRequest(String name, String remark, DatabaseEngine engine, DatabaseMode mode,
@@ -109,6 +111,16 @@ public record CreateDatabaseRequest(
                                  boolean deletionProtection, Map<String, String> tags,
                                  String password, BackupSettingsRequest backup) {
         this(name, null, remark, engine, mode, version, size, storageGi, replicas, shards, timezone,
-                allowedCidrs, deletionProtection, tags, password, backup);
+                allowedCidrs, deletionProtection, tags, password, backup, false);
+    }
+
+    public CreateDatabaseRequest(String name, String username, String remark,
+                                 DatabaseEngine engine, DatabaseMode mode,
+                                 String version, SizePlan size, int storageGi, int replicas, int shards,
+                                 String timezone, List<String> allowedCidrs,
+                                 boolean deletionProtection, Map<String, String> tags,
+                                 String password, BackupSettingsRequest backup) {
+        this(name, username, remark, engine, mode, version, size, storageGi, replicas, shards,
+                timezone, allowedCidrs, deletionProtection, tags, password, backup, false);
     }
 }

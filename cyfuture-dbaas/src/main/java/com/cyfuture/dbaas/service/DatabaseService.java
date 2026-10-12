@@ -137,6 +137,7 @@ public class DatabaseService {
         database.setProgress(0);
         database.setReplicas(request.replicas());
         database.setShards(request.shards());
+        database.setMasterSlaveEnabled(request.masterSlaveEnabled());
         database.setTimezone(request.timezone());
         database.setAllowedCidrs(safeCidrs(request.allowedCidrs()).stream().sorted().toList().toString());
         database.setTags(request.tags() == null ? "{}" : request.tags().entrySet().stream()
@@ -215,6 +216,7 @@ public class DatabaseService {
                 + "|" + request.mode() + "|" + request.version() + "|" + request.size()
                 + "|" + request.storageGi() + "|" + request.replicas() + "|" + request.shards()
                 + "|" + request.timezone() + "|" + request.deletionProtection() + "|" + tags
+                + "|" + request.masterSlaveEnabled()
                 + "|" + request.username()
                 + "|" + request.password() + "|" + backupHash(request);
         try {
@@ -836,7 +838,8 @@ public class DatabaseService {
         return new CreateDatabaseRequest(request.name(), request.username(), request.remark(), request.engine(),
                 request.mode(), request.version(), request.size(), request.storageGi(),
                 request.replicas(), request.shards(), request.timezone(), cidrs,
-                request.deletionProtection(), request.tags(), request.password(), request.backup());
+                request.deletionProtection(), request.tags(), request.password(), request.backup(),
+                request.masterSlaveEnabled());
     }
 
     private CreateDatabaseRequest withRequestedIdentity(CreateDatabaseRequest request) {
@@ -861,7 +864,8 @@ public class DatabaseService {
         return new CreateDatabaseRequest(requestedName, requestedUsername, request.remark(), request.engine(),
                 request.mode(), request.version(), request.size(), request.storageGi(),
                 request.replicas(), request.shards(), request.timezone(), request.allowedCidrs(),
-                request.deletionProtection(), request.tags(), request.password(), request.backup());
+                request.deletionProtection(), request.tags(), request.password(), request.backup(),
+                request.masterSlaveEnabled());
     }
 
     private void ensureIdentityAvailable(String project, String requestedName, String requestedUsername) {
@@ -883,7 +887,7 @@ public class DatabaseService {
         return new CreateDatabaseRequest(request.name(), request.username(), request.remark(), request.engine(), request.mode(),
                 request.version(), request.size(), request.storageGi(), request.replicas(), request.shards(),
                 request.timezone(), request.allowedCidrs(), request.deletionProtection(), request.tags(),
-                request.password(), backup);
+                request.password(), backup, request.masterSlaveEnabled());
     }
 
     private String backupHash(CreateDatabaseRequest request) {
@@ -946,6 +950,12 @@ public class DatabaseService {
         };
         if (!valid) throw new ApiException(HttpStatus.BAD_REQUEST,
                 request.mode() + " is not valid for " + request.engine());
+        if (request.masterSlaveEnabled()
+                && request.mode() != DatabaseMode.REPLICATION
+                && request.mode() != DatabaseMode.REPLICA_SET) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "MASTER_SLAVE_NOT_SUPPORTED", false,
+                    "masterSlaveEnabled is supported only for REPLICATION and REPLICA_SET modes");
+        }
         if (request.mode() == DatabaseMode.STANDALONE && request.replicas() != 1)
             throw new ApiException(HttpStatus.BAD_REQUEST, "STANDALONE requires replicas=1");
         if (request.mode() == DatabaseMode.REPLICATION && request.replicas() < 2)

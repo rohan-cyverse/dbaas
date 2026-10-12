@@ -27,6 +27,20 @@ class PublicResponseContractTest {
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
 
     @Test
+    void connectionResponseOmitsReadOnlyUnlessMasterSlaveIsEnabled() throws Exception {
+        ConnectionEndpointResponse readWrite = new ConnectionEndpointResponse(
+                "203.0.113.10", 31000, true, "postgresql://rw");
+        ConnectionResponse response = new ConnectionResponse("orders_user", "secret",
+                "postgresql://rw", new PublicEndpointResponse("203.0.113.10", 31000, true, List.of()),
+                "orders_db", "203.0.113.10", 31000, true, readWrite, null, List.of());
+
+        String json = objectMapper.writeValueAsString(response);
+
+        assertTrue(json.contains("\"readWrite\""));
+        assertFalse(json.contains("\"readOnly\""));
+    }
+
+    @Test
     void databaseResponseDoesNotExposeKubernetesIdentityOrPrivateRouting() throws Exception {
         DatabaseResponse response = new DatabaseResponse(
                 "db-123456789012", "orders", DatabaseEngine.POSTGRESQL,

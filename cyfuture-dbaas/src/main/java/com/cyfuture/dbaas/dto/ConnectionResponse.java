@@ -1,5 +1,7 @@
 package com.cyfuture.dbaas.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 public record ConnectionResponse(
         String username,
         String password,
@@ -10,7 +12,7 @@ public record ConnectionResponse(
         int port,
         boolean ready,
         ConnectionEndpointResponse readWrite,
-        ConnectionEndpointResponse readOnly,
+        @JsonInclude(JsonInclude.Include.NON_NULL) ConnectionEndpointResponse readOnly,
         java.util.List<String> allowedCidrs
 ) {
 }

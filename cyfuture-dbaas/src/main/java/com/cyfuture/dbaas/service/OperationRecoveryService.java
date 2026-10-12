@@ -158,7 +158,8 @@ public class OperationRecoveryService {
                 database.getEngine(), database.getMode(), database.getDatabaseVersion(),
                 database.getSizePlan(), database.getStorageGi(), database.getReplicas(),
                 database.getShards(), database.getTimezone(), cidrs(database.getAllowedCidrs()),
-                database.isDeletionProtection(), tags(database.getTags()), null, backup);
+                database.isDeletionProtection(), tags(database.getTags()), null, backup,
+                database.isMasterSlaveEnabled());
     }
 
     private List<String> cidrs(String stored) {

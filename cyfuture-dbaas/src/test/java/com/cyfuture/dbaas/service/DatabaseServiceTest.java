@@ -281,6 +281,7 @@ class DatabaseServiceTest {
         database.setEngine(DatabaseEngine.MONGODB);
         database.setMode(DatabaseMode.REPLICA_SET);
         database.setReplicas(3);
+        database.setMasterSlaveEnabled(true);
         database.setPublicPort(31000);
         database.setReadOnlyPublicPort(31001);
         database.setAllowedCidrs("[49.50.73.146/32]");

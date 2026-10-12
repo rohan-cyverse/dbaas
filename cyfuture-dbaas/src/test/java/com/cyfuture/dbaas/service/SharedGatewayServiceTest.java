@@ -88,6 +88,7 @@ class SharedGatewayServiceTest {
     @Test
     void scalingUpEnablesAndScalingDownDisablesReadOnlyPort() {
         DatabaseMetadata database = database(31000);
+        database.setMasterSlaveEnabled(true);
         DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
         PublicPortAllocator allocator = mock(PublicPortAllocator.class);
         when(allocator.allocateExcluding(Set.of(31000))).thenReturn(31001);
@@ -106,8 +107,27 @@ class SharedGatewayServiceTest {
     }
 
     @Test
+    void disablingMasterSlaveRemovesReadOnlyPortButKeepsReadWritePort() {
+        DatabaseMetadata database = database(31000);
+        database.setReplicas(3);
+        database.setReadOnlyPublicPort(31001);
+        database.setMasterSlaveEnabled(false);
+        DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
+        SharedGatewayService gateway = new SharedGatewayService(enabledProperties(), repository,
+                mock(PublicPortAllocator.class), mock(KubeBlocksClient.class), mock(CoreV1Api.class),
+                mock(AppsV1Api.class), runningLock(), mock(DatabaseBackendResolver.class));
+
+        gateway.reconcileReadOnlyPort(database);
+
+        assertEquals(31000, database.getPublicPort());
+        assertNull(database.getReadOnlyPublicPort());
+        verify(repository).save(database);
+    }
+
+    @Test
     void readOnlyEndpointBackfillsMissingPortForExistingReplicaSet() {
         DatabaseMetadata database = database(31000);
+        database.setMasterSlaveEnabled(true);
         database.setReplicas(3);
         DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
         PublicPortAllocator allocator = mock(PublicPortAllocator.class);
@@ -129,6 +149,7 @@ class SharedGatewayServiceTest {
     @Test
     void repairsReadOnlyPortWhenItMatchesReadWritePort() {
         DatabaseMetadata database = database(31011);
+        database.setMasterSlaveEnabled(true);
         database.setReplicas(3);
         database.setReadOnlyPublicPort(31011);
         DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
@@ -147,6 +168,7 @@ class SharedGatewayServiceTest {
     @Test
     void repairsLegacyReadOnlyPortCollidingWithAnotherDatabaseReadWritePort() {
         DatabaseMetadata database = database(31009);
+        database.setMasterSlaveEnabled(true);
         database.setReplicas(3);
         database.setReadOnlyPublicPort(31010);
         DatabaseMetadataRepository repository = mock(DatabaseMetadataRepository.class);
