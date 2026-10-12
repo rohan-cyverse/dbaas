@@ -84,7 +84,7 @@ public class DatabaseMetadata {
     private Integer publicPort;
     @Column(name = "read_only_public_port", unique = true)
     private Integer readOnlyPublicPort;
-    @Column(name = "master_slave_enabled", nullable = false)
+    @Column(name = "master_slave_connection_enabled", nullable = false)
     private boolean masterSlaveEnabled;
     @Column(length = 2000)
     private String tags;
